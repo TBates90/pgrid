@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.com/polygrid.schema.json",
+  "title": "PolyGrid",
+  "type": "object",
+  "required": ["version", "vertices", "edges", "faces"],
+  "properties": {
+    "version": {"type": "string"},
+    "metadata": {"type": "object"},
+    "vertices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "string"},
+          "position": {
+            "type": "object",
+            "required": ["x", "y"],
+            "properties": {
+              "x": {"type": "number"},
+              "y": {"type": "number"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "vertices"],
+        "properties": {
+          "id": {"type": "string"},
+          "vertices": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "faces": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "faces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "vertices"],
+        "properties": {
+          "id": {"type": "string"},
+          "type": {"type": "string"},
+          "vertices": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 3
+          },
+          "edges": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "neighbors": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "face_neighbors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    }
+  },
+  "additionalProperties": false
+}

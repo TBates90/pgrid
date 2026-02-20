@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "name": "minimal"
+  },
+  "vertices": [
+    {"id": "v1", "position": {"x": 0, "y": 0}},
+    {"id": "v2", "position": {"x": 1, "y": 0}},
+    {"id": "v3", "position": {"x": 2, "y": 0}},
+    {"id": "v4", "position": {"x": 1.5, "y": 1}},
+    {"id": "v5", "position": {"x": 0.5, "y": 1}},
+    {"id": "v6", "position": {"x": -0.5, "y": 1}}
+  ],
+  "edges": [
+    {"id": "e1", "vertices": ["v1", "v2"], "faces": ["f1"]},
+    {"id": "e2", "vertices": ["v2", "v3"], "faces": ["f1"]},
+    {"id": "e3", "vertices": ["v3", "v4"], "faces": ["f1"]},
+    {"id": "e4", "vertices": ["v4", "v5"], "faces": ["f1"]},
+    {"id": "e5", "vertices": ["v5", "v6"], "faces": ["f1"]},
+    {"id": "e6", "vertices": ["v6", "v1"], "faces": ["f1"]}
+  ],
+  "faces": [
+    {"id": "f1", "type": "hex", "vertices": ["v1", "v2", "v3", "v4", "v5", "v6"], "edges": ["e1", "e2", "e3", "e4", "e5", "e6"]}
+  ]
+}

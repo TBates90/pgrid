@@ -1,0 +1,5 @@
+# Optional convenience for pip installs
+pytest>=7.4
+matplotlib
+numpy>=1.26
+scipy>=1.12
