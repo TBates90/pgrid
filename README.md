@@ -26,6 +26,7 @@ See `schemas/polygrid.schema.json` for the formal contract. At minimum:
   - `polygrid validate --in grid.json --out roundtrip.json`
 - Render a grid to PNG (requires matplotlib):
   - `polygrid render --in grid.json --out grid.png`
+  - `polygrid render --in grid.json --out grid.png --pent-axes`
 - Build a pure hex grid (topology + positions):
   - `polygrid build-hex --rings 2 --out hex.json`
   - `polygrid build-hex --rings 2 --out hex.json --render-out hex.png`
@@ -34,6 +35,7 @@ See `schemas/polygrid.schema.json` for the formal contract. At minimum:
   - `polygrid build-pent --rings 2 --out pent.json --render-out pent.png`
   - `polygrid build-pent --rings 2 --out pent.json --embed tutte`
   - `polygrid build-pent --rings 2 --out pent.json --embed none`
+  - `polygrid build-pent --rings 2 --out pent.json --render-out pent.png --pent-axes`
 
 ## Project layout
 ```

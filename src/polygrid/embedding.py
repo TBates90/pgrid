@@ -8,9 +8,9 @@ from .models import Edge, Vertex
 def tutte_embedding(
     vertices: Dict[str, Vertex],
     edges: Iterable[Edge],
-    boundary_ids: List[str],
+    fixed_positions: Dict[str, tuple[float, float]],
 ) -> Dict[str, Vertex]:
-    """Compute a Tutte embedding with fixed boundary positions."""
+    """Compute a Tutte embedding with fixed vertex positions."""
     try:
         import numpy as np
         import scipy.sparse as sp
@@ -24,15 +24,12 @@ def tutte_embedding(
     index = {vid: i for i, vid in enumerate(vertex_ids)}
     n = len(vertex_ids)
 
-    boundary_set = set(boundary_ids)
-    interior_ids = [vid for vid in vertex_ids if vid not in boundary_set]
+    fixed_set = set(fixed_positions.keys())
+    interior_ids = [vid for vid in vertex_ids if vid not in fixed_set]
 
     xy = np.zeros((n, 2), dtype=float)
-    for vid in boundary_ids:
-        v = vertices[vid]
-        if v.x is None or v.y is None:
-            raise ValueError("Boundary vertices must have positions for Tutte embedding")
-        xy[index[vid]] = (v.x, v.y)
+    for vid, (x, y) in fixed_positions.items():
+        xy[index[vid]] = (x, y)
 
     rows: list[int] = []
     cols: list[int] = []
@@ -59,7 +56,7 @@ def tutte_embedding(
         return {vid: vertices[vid] for vid in vertex_ids}
 
     I = np.array([index[vid] for vid in interior_ids], dtype=int)
-    B = np.array([index[vid] for vid in boundary_ids], dtype=int)
+    B = np.array([index[vid] for vid in fixed_positions.keys()], dtype=int)
 
     L_II = L[I][:, I]
     L_IB = L[I][:, B]

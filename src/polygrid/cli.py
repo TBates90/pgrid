@@ -18,17 +18,20 @@ def build_parser() -> argparse.ArgumentParser:
     render = sub.add_parser("render", help="Render a grid to PNG")
     render.add_argument("--in", dest="input_path", required=True)
     render.add_argument("--out", dest="output_path", required=True)
+    render.add_argument("--pent-axes", action="store_true")
 
     build_hex = sub.add_parser("build-hex", help="Build a pure hex grid")
     build_hex.add_argument("--rings", type=int, required=True)
     build_hex.add_argument("--out", dest="output_path", required=True)
     build_hex.add_argument("--render-out", dest="render_path")
+    build_hex.add_argument("--pent-axes", action="store_true")
 
     build_pent = sub.add_parser("build-pent", help="Build a pentagon-centered grid")
     build_pent.add_argument("--rings", type=int, required=True)
     build_pent.add_argument("--out", dest="output_path", required=True)
     build_pent.add_argument("--render-out", dest="render_path")
     build_pent.add_argument("--embed", choices=["tutte", "none"], default="tutte")
+    build_pent.add_argument("--pent-axes", action="store_true")
 
     return parser
 
@@ -51,7 +54,7 @@ def main() -> None:
         from .render import render_png
 
         grid = load_json(args.input_path)
-        render_png(grid, args.output_path)
+        render_png(grid, args.output_path, show_pent_axes=args.pent_axes)
         print(f"Saved {args.output_path}")
     elif args.command == "build-hex":
         from .builders import build_pure_hex_grid
@@ -61,7 +64,7 @@ def main() -> None:
         if args.render_path:
             from .render import render_png
 
-            render_png(grid, args.render_path)
+            render_png(grid, args.render_path, show_pent_axes=args.pent_axes)
         print(f"Saved {args.output_path}")
     elif args.command == "build-pent":
         from .builders import build_pentagon_centered_grid
@@ -75,7 +78,7 @@ def main() -> None:
         if args.render_path:
             from .render import render_png
 
-            render_png(grid, args.render_path)
+            render_png(grid, args.render_path, show_pent_axes=args.pent_axes)
         print(f"Saved {args.output_path}")
 
 

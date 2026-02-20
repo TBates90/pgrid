@@ -17,6 +17,7 @@ def render_png(
     vertex_size: float = 8.0,
     padding: float = 0.5,
     dpi: int = 150,
+    show_pent_axes: bool = False,
 ) -> None:
     """Render a grid to PNG using vertex positions.
 
@@ -46,6 +47,9 @@ def render_png(
             face_color,
             face_alpha,
         )
+
+    if show_pent_axes:
+        _draw_pent_axes(ax, grid)
 
     for vertex in vertices:
         ax.scatter(vertex.x, vertex.y, s=vertex_size, c=vertex_color, zorder=3)
@@ -93,3 +97,38 @@ def _draw_face(
     ax.add_patch(polygon)
     xs, ys = zip(*(points + [points[0]]))
     ax.plot(xs, ys, color=edge_color, linewidth=1.0)
+
+
+def _draw_pent_axes(ax, grid: PolyGrid) -> None:
+    pent = next((face for face in grid.faces.values() if face.face_type == "pent"), None)
+    if pent is None:
+        return
+    verts = [grid.vertices[vid] for vid in pent.vertex_ids]
+    if not all(v.has_position() for v in verts):
+        return
+    cx = sum(v.x for v in verts if v.x is not None) / len(verts)
+    cy = sum(v.y for v in verts if v.y is not None) / len(verts)
+
+    xs = [v.x for v in grid.vertices.values() if v.x is not None]
+    ys = [v.y for v in grid.vertices.values() if v.y is not None]
+    if not xs or not ys:
+        return
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    length = max(max_x - min_x, max_y - min_y) * 1.2
+
+    for i in range(len(verts)):
+        v1 = verts[i]
+        v2 = verts[(i + 1) % len(verts)]
+        mx = (v1.x + v2.x) / 2
+        my = (v1.y + v2.y) / 2
+        dx = mx - cx
+        dy = my - cy
+        norm = (dx**2 + dy**2) ** 0.5 or 1.0
+        dx /= norm
+        dy /= norm
+        x0 = cx - dx * length
+        y0 = cy - dy * length
+        x1 = cx + dx * length
+        y1 = cy + dy * length
+        ax.plot([x0, x1], [y0, y1], color="#d1495b", linewidth=1.0, linestyle=(0, (3, 3)))
