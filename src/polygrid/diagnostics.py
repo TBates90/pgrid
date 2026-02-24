@@ -8,6 +8,8 @@ from .models import Edge, Face, Vertex
 from .polygrid import PolyGrid
 from .algorithms import build_face_adjacency, ring_faces
 from .angle_solver import ring_angle_spec
+from .geometry import _face_signed_area, _face_vertex_cycle, _interior_angle, _ordered_face_vertices
+from .grid_utils import _collect_face_vertices, _edge_length, _find_pentagon_face, _grid_center
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,7 @@ class RingStats:
 def min_face_signed_area(grid: PolyGrid) -> float:
     areas = []
     for face in grid.faces.values():
-        area = _face_signed_area(grid, face)
+        area = _face_signed_area(grid.vertices, face, grid.edges.values())
         if area is not None:
             areas.append(area)
     return min(areas) if areas else 0.0
@@ -204,71 +206,6 @@ def diagnostics_report(grid: PolyGrid, max_ring: int) -> Dict[str, object]:
     }
 
 
-def _ordered_face_vertices(vertices: Dict[str, Vertex], face: Face) -> List[str]:
-    coords = [vertices[vid] for vid in face.vertex_ids]
-    if not coords or not all(v.has_position() for v in coords):
-        return list(face.vertex_ids)
-    cx = sum(v.x for v in coords if v.x is not None) / len(coords)
-    cy = sum(v.y for v in coords if v.y is not None) / len(coords)
-
-    def angle(vid: str) -> float:
-        v = vertices[vid]
-        return math.atan2(v.y - cy, v.x - cx)
-
-    return sorted(face.vertex_ids, key=angle)
-
-
-def _face_vertex_cycle(face: Face, edges: Iterable[Edge]) -> List[str]:
-    neighbors: Dict[str, List[str]] = {}
-    for edge in edges:
-        if face.id not in edge.face_ids:
-            continue
-        a, b = edge.vertex_ids
-        neighbors.setdefault(a, []).append(b)
-        neighbors.setdefault(b, []).append(a)
-
-    if not neighbors:
-        return list(face.vertex_ids)
-
-    if any(len(nbrs) != 2 for nbrs in neighbors.values()):
-        return list(face.vertex_ids)
-
-    start = sorted(neighbors.keys())[0]
-    cycle = [start]
-    prev = None
-    current = start
-    while True:
-        nbrs = neighbors.get(current, [])
-        if not nbrs:
-            break
-        nxt = nbrs[0] if nbrs[0] != prev else (nbrs[1] if len(nbrs) > 1 else None)
-        if nxt is None or nxt == start:
-            break
-        if nxt in cycle:
-            break
-        cycle.append(nxt)
-        prev, current = current, nxt
-        if len(cycle) > len(neighbors) + 1:
-            break
-
-    return cycle
-
-
-def _face_signed_area(grid: PolyGrid, face: Face) -> float | None:
-    ordered = _face_vertex_cycle(face, grid.edges.values())
-    if len(ordered) != len(face.vertex_ids):
-        ordered = _ordered_face_vertices(grid.vertices, face)
-    coords = [grid.vertices[vid] for vid in ordered]
-    if not coords or not all(v.has_position() for v in coords):
-        return None
-    area = 0.0
-    for i in range(len(coords)):
-        x1, y1 = coords[i].x, coords[i].y
-        x2, y2 = coords[(i + 1) % len(coords)].x, coords[(i + 1) % len(coords)].y
-        area += x1 * y2 - x2 * y1
-    return area / 2.0
-
-
 def _segments_intersect(
     a1: tuple[float, float],
     a2: tuple[float, float],
@@ -301,31 +238,6 @@ def _segments_intersect(
     return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
 
 
-def _angle_at_vertex(vertices: Dict[str, Vertex], a: str, b: str, c: str) -> float:
-    va = vertices[a]
-    vb = vertices[b]
-    vc = vertices[c]
-    v1x = va.x - vb.x
-    v1y = va.y - vb.y
-    v2x = vc.x - vb.x
-    v2y = vc.y - vb.y
-    denom = (math.hypot(v1x, v1y) * math.hypot(v2x, v2y)) or 1.0
-    dot = (v1x * v2x + v1y * v2y) / denom
-    dot = max(-1.0, min(1.0, dot))
-    return math.acos(dot)
-
-
-def _interior_angle(vertices: Dict[str, Vertex], a: str, b: str, c: str) -> float:
-    angle = _angle_at_vertex(vertices, a, b, c)
-    return max(angle, math.pi - angle)
-
-
-def _edge_length(vertices: Dict[str, Vertex], a: str, b: str) -> float:
-    va = vertices[a]
-    vb = vertices[b]
-    return math.hypot(vb.x - va.x, vb.y - va.y)
-
-
 def _inner_neighbor_counts(
     edges: Iterable[Edge],
     ring_vertices: Iterable[str],
@@ -341,29 +253,6 @@ def _inner_neighbor_counts(
         elif b in ring_set and a in inner_set:
             counts[b] += 1
     return counts
-
-
-def _grid_center(grid: PolyGrid) -> tuple[float, float]:
-    xs = [v.x for v in grid.vertices.values() if v.x is not None]
-    ys = [v.y for v in grid.vertices.values() if v.y is not None]
-    return (sum(xs) / len(xs), sum(ys) / len(ys))
-
-
-def _collect_face_vertices(grid: PolyGrid, face_ids: Iterable[str]) -> List[str]:
-    vertex_ids = []
-    for fid in face_ids:
-        face = grid.faces.get(fid)
-        if not face:
-            continue
-        vertex_ids.extend(face.vertex_ids)
-    return list(dict.fromkeys(vertex_ids))
-
-
-def _find_pentagon_face(grid: PolyGrid) -> Face | None:
-    for face in grid.faces.values():
-        if face.face_type == "pent" or len(face.vertex_ids) == 5:
-            return face
-    return None
 
 
 def _mean(values: List[float]) -> float:

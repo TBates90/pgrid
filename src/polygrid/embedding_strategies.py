@@ -25,23 +25,21 @@ def apply_embedding(
 
     from .embedding import tutte_embedding
     from .algorithms import build_face_adjacency, ring_faces
-    from .angle_solver import ring_angle_spec
-    from .builders import (
-        _build_fixed_positions,
-        _face_vertex_cycle,
-        _find_pentagon_face,
-        _interior_angle,
+    from .angle_solver import ring_angle_spec, solve_ring_hex_lengths
+    from .builders import _build_fixed_positions, compute_edge_target_ratios
+    from .embedding_utils import (
+        _fivefold_symmetry_snap,
         _laplacian_relax,
-        _ordered_face_vertices,
         _ring1_pent_angle_snap,
         _ring1_symmetry_relax,
         _ring1_symmetry_snap,
+        _ring_constraints_snap,
         _ring_pointy_edge_snap,
         _ring_protruding_edge_snap,
-        _ring_constraints_snap,
-        compute_edge_target_ratios,
-        _global_optimize_positions,
     )
+    from .geometry import _face_vertex_cycle, _interior_angle, _ordered_face_vertices
+    from .grid_utils import _find_pentagon_face
+    from .optimisation import _global_optimize_positions, optimise_positions_to_edge_targets
 
     fixed_positions = _build_fixed_positions(grid)
     if not fixed_positions:
@@ -52,108 +50,7 @@ def apply_embedding(
         return PolyGrid(embedded.values(), grid.edges.values(), grid.faces.values())
 
     if rings <= 1:
-        updated = PolyGrid(embedded.values(), grid.edges.values(), grid.faces.values())
-        if rings == 0:
-            return updated
-        adjacency = build_face_adjacency(updated.faces.values(), updated.edges.values())
-        pent_face = _find_pentagon_face(updated)
-        if pent_face is None:
-            return updated
-        rings_map = ring_faces(adjacency, pent_face.id, max_depth=rings)
-        inner_vertices = set(pent_face.vertex_ids)
-        center = (
-            sum(updated.vertices[vid].x for vid in pent_face.vertex_ids) / len(pent_face.vertex_ids),
-            sum(updated.vertices[vid].y for vid in pent_face.vertex_ids) / len(pent_face.vertex_ids),
-        )
-
-        # Identify pointy vertices (outermost per ring-1 face).
-        pointy_vertices: set[str] = set()
-        for fid in rings_map.get(1, []):
-            face = updated.faces.get(fid)
-            if face is None:
-                continue
-            ordered = _face_vertex_cycle(face, updated.edges.values())
-            if len(ordered) != len(face.vertex_ids):
-                ordered = _ordered_face_vertices(updated.vertices, face)
-            candidates = [vid for vid in ordered if vid not in inner_vertices]
-            if not candidates:
-                continue
-            pointy_vertices.add(
-                max(
-                    candidates,
-                    key=lambda vid: math.hypot(
-                        updated.vertices[vid].x - center[0],
-                        updated.vertices[vid].y - center[1],
-                    ),
-                )
-            )
-
-        def apply_pointy_scale(
-            factor: float,
-            base_vertices: Dict[str, Vertex],
-        ) -> Dict[str, Vertex]:
-            scaled = {vid: Vertex(vid, v.x, v.y) for vid, v in base_vertices.items()}
-            for vid in pointy_vertices:
-                v = scaled.get(vid)
-                if v is None:
-                    continue
-                dx = v.x - center[0]
-                dy = v.y - center[1]
-                scaled[vid] = Vertex(vid, center[0] + dx * factor, center[1] + dy * factor)
-            return scaled
-
-        ring_vertices = set(
-            vid for face in rings_map.get(1, []) for vid in updated.faces[face].vertex_ids
-        )
-        outer_ring_vertices = ring_vertices - inner_vertices
-        from .builders import _fivefold_symmetry_snap
-
-        def pointy_angle_mean(vertices: Dict[str, Vertex]) -> float:
-            snapped_vertices = _fivefold_symmetry_snap(updated, vertices, outer_ring_vertices)
-            angles: list[float] = []
-            for fid in rings_map.get(1, []):
-                face = updated.faces.get(fid)
-                if face is None:
-                    continue
-                ordered = _face_vertex_cycle(face, updated.edges.values())
-                if len(ordered) != len(face.vertex_ids):
-                    ordered = _ordered_face_vertices(snapped_vertices, face)
-                candidates = [vid for vid in ordered if vid not in inner_vertices]
-                if not candidates:
-                    continue
-                pointy = max(
-                    candidates,
-                    key=lambda vid: math.hypot(
-                        snapped_vertices[vid].x - center[0],
-                        snapped_vertices[vid].y - center[1],
-                    ),
-                )
-                idx = ordered.index(pointy)
-                prev_vid = ordered[(idx - 1) % len(ordered)]
-                next_vid = ordered[(idx + 1) % len(ordered)]
-                angles.append(
-                    math.degrees(
-                        _interior_angle(snapped_vertices, prev_vid, pointy, next_vid)
-                    )
-                )
-            return sum(angles) / len(angles) if angles else 0.0
-
-        best_factor = 1.0
-        target_pointy_angle = ring_angle_spec(1).outer_angle_deg
-        if pointy_vertices:
-            best_diff = float("inf")
-            for factor in (0.90 + 0.005 * idx for idx in range(31)):
-                scaled = apply_pointy_scale(factor, updated.vertices)
-                mean_angle = pointy_angle_mean(scaled)
-                diff = abs(mean_angle - target_pointy_angle)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_factor = factor
-
-        scaled_vertices = apply_pointy_scale(best_factor, updated.vertices)
-
-        snapped = _fivefold_symmetry_snap(updated, scaled_vertices, outer_ring_vertices)
-        return PolyGrid(snapped.values(), updated.edges.values(), updated.faces.values())
+        return PolyGrid(embedded.values(), grid.edges.values(), grid.faces.values())
 
     relaxed = _laplacian_relax(
         embedded,
@@ -205,11 +102,23 @@ def apply_embedding(
 
     rings_map = ring_faces(adjacency, pent_face.id, max_depth=rings)
     edge_targets = compute_edge_target_ratios(updated, rings_map)
+    movable = len(updated.vertices) - len(fixed_positions)
+    if movable > 120 or rings > 2:
+        relaxed_positions = optimise_positions_to_edge_targets(
+            updated,
+            updated.vertices,
+            edge_targets,
+            fixed_positions,
+            iterations=40,
+        )
+        return PolyGrid(relaxed_positions.values(), updated.edges.values(), updated.faces.values())
+
     optimized = _global_optimize_positions(
         updated,
         updated.vertices,
         fixed_positions,
         edge_targets,
         rings_map,
+        iterations=40,
     )
     return PolyGrid(optimized.values(), updated.edges.values(), updated.faces.values())
