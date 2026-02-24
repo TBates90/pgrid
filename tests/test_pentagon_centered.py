@@ -1,7 +1,17 @@
 import math
 
-from polygrid.builders import build_pentagon_centered_grid, _build_fixed_positions
+from polygrid.builders import (
+    build_pentagon_centered_grid,
+    _build_fixed_positions,
+    validate_pentagon_topology,
+    _face_vertex_cycle,
+)
 from polygrid.algorithms import build_face_adjacency, ring_faces
+from polygrid.builders import (
+    classify_edges,
+    compute_edge_target_ratios,
+    optimise_positions_to_edge_targets,
+)
 
 
 def test_pentagon_centered_grid_center_face():
@@ -18,6 +28,56 @@ def test_angle_first_layout_positions_pentagon():
     for vid in pent_face.vertex_ids:
         v = grid.vertices[vid]
         assert v.x is not None and v.y is not None
+
+
+def test_pentagon_topology_validation():
+    grid = build_pentagon_centered_grid(2, embed=False)
+    assert validate_pentagon_topology(grid, rings=2) == []
+
+
+def test_pentagon_strict_validation():
+    grid = build_pentagon_centered_grid(2, embed=False)
+    assert grid.validate(strict=True) == []
+
+
+def test_face_vertex_cycle_ordering():
+    grid = build_pentagon_centered_grid(2, embed=False)
+    for face in grid.faces.values():
+        cycle = _face_vertex_cycle(face, grid.edges.values())
+        assert set(cycle) == set(face.vertex_ids)
+        assert len(cycle) == len(face.vertex_ids)
+
+
+def test_edge_target_ratios_and_optimisation():
+    grid = build_pentagon_centered_grid(2, embed=True, embed_mode="tutte")
+    adjacency = build_face_adjacency(grid.faces.values(), grid.edges.values())
+    pent_face = next(face for face in grid.faces.values() if face.face_type == "pent")
+    rings = ring_faces(adjacency, pent_face.id, max_depth=2)
+    edge_classes = classify_edges(grid, rings)
+    ratios = compute_edge_target_ratios(grid, rings)
+    # ratios should be a dict mapping some edge ids to floats
+    assert isinstance(ratios, dict)
+    # initial positions
+    initial_positions = {vid: v for vid, v in grid.vertices.items()}
+    fixed = _build_fixed_positions(grid)
+    new_positions = optimise_positions_to_edge_targets(grid, initial_positions, ratios, fixed, iterations=5)
+    assert isinstance(new_positions, dict)
+    # at least one non-fixed vertex moved
+    moved = False
+    for vid, v in new_positions.items():
+        if vid in fixed:
+            continue
+        old = initial_positions[vid]
+        if abs(old.x - v.x) > 1e-6 or abs(old.y - v.y) > 1e-6:
+            moved = True
+            break
+    assert moved
+
+
+def test_global_optimizer_smoke():
+    grid = build_pentagon_centered_grid(2, embed=True, embed_mode="tutte+optimise")
+    pent_face = next(face for face in grid.faces.values() if face.face_type == "pent")
+    assert len(pent_face.vertex_ids) == 5
 
 
 import pytest

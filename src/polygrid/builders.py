@@ -61,7 +61,8 @@ def build_pentagon_centered_grid(
     rings: int,
     size: float = 1.0,
     embed: bool = True,
-    embed_mode: str = "angle",
+    embed_mode: str = "tutte+optimise",
+    validate_topology: bool = False,
 ) -> PolyGrid:
     """Build a pentagon-centered grid via triangulation + wedge removal + dual.
 
@@ -91,61 +92,94 @@ def build_pentagon_centered_grid(
 
     edges, dual_faces = _rebuild_edges_from_faces(dual_faces)
     grid = PolyGrid(dual_vertices.values(), edges, dual_faces)
+    grid = _trim_grid_to_rings(grid, rings)
+    if validate_topology:
+        errors = validate_pentagon_topology(grid, rings)
+        if errors:
+            raise RuntimeError("\n".join(errors))
 
     if embed:
-        if embed_mode == "angle":
-            positioned = _apply_angle_first_layout(grid, rings, size)
-            # Keep the angle-first layout exact; avoid post-relaxation that
-            # can distort the target ring angles.
-            grid = PolyGrid(positioned.values(), grid.edges.values(), grid.faces.values())
-        else:
-            fixed_positions = _build_fixed_positions(grid)
-            if fixed_positions:
-                embedded = tutte_embedding(grid.vertices, grid.edges.values(), fixed_positions)
-                relaxed = _laplacian_relax(
-                    embedded,
-                    grid.edges.values(),
-                    fixed_positions,
-                    iterations=40,
-                    alpha=0.25,
-                )
-                ring1_relaxed = _ring1_symmetry_relax(
-                    grid,
-                    relaxed,
-                    fixed_positions,
-                    iterations=120,
-                    strength=0.25,
-                )
-                snapped = _ring1_symmetry_snap(grid, ring1_relaxed, fixed_positions)
-                constrained = _ring_constraints_snap(
-                    grid,
-                    snapped,
-                    fixed_positions,
-                    max_ring=len(grid.faces),
-                    iterations=5,
-                )
-                protruded = _ring_protruding_edge_snap(
-                    grid,
-                    constrained,
-                    fixed_positions,
-                    max_ring=len(grid.faces),
-                )
-                angled = _ring1_pent_angle_snap(
-                    grid,
-                    protruded,
-                    fixed_positions,
-                    target_angle_deg=126.0,
-                    strength=1.0,
-                )
-                pointy_final = _ring_pointy_edge_snap(
-                    grid,
-                    angled,
-                    fixed_positions,
-                    max_ring=len(grid.faces),
-                )
-                grid = PolyGrid(pointy_final.values(), grid.edges.values(), grid.faces.values())
+        from .embedding_strategies import apply_embedding
+
+        grid = apply_embedding(grid, rings, size, embed_mode)
 
     return grid
+
+
+def _trim_grid_to_rings(grid: PolyGrid, rings: int) -> PolyGrid:
+    pent_face = _find_pentagon_face(grid)
+    if pent_face is None:
+        return grid
+    adjacency = build_face_adjacency(grid.faces.values(), grid.edges.values())
+    rings_map = ring_faces(adjacency, pent_face.id, max_depth=rings)
+    face_ids: List[str] = []
+    for depth in range(rings + 1):
+        face_ids.extend(rings_map.get(depth, []))
+    face_ids = list(dict.fromkeys(face_ids))
+    faces = [grid.faces[fid] for fid in face_ids if fid in grid.faces]
+    edges, faces = _rebuild_edges_from_faces(faces)
+    vertex_ids = {vid for face in faces for vid in face.vertex_ids}
+    vertices = [grid.vertices[vid] for vid in vertex_ids if vid in grid.vertices]
+    return PolyGrid(vertices, edges, faces)
+
+
+def validate_pentagon_topology(grid: PolyGrid, rings: int | None = None) -> list[str]:
+    errors: list[str] = []
+    pent_faces = [face for face in grid.faces.values() if face.face_type == "pent" or len(face.vertex_ids) == 5]
+    if len(pent_faces) != 1:
+        errors.append(f"Expected 1 pentagon face, found {len(pent_faces)}")
+
+    for face in grid.faces.values():
+        if face.face_type == "pent":
+            if len(face.vertex_ids) != 5:
+                errors.append(f"Face {face.id} is pent but has {len(face.vertex_ids)} vertices")
+        elif face.face_type == "hex":
+            if len(face.vertex_ids) != 6:
+                errors.append(f"Face {face.id} is hex but has {len(face.vertex_ids)} vertices")
+        else:
+            errors.append(f"Face {face.id} has unexpected type {face.face_type}")
+        if len(face.vertex_ids) == 5 and face.face_type != "pent":
+            errors.append(f"Face {face.id} has 5 vertices but is not marked pent")
+        if len(face.vertex_ids) == 6 and face.face_type != "hex":
+            errors.append(f"Face {face.id} has 6 vertices but is not marked hex")
+
+    degree_map: Dict[str, int] = {vid: 0 for vid in grid.vertices}
+    boundary_vertices: set[str] = set()
+    for edge in grid.edges.values():
+        a, b = edge.vertex_ids
+        degree_map[a] = degree_map.get(a, 0) + 1
+        degree_map[b] = degree_map.get(b, 0) + 1
+        if len(edge.face_ids) < 2:
+            boundary_vertices.add(a)
+            boundary_vertices.add(b)
+
+    for vid, degree in degree_map.items():
+        if vid in boundary_vertices:
+            if degree not in (2, 3):
+                errors.append(f"Boundary vertex {vid} has degree {degree}, expected 2 or 3")
+        else:
+            if degree != 3:
+                errors.append(f"Interior vertex {vid} has degree {degree}, expected 3")
+
+    if rings is not None and pent_faces:
+        pent_face = pent_faces[0]
+        adjacency = build_face_adjacency(grid.faces.values(), grid.edges.values())
+        ring_map = ring_faces(adjacency, pent_face.id, max_depth=rings)
+        if rings == 0 and ring_map:
+            errors.append("Expected no rings beyond center for rings=0")
+        if rings > 0:
+            max_ring = max(ring_map.keys()) if ring_map else 0
+            if max_ring < rings:
+                errors.append(f"Expected rings up to {rings}, found {max_ring}")
+        for ring_idx in range(1, (rings or 0) + 1):
+            ring_faces_list = ring_map.get(ring_idx, [])
+            expected = 5 * ring_idx
+            if len(ring_faces_list) != expected:
+                errors.append(
+                    f"Ring {ring_idx} has {len(ring_faces_list)} faces, expected {expected}"
+                )
+
+    return errors
 
 
 def _hex_area(rings: int) -> List[AxialCoord]:
@@ -188,21 +222,6 @@ def _find_center_face(grid: PolyGrid) -> Face | None:
             best_dist = dist
     return best_face
 
-
-def _collapse_single_face(grid: PolyGrid) -> PolyGrid:
-    center_face = _find_center_face(grid)
-    if center_face is None:
-        return grid
-
-    vertex_ids = list(center_face.vertex_ids)
-    if len(vertex_ids) <= 5:
-        return grid
-
-    keep_id = vertex_ids[0]
-    drop_id = vertex_ids[1]
-
-    keep_vertex = grid.vertices[keep_id]
-    drop_vertex = grid.vertices[drop_id]
 
 def _build_ray_merge_map(
     vertices: Dict[str, Vertex],
@@ -366,9 +385,46 @@ def _boundary_vertex_ids(grid: PolyGrid) -> List[str]:
     boundary = [vid for vid, deg in degree.items() if deg < 3]
     if not boundary:
         return []
+
+    cycle = _boundary_vertex_cycle(grid)
+    if cycle:
+        return cycle
+
     cx = sum(grid.vertices[vid].x for vid in boundary if grid.vertices[vid].x is not None) / len(boundary)
     cy = sum(grid.vertices[vid].y for vid in boundary if grid.vertices[vid].y is not None) / len(boundary)
     return sorted(boundary, key=lambda vid: math.atan2(grid.vertices[vid].y - cy, grid.vertices[vid].x - cx))
+
+
+def _boundary_vertex_cycle(grid: PolyGrid) -> List[str]:
+    boundary_edges = [edge for edge in grid.edges.values() if len(edge.face_ids) < 2]
+    if not boundary_edges:
+        return []
+    neighbors: Dict[str, List[str]] = {}
+    for edge in boundary_edges:
+        a, b = edge.vertex_ids
+        neighbors.setdefault(a, []).append(b)
+        neighbors.setdefault(b, []).append(a)
+
+    # find a start with smallest x/y for determinism
+    start = min(neighbors.keys(), key=lambda vid: (grid.vertices[vid].x, grid.vertices[vid].y))
+    cycle = [start]
+    prev = None
+    current = start
+    while True:
+        nbrs = neighbors.get(current, [])
+        if not nbrs:
+            break
+        nxt = nbrs[0] if nbrs[0] != prev else (nbrs[1] if len(nbrs) > 1 else None)
+        if nxt is None or nxt == start:
+            break
+        if nxt in cycle:
+            break
+        cycle.append(nxt)
+        prev, current = current, nxt
+        if len(cycle) > len(neighbors) + 1:
+            break
+
+    return cycle
 
 
 def _face_center(grid: PolyGrid, face: Face) -> tuple[float, float] | None:
@@ -444,7 +500,7 @@ def _build_fixed_positions(grid: PolyGrid) -> Dict[str, tuple[float, float]]:
 
     pent_vertices = list(pent_face.vertex_ids)
     pent_radius = _mean_radius(grid, pent_vertices, center)
-    fixed.update(_uniform_circle_positions(grid, pent_vertices, pent_radius, center))
+    fixed.update(_regular_pentagon_positions(grid, pent_vertices, pent_radius, center))
 
     return fixed
 
@@ -499,6 +555,34 @@ def _uniform_circle_positions(
     ordered = [vid for _, vid in sorted(zip(angles, vertex_ids))]
     base_angle = sum(angles) / len(angles)
     step = 2 * math.pi / len(ordered)
+
+    positions: Dict[str, tuple[float, float]] = {}
+    for idx, vid in enumerate(ordered):
+        angle = base_angle + idx * step
+        positions[vid] = (
+            center[0] + radius * math.cos(angle),
+            center[1] + radius * math.sin(angle),
+        )
+    return positions
+
+
+def _regular_pentagon_positions(
+    grid: PolyGrid,
+    vertex_ids: List[str],
+    radius: float,
+    center: tuple[float, float],
+) -> Dict[str, tuple[float, float]]:
+    if len(vertex_ids) != 5:
+        return _uniform_circle_positions(grid, vertex_ids, radius, center)
+
+    # order pentagon vertices by angle around center, then assign equal spacing
+    angles = []
+    for vid in vertex_ids:
+        v = grid.vertices[vid]
+        angles.append(math.atan2(v.y - center[1], v.x - center[0]))
+    ordered = [vid for _, vid in sorted(zip(angles, vertex_ids))]
+    base_angle = sum(angles) / len(angles)
+    step = 2 * math.pi / 5
 
     positions: Dict[str, tuple[float, float]] = {}
     for idx, vid in enumerate(ordered):
@@ -1419,6 +1503,9 @@ def _face_vertex_cycle(face: Face, edges: Iterable[Edge]) -> List[str]:
     if not neighbors:
         return list(face.vertex_ids)
 
+    if any(len(nbrs) != 2 for nbrs in neighbors.values()):
+        return list(face.vertex_ids)
+
     start = sorted(neighbors.keys())[0]
     cycle = [start]
     prev = None
@@ -1429,6 +1516,8 @@ def _face_vertex_cycle(face: Face, edges: Iterable[Edge]) -> List[str]:
             break
         nxt = nbrs[0] if nbrs[0] != prev else (nbrs[1] if len(nbrs) > 1 else None)
         if nxt is None or nxt == start:
+            break
+        if nxt in cycle:
             break
         cycle.append(nxt)
         prev, current = current, nxt
@@ -2084,7 +2173,7 @@ def _order_vertices_ccw(vertices: Dict[str, Vertex], vertex_ids: List[str]) -> L
 
 def _rebuild_edges_from_faces(faces: Iterable[Face]) -> tuple[List[Edge], List[Face]]:
     edge_map: Dict[Tuple[str, str], Edge] = {}
-    rebuilt_faces: List[Face] = []
+    face_data: List[tuple[Face, List[str]]] = []
     for face in faces:
         vertex_ids = list(face.vertex_ids)
         edge_ids: List[str] = []
@@ -2101,16 +2190,26 @@ def _rebuild_edges_from_faces(faces: Iterable[Face]) -> tuple[List[Edge], List[F
             else:
                 edge_map[key] = Edge(edge.id, edge.vertex_ids, edge.face_ids + (face.id,))
             edge_ids.append(edge_map[key].id)
+        face_data.append((face, edge_ids))
+
+    edges = list(edge_map.values())
+    rebuilt_faces: List[Face] = []
+    for face, edge_ids in face_data:
+        ordered = _face_vertex_cycle(face, edges)
+        if len(ordered) == len(face.vertex_ids) and set(ordered) == set(face.vertex_ids):
+            vertex_ids = tuple(ordered)
+        else:
+            vertex_ids = face.vertex_ids
         rebuilt_faces.append(
             Face(
                 id=face.id,
                 face_type=face.face_type,
-                vertex_ids=face.vertex_ids,
+                vertex_ids=vertex_ids,
                 edge_ids=tuple(edge_ids),
             )
         )
 
-    return list(edge_map.values()), rebuilt_faces
+    return edges, rebuilt_faces
 
 
 def _vertex_key(position: Tuple[float, float]) -> str:
@@ -2143,3 +2242,467 @@ def _get_edge_ids(
             edge_map[key] = Edge(edge.id, edge.vertex_ids, edge.face_ids + (face_id,))
         edge_ids.append(edge_map[key].id)
     return edge_ids
+
+
+def classify_edges(grid: PolyGrid, rings_map: dict) -> Dict[str, str]:
+    """Classify edges into pent-inner, ring-radial, ring-tangential, outer-boundary.
+
+    rings_map: mapping ring->face ids (as from ring_faces)
+    Returns edge_id -> class_name
+    """
+    face_to_ring: Dict[str, int] = {}
+    for r, fids in rings_map.items():
+        for fid in fids:
+            face_to_ring[fid] = r
+
+    edge_class: Dict[str, str] = {}
+    for edge in grid.edges.values():
+        if len(edge.face_ids) == 0:
+            edge_class[edge.id] = "outer-boundary"
+            continue
+        if any(grid.faces.get(fid) and grid.faces[fid].face_type == "pent" for fid in edge.face_ids):
+            edge_class[edge.id] = "pent-inner"
+            continue
+        # classify by ring adjacency
+        rings = [face_to_ring.get(fid, -1) for fid in edge.face_ids]
+        rings = [r for r in rings if r >= 0]
+        if not rings:
+            edge_class[edge.id] = "outer-boundary"
+            continue
+        if len(rings) == 1:
+            # edge between a face in a ring and boundary (outer)
+            edge_class[edge.id] = "ring-radial"
+        else:
+            if rings[0] == rings[1]:
+                edge_class[edge.id] = "ring-tangential"
+            else:
+                edge_class[edge.id] = "ring-radial"
+
+    return edge_class
+
+
+def compute_edge_target_ratios(grid: PolyGrid, rings_map: dict) -> Dict[str, float]:
+    """Compute per-edge target length ratios from ring length solver.
+
+    Returns map edge_id -> ratio (relative units; will be scaled to absolute lengths later).
+    """
+    edge_ratios: Dict[str, list[float]] = {eid: [] for eid in grid.edges}
+
+    for ring_idx, face_ids in rings_map.items():
+        if ring_idx == 0:
+            continue
+        if ring_idx == 1:
+            pattern = [1.0] * 6
+        else:
+            lengths_solution = solve_ring_hex_lengths(ring_idx, inner_edge_length=1.0)
+            inner = lengths_solution["inner"]
+            protrude = lengths_solution["protrude"]
+            outer = lengths_solution["outer"]
+            pattern = [inner, protrude, outer, outer, outer, protrude]
+
+        for fid in face_ids:
+            face = grid.faces.get(fid)
+            if face is None or len(face.vertex_ids) != 6:
+                continue
+            verts = list(face.vertex_ids)
+            # edges in order (v[i], v[i+1]) -> pattern[i]
+            for i in range(6):
+                a = verts[i]
+                b = verts[(i + 1) % 6]
+                key = tuple(sorted((a, b)))
+                for edge in grid.edges.values():
+                    if edge.vertex_ids == key and fid in edge.face_ids:
+                        edge_ratios[edge.id].append(pattern[i])
+                        break
+
+    # average ratios for edges with multiple contributing faces
+    averaged: Dict[str, float] = {}
+    for eid, vals in edge_ratios.items():
+        if not vals:
+            continue
+        averaged[eid] = sum(vals) / len(vals)
+
+    return averaged
+
+
+def _edge_length_relax_to_targets(
+    vertices: Dict[str, Vertex],
+    edges: Iterable[Edge],
+    edge_targets: Dict[str, float],
+    fixed_positions: Dict[str, tuple[float, float]],
+    iterations: int = 40,
+    strength: float = 0.3,
+    max_step: float = 0.5,
+) -> Dict[str, Vertex]:
+    """Iteratively relax vertex positions toward per-edge absolute target lengths.
+
+    edge_targets: absolute lengths for edges (edge.id -> length).
+    If edge_targets is empty, behaves like `_edge_length_relax_safe`.
+    """
+    fixed_set = set(fixed_positions.keys())
+    current = {vid: Vertex(vid, v.x, v.y) for vid, v in vertices.items()}
+
+    for _ in range(iterations):
+        deltas: Dict[str, list[float]] = {vid: [0.0, 0.0, 0.0] for vid in current}
+        for edge in edges:
+            a, b = edge.vertex_ids
+            va = current[a]
+            vb = current[b]
+            dx = vb.x - va.x
+            dy = vb.y - va.y
+            dist = math.hypot(dx, dy) or 1.0
+            target = edge_targets.get(edge.id)
+            if target is None:
+                continue
+            diff = (dist - target) / dist
+            ux = dx * diff
+            uy = dy * diff
+            deltas[a][0] += ux
+            deltas[a][1] += uy
+            deltas[a][2] += 1.0
+            deltas[b][0] -= ux
+            deltas[b][1] -= uy
+            deltas[b][2] += 1.0
+
+        next_state: Dict[str, Vertex] = {}
+        for vid, vertex in current.items():
+            if vid in fixed_set:
+                x, y = fixed_positions[vid]
+                next_state[vid] = Vertex(vid, x, y)
+                continue
+            total_x, total_y, count = deltas[vid]
+            if count == 0:
+                next_state[vid] = vertex
+                continue
+            step_x = strength * (total_x / count)
+            step_y = strength * (total_y / count)
+            step_len = math.hypot(step_x, step_y)
+            if step_len > max_step:
+                scale = max_step / step_len
+                step_x *= scale
+                step_y *= scale
+            next_state[vid] = Vertex(vid, vertex.x - step_x, vertex.y - step_y)
+
+        current = next_state
+
+    return current
+
+
+def optimise_positions_to_edge_targets(
+    grid: PolyGrid,
+    initial_positions: Dict[str, Vertex],
+    edge_ratio_targets: Dict[str, float],
+    fixed_positions: Dict[str, tuple[float, float]],
+    iterations: int = 40,
+) -> Dict[str, Vertex]:
+    """Scale ratio targets to absolute lengths using current geometry, then relax.
+
+    Returns new vertex dict.
+    """
+    current_lengths = {}
+    ratios = []
+    lengths = []
+    for edge in grid.edges.values():
+        a, b = edge.vertex_ids
+        va = initial_positions[a]
+        vb = initial_positions[b]
+        dist = math.hypot(vb.x - va.x, vb.y - va.y)
+        if edge.id in edge_ratio_targets:
+            ratios.append(edge_ratio_targets[edge.id])
+            lengths.append(dist)
+            current_lengths[edge.id] = dist
+
+    if not ratios:
+        return initial_positions
+
+    mean_ratio = sum(ratios) / len(ratios)
+    mean_length = sum(lengths) / len(lengths)
+    scale = mean_length / mean_ratio if mean_ratio > 0 else 1.0
+
+    edge_abs_targets: Dict[str, float] = {}
+    for eid, ratio in edge_ratio_targets.items():
+        edge_abs_targets[eid] = ratio * scale
+
+    return _edge_length_relax_to_targets(
+        initial_positions, grid.edges.values(), edge_abs_targets, fixed_positions, iterations=iterations
+    )
+
+
+def _global_optimize_positions(
+    grid: PolyGrid,
+    initial_positions: Dict[str, Vertex],
+    fixed_positions: Dict[str, tuple[float, float]],
+    edge_ratio_targets: Dict[str, float],
+    rings_map: dict,
+    iterations: int = 80,
+    angle_weight: float = 0.2,
+    area_weight: float = 1.0,
+    area_epsilon: float = 1e-3,
+    boundary_weight: float = 0.05,
+) -> Dict[str, Vertex]:
+    """Global least-squares optimisation for edge and angle targets with inversion barrier."""
+    if least_squares is None:
+        return optimise_positions_to_edge_targets(
+            grid, initial_positions, edge_ratio_targets, fixed_positions, iterations=iterations
+        )
+
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - optional dependency
+        return optimise_positions_to_edge_targets(
+            grid, initial_positions, edge_ratio_targets, fixed_positions, iterations=iterations
+        )
+
+    edge_abs_targets = _scale_edge_targets(grid, initial_positions, edge_ratio_targets)
+    angle_targets = _compute_angle_targets(grid, rings_map)
+
+    fixed_set = set(fixed_positions.keys())
+    movable = [vid for vid in grid.vertices.keys() if vid not in fixed_set]
+    boundary_ids = set(_boundary_vertex_ids(grid))
+    if 1 in rings_map:
+        angle_weight = max(angle_weight, 0.8)
+    if boundary_ids:
+        center = _positions_center(initial_positions)
+        boundary_radius = _mean_radius_from_positions(initial_positions, boundary_ids, center)
+    else:
+        center = (0.0, 0.0)
+        boundary_radius = 0.0
+
+    x0 = []
+    for vid in movable:
+        v = initial_positions[vid]
+        x0.extend([v.x, v.y])
+    x0 = np.array(x0, dtype=float)
+
+    def unpack_positions(x: np.ndarray) -> Dict[str, Vertex]:
+        pos = {vid: Vertex(vid, v.x, v.y) for vid, v in initial_positions.items()}
+        for i, vid in enumerate(movable):
+            pos[vid] = Vertex(vid, float(x[2 * i]), float(x[2 * i + 1]))
+        for vid, (fx, fy) in fixed_positions.items():
+            pos[vid] = Vertex(vid, fx, fy)
+        return pos
+
+    def residuals(x: np.ndarray) -> np.ndarray:
+        positions = unpack_positions(x)
+        res: list[float] = []
+
+        # edge length residuals
+        for edge in grid.edges.values():
+            target = edge_abs_targets.get(edge.id)
+            if target is None:
+                continue
+            a, b = edge.vertex_ids
+            va = positions[a]
+            vb = positions[b]
+            dist = math.hypot(vb.x - va.x, vb.y - va.y)
+            if target > 0:
+                res.append((dist - target) / target)
+
+        # angle residuals (ring-based targets)
+        for (face_id, vid), target_angle in angle_targets.items():
+            face = grid.faces.get(face_id)
+            if face is None:
+                continue
+            ordered = _face_vertex_cycle(face, grid.edges.values())
+            if len(ordered) != len(face.vertex_ids):
+                ordered = _ordered_face_vertices(positions, face)
+            if vid not in ordered:
+                continue
+            idx = ordered.index(vid)
+            prev_vid = ordered[(idx - 1) % len(ordered)]
+            next_vid = ordered[(idx + 1) % len(ordered)]
+            angle = _interior_angle(positions, prev_vid, vid, next_vid)
+            res.append((angle - target_angle) * angle_weight)
+
+        # inversion barrier (signed area)
+        for face in grid.faces.values():
+            area = _face_signed_area(positions, face, grid.edges.values())
+            if area is None:
+                continue
+            if area < area_epsilon:
+                res.append((area_epsilon - area) * area_weight)
+
+        # optional outer boundary regularization (radial)
+        if boundary_ids and boundary_radius > 0:
+            for vid in boundary_ids:
+                if vid in fixed_set:
+                    continue
+                v = positions[vid]
+                dist = math.hypot(v.x - center[0], v.y - center[1])
+                res.append((dist - boundary_radius) * boundary_weight)
+
+        return np.array(res, dtype=float)
+
+    result = least_squares(residuals, x0=x0, max_nfev=iterations)
+    return unpack_positions(result.x)
+
+
+def _scale_edge_targets(
+    grid: PolyGrid,
+    positions: Dict[str, Vertex],
+    edge_ratio_targets: Dict[str, float],
+) -> Dict[str, float]:
+    ratios = []
+    lengths = []
+    for edge in grid.edges.values():
+        if edge.id not in edge_ratio_targets:
+            continue
+        a, b = edge.vertex_ids
+        va = positions[a]
+        vb = positions[b]
+        dist = math.hypot(vb.x - va.x, vb.y - va.y)
+        ratios.append(edge_ratio_targets[edge.id])
+        lengths.append(dist)
+
+    if not ratios:
+        return {}
+    mean_ratio = sum(ratios) / len(ratios)
+    mean_length = sum(lengths) / len(lengths)
+    scale = mean_length / mean_ratio if mean_ratio > 0 else 1.0
+    return {eid: ratio * scale for eid, ratio in edge_ratio_targets.items()}
+
+
+def _compute_angle_targets(grid: PolyGrid, rings_map: dict) -> Dict[tuple[str, str], float]:
+    targets: Dict[tuple[str, str], float] = {}
+    for ring_idx, face_ids in rings_map.items():
+        if ring_idx == 0:
+            continue
+        spec = ring_angle_spec(ring_idx)
+        inner_angle = math.radians(spec.inner_angle_deg)
+        if ring_idx == 1:
+            outer_angle = math.radians(120.0)
+        else:
+            outer_angle = math.radians(spec.outer_angle_deg)
+        inner_vertices = set(_collect_face_vertices(grid, rings_map.get(ring_idx - 1, [])))
+        for fid in face_ids:
+            face = grid.faces.get(fid)
+            if face is None or len(face.vertex_ids) != 6:
+                continue
+            for vid in face.vertex_ids:
+                target = inner_angle if vid in inner_vertices else outer_angle
+                targets[(fid, vid)] = target
+
+    return targets
+
+
+def _interior_angle(vertices: Dict[str, Vertex], a: str, b: str, c: str) -> float:
+    va = vertices[a]
+    vb = vertices[b]
+    vc = vertices[c]
+    v1x = va.x - vb.x
+    v1y = va.y - vb.y
+    v2x = vc.x - vb.x
+    v2y = vc.y - vb.y
+    denom = (math.hypot(v1x, v1y) * math.hypot(v2x, v2y)) or 1.0
+    dot = (v1x * v2x + v1y * v2y) / denom
+    dot = max(-1.0, min(1.0, dot))
+    angle = math.acos(dot)
+    return max(angle, math.pi - angle)
+
+
+def _face_signed_area(
+    positions: Dict[str, Vertex],
+    face: Face,
+    edges: Iterable[Edge],
+) -> float | None:
+    ordered = _face_vertex_cycle(face, edges)
+    if len(ordered) != len(face.vertex_ids):
+        ordered = _ordered_face_vertices(positions, face)
+    coords = [positions[vid] for vid in ordered]
+    if not coords or not all(v.has_position() for v in coords):
+        return None
+    area = 0.0
+    for i in range(len(coords)):
+        x1, y1 = coords[i].x, coords[i].y
+        x2, y2 = coords[(i + 1) % len(coords)].x, coords[(i + 1) % len(coords)].y
+        area += x1 * y2 - x2 * y1
+    return area / 2.0
+
+
+def _positions_center(positions: Dict[str, Vertex]) -> tuple[float, float]:
+    xs = [v.x for v in positions.values() if v.x is not None]
+    ys = [v.y for v in positions.values() if v.y is not None]
+    return (sum(xs) / len(xs), sum(ys) / len(ys)) if xs and ys else (0.0, 0.0)
+
+
+def _mean_radius_from_positions(
+    positions: Dict[str, Vertex],
+    vertex_ids: Iterable[str],
+    center: tuple[float, float],
+) -> float:
+    radii = []
+    for vid in vertex_ids:
+        v = positions.get(vid)
+        if v is None or v.x is None or v.y is None:
+            continue
+        radii.append(math.hypot(v.x - center[0], v.y - center[1]))
+    return sum(radii) / len(radii) if radii else 0.0
+
+
+def _fivefold_symmetry_snap(
+    grid: PolyGrid,
+    positions: Dict[str, Vertex],
+    ring_vertices: Iterable[str],
+) -> Dict[str, Vertex]:
+    """Snap ring vertices to fivefold symmetric angles around the center."""
+    pent_face = _find_pentagon_face(grid)
+    if pent_face is None:
+        return positions
+
+    ordered_pent = _face_vertex_cycle(pent_face, grid.edges.values())
+    if len(ordered_pent) != 5:
+        ordered_pent = _ordered_face_vertices(positions, pent_face)
+    if len(ordered_pent) != 5:
+        return positions
+
+    center = (
+        sum(positions[vid].x for vid in ordered_pent) / 5,
+        sum(positions[vid].y for vid in ordered_pent) / 5,
+    )
+
+    base_angle = math.atan2(
+        positions[ordered_pent[0]].y - center[1],
+        positions[ordered_pent[0]].x - center[0],
+    )
+    step = 2 * math.pi / 5
+
+    # group vertices into 5 sectors by angle and preserve relative ordering
+    sectors: Dict[int, list[tuple[str, float, float]]] = {i: [] for i in range(5)}
+    for vid in ring_vertices:
+        v = positions.get(vid)
+        if v is None or v.x is None or v.y is None:
+            continue
+        angle = math.atan2(v.y - center[1], v.x - center[0])
+        rel = (angle - base_angle) % (2 * math.pi)
+        idx = int(math.floor(rel / step)) % 5
+        rel_angle = rel - idx * step
+        radius = math.hypot(v.x - center[0], v.y - center[1])
+        sectors[idx].append((vid, rel_angle, radius))
+
+    counts = {idx: len(vals) for idx, vals in sectors.items() if vals}
+    if counts and len(set(counts.values())) != 1:
+        return positions
+
+    # sort within each sector by relative angle
+    for idx in sectors:
+        sectors[idx].sort(key=lambda item: item[1])
+
+    updated = dict(positions)
+    if counts:
+        per_sector = next(iter(counts.values()))
+        template = sectors[0]
+        if len(template) != per_sector:
+            return positions
+        for j in range(per_sector):
+            rel_angle = template[j][1]
+            radius = template[j][2]
+            for idx in range(5):
+                vid = sectors[idx][j][0]
+                angle = base_angle + idx * step + rel_angle
+                updated[vid] = Vertex(
+                    vid,
+                    center[0] + radius * math.cos(angle),
+                    center[1] + radius * math.sin(angle),
+                )
+
+    return updated

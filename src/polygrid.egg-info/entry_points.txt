@@ -1,2 +1,0 @@
-[console_scripts]
-polygrid = polygrid.cli:main

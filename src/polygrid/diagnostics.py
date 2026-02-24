@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List
 from .models import Edge, Face, Vertex
 from .polygrid import PolyGrid
 from .algorithms import build_face_adjacency, ring_faces
+from .angle_solver import ring_angle_spec
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,36 @@ class RingStats:
     pointy_lengths: list[float]
     inner_angles: list[float]
     pointy_angles: list[float]
+
+
+def min_face_signed_area(grid: PolyGrid) -> float:
+    areas = []
+    for face in grid.faces.values():
+        area = _face_signed_area(grid, face)
+        if area is not None:
+            areas.append(area)
+    return min(areas) if areas else 0.0
+
+
+def has_edge_crossings(grid: PolyGrid) -> bool:
+    edges = list(grid.edges.values())
+    for i, edge_a in enumerate(edges):
+        a1, a2 = edge_a.vertex_ids
+        va1 = grid.vertices[a1]
+        va2 = grid.vertices[a2]
+        if not (va1.has_position() and va2.has_position()):
+            continue
+        for edge_b in edges[i + 1 :]:
+            b1, b2 = edge_b.vertex_ids
+            if len({a1, a2, b1, b2}) < 4:
+                continue
+            vb1 = grid.vertices[b1]
+            vb2 = grid.vertices[b2]
+            if not (vb1.has_position() and vb2.has_position()):
+                continue
+            if _segments_intersect((va1.x, va1.y), (va2.x, va2.y), (vb1.x, vb1.y), (vb2.x, vb2.y)):
+                return True
+    return False
 
 
 def ring_diagnostics(grid: PolyGrid, max_ring: int) -> Dict[int, RingStats]:
@@ -117,6 +148,62 @@ def summarize_ring_stats(stats: RingStats) -> Dict[str, float]:
     }
 
 
+def ring_quality_gates(
+    stats: RingStats,
+    angle_tol_deg: float = 3.0,
+    protrude_rel_tol: float = 0.15,
+) -> Dict[str, float | bool]:
+    """Return per-ring quality gate metrics and pass/fail flags.
+
+    Compares inner/pointy angles to ring specs and evaluates protruding length variance.
+    """
+    spec = ring_angle_spec(stats.ring)
+    inner_target = spec.inner_angle_deg
+    pointy_target = spec.outer_angle_deg
+
+    inner_mean = _mean(stats.inner_angles)
+    pointy_mean = _mean(stats.pointy_angles)
+    protrude_mean = _mean(stats.protruding_lengths)
+    protrude_range = _max(stats.protruding_lengths) - _min(stats.protruding_lengths)
+
+    inner_ok = abs(inner_mean - inner_target) <= angle_tol_deg
+    pointy_ok = abs(pointy_mean - pointy_target) <= angle_tol_deg
+    protrude_ok = (
+        protrude_mean == 0.0
+        or (protrude_range / protrude_mean) <= protrude_rel_tol
+    )
+
+    return {
+        "inner_angle_mean": inner_mean,
+    "inner_angle_target": inner_target,
+        "inner_angle_ok": inner_ok,
+        "pointy_angle_mean": pointy_mean,
+    "pointy_angle_target": pointy_target,
+        "pointy_angle_ok": pointy_ok,
+        "protrude_rel_range": (protrude_range / protrude_mean) if protrude_mean else 0.0,
+        "protrude_ok": protrude_ok,
+        "passed": inner_ok and pointy_ok and protrude_ok,
+    }
+
+
+def diagnostics_report(grid: PolyGrid, max_ring: int) -> Dict[str, object]:
+    """Build a structured diagnostics report suitable for JSON export."""
+    rings = ring_diagnostics(grid, max_ring=max_ring)
+    ring_payload = {}
+    for ring in sorted(rings.keys()):
+        stats = rings[ring]
+        ring_payload[str(ring)] = {
+            "summary": summarize_ring_stats(stats),
+            "quality": ring_quality_gates(stats),
+        }
+
+    return {
+        "min_face_signed_area": min_face_signed_area(grid),
+        "edge_crossings": has_edge_crossings(grid),
+        "rings": ring_payload,
+    }
+
+
 def _ordered_face_vertices(vertices: Dict[str, Vertex], face: Face) -> List[str]:
     coords = [vertices[vid] for vid in face.vertex_ids]
     if not coords or not all(v.has_position() for v in coords):
@@ -143,6 +230,9 @@ def _face_vertex_cycle(face: Face, edges: Iterable[Edge]) -> List[str]:
     if not neighbors:
         return list(face.vertex_ids)
 
+    if any(len(nbrs) != 2 for nbrs in neighbors.values()):
+        return list(face.vertex_ids)
+
     start = sorted(neighbors.keys())[0]
     cycle = [start]
     prev = None
@@ -154,12 +244,61 @@ def _face_vertex_cycle(face: Face, edges: Iterable[Edge]) -> List[str]:
         nxt = nbrs[0] if nbrs[0] != prev else (nbrs[1] if len(nbrs) > 1 else None)
         if nxt is None or nxt == start:
             break
+        if nxt in cycle:
+            break
         cycle.append(nxt)
         prev, current = current, nxt
         if len(cycle) > len(neighbors) + 1:
             break
 
     return cycle
+
+
+def _face_signed_area(grid: PolyGrid, face: Face) -> float | None:
+    ordered = _face_vertex_cycle(face, grid.edges.values())
+    if len(ordered) != len(face.vertex_ids):
+        ordered = _ordered_face_vertices(grid.vertices, face)
+    coords = [grid.vertices[vid] for vid in ordered]
+    if not coords or not all(v.has_position() for v in coords):
+        return None
+    area = 0.0
+    for i in range(len(coords)):
+        x1, y1 = coords[i].x, coords[i].y
+        x2, y2 = coords[(i + 1) % len(coords)].x, coords[(i + 1) % len(coords)].y
+        area += x1 * y2 - x2 * y1
+    return area / 2.0
+
+
+def _segments_intersect(
+    a1: tuple[float, float],
+    a2: tuple[float, float],
+    b1: tuple[float, float],
+    b2: tuple[float, float],
+) -> bool:
+    def orient(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    def on_segment(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> bool:
+        return (
+            min(p[0], r[0]) <= q[0] <= max(p[0], r[0])
+            and min(p[1], r[1]) <= q[1] <= max(p[1], r[1])
+        )
+
+    o1 = orient(a1, a2, b1)
+    o2 = orient(a1, a2, b2)
+    o3 = orient(b1, b2, a1)
+    o4 = orient(b1, b2, a2)
+
+    if o1 == 0 and on_segment(a1, b1, a2):
+        return True
+    if o2 == 0 and on_segment(a1, b2, a2):
+        return True
+    if o3 == 0 and on_segment(b1, a1, b2):
+        return True
+    if o4 == 0 and on_segment(b1, a2, b2):
+        return True
+
+    return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
 
 
 def _angle_at_vertex(vertices: Dict[str, Vertex], a: str, b: str, c: str) -> float:

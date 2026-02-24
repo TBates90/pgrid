@@ -30,12 +30,17 @@ See `schemas/polygrid.schema.json` for the formal contract. At minimum:
 - Build a pure hex grid (topology + positions):
   - `polygrid build-hex --rings 2 --out hex.json`
   - `polygrid build-hex --rings 2 --out hex.json --render-out hex.png`
-- Build a pentagon-centered grid (triangulation + dual + Tutte embed):
+- Build a pentagon-centered grid (triangulation + dual + Tutte + optimise):
   - `polygrid build-pent --rings 2 --out pent.json`
   - `polygrid build-pent --rings 2 --out pent.json --render-out pent.png`
   - `polygrid build-pent --rings 2 --out pent.json --embed tutte`
+  - `polygrid build-pent --rings 2 --out pent.json --embed tutte+optimise`
+  - `polygrid build-pent --rings 2 --out pent.json --embed angle` (experimental)
   - `polygrid build-pent --rings 2 --out pent.json --embed none`
   - `polygrid build-pent --rings 2 --out pent.json --render-out pent.png --pent-axes`
+  - `polygrid build-pent --rings 2 --out pent.json --diagnose`
+  - `polygrid build-pent --rings 2 --out pent.json --diagnose --diagnose-json pent_diagnostics.json`
+  - `polygrid build-pent --rings 2 --out pent.json --strict`
 
 ## Project layout
 ```
@@ -51,7 +56,9 @@ examples/
   minimal_grid.json
 ```
 
+## Golden command
+- `polygrid build-pent-all --embed tutte+optimise --dir exports --diagnose`
+
 ## Next steps
-- Implement pentagon-centered and pure hex grid generators
-- Add embedder strategies for geometry relaxation
+- Add JSON metrics export for diagnostics and CI gates
 - Expand algorithms library (ring extraction, region selection, shortest path)

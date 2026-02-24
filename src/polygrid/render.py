@@ -31,13 +31,13 @@ def render_png(
             "matplotlib is required for rendering. Install with `pip install matplotlib`."
         ) from exc
 
-    vertices = list(grid.vertices.values())
+    vertices = sorted(grid.vertices.values(), key=lambda v: v.id)
     if not _all_vertices_positioned(vertices):
         raise ValueError("All vertices must have positions for rendering.")
 
     fig, ax = plt.subplots()
 
-    for face in grid.faces.values():
+    for face in sorted(grid.faces.values(), key=lambda f: f.id):
         _draw_face(
             ax,
             face,

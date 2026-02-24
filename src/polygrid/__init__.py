@@ -5,11 +5,24 @@ from .polygrid import PolyGrid
 from .algorithms import build_face_adjacency, ring_faces
 from .io import load_json, save_json
 from .render import render_png
-from .builders import build_pure_hex_grid, build_pentagon_centered_grid, hex_face_count
+from .builders import (
+    build_pure_hex_grid,
+    build_pentagon_centered_grid,
+    hex_face_count,
+    validate_pentagon_topology,
+)
 from .embedding import tutte_embedding
+from .embedding_strategies import apply_embedding
 from .composite import CompositeGrid, join_grids, split_composite
 from .angle_solver import ring_angle_spec, solve_ring_hex_lengths, solve_ring_hex_outer_length
-from .diagnostics import ring_diagnostics, summarize_ring_stats
+from .diagnostics import (
+    ring_diagnostics,
+    summarize_ring_stats,
+    min_face_signed_area,
+    has_edge_crossings,
+    ring_quality_gates,
+    diagnostics_report,
+)
 
 __all__ = [
     "Vertex",
@@ -24,7 +37,9 @@ __all__ = [
     "build_pure_hex_grid",
     "build_pentagon_centered_grid",
     "hex_face_count",
+    "validate_pentagon_topology",
     "tutte_embedding",
+    "apply_embedding",
     "CompositeGrid",
     "join_grids",
     "split_composite",
@@ -33,4 +48,8 @@ __all__ = [
     "solve_ring_hex_outer_length",
     "ring_diagnostics",
     "summarize_ring_stats",
+    "min_face_signed_area",
+    "has_edge_crossings",
+    "ring_quality_gates",
+    "diagnostics_report",
 ]

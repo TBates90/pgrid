@@ -45,6 +45,12 @@ class PolyGrid:
                     errors.append(f"Face {face.id} references missing edge {edge_id}")
             if strict:
                 errors.extend(face.validate_polygon())
+                for edge_id in face.edge_ids:
+                    edge = self.edges.get(edge_id)
+                    if edge and face.id not in edge.face_ids:
+                        errors.append(
+                            f"Face {face.id} edge {edge_id} does not reference face in edge.face_ids"
+                        )
 
         return errors
 
@@ -62,9 +68,9 @@ class PolyGrid:
     def to_dict(self, include_neighbors: bool = True) -> dict:
         adjacency = self.compute_face_neighbors() if include_neighbors else {}
         faces_payload = []
-        for face in self.faces.values():
+        for face in sorted(self.faces.values(), key=lambda f: f.id):
             neighbors = (
-                list(face.neighbor_ids)
+                sorted(face.neighbor_ids)
                 if face.neighbor_ids
                 else adjacency.get(face.id, [])
             )
@@ -79,20 +85,21 @@ class PolyGrid:
             )
 
         vertices_payload = []
-        for vertex in self.vertices.values():
+        for vertex in sorted(self.vertices.values(), key=lambda v: v.id):
             payload = {"id": vertex.id}
             if vertex.has_position():
                 payload["position"] = {"x": vertex.x, "y": vertex.y}
             vertices_payload.append(payload)
 
-        edges_payload = [
-            {
-                "id": edge.id,
-                "vertices": list(edge.vertex_ids),
-                "faces": list(edge.face_ids),
-            }
-            for edge in self.edges.values()
-        ]
+        edges_payload = []
+        for edge in sorted(self.edges.values(), key=lambda e: e.id):
+            edges_payload.append(
+                {
+                    "id": edge.id,
+                    "vertices": list(edge.vertex_ids),
+                    "faces": list(edge.face_ids),
+                }
+            )
 
         data = {
             "version": self.VERSION,
@@ -139,7 +146,11 @@ class PolyGrid:
         return cls(vertices, edges, faces, payload.get("metadata", {}))
 
     def to_json(self, include_neighbors: bool = True, indent: int = 2) -> str:
-        return json.dumps(self.to_dict(include_neighbors=include_neighbors), indent=indent)
+        return json.dumps(
+            self.to_dict(include_neighbors=include_neighbors),
+            indent=indent,
+            sort_keys=True,
+        )
 
     @classmethod
     def from_json(cls, json_data: str) -> "PolyGrid":

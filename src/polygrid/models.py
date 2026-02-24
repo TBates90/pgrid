@@ -34,6 +34,12 @@ class Face:
 
     def validate_polygon(self) -> list[str]:
         errors: list[str] = []
+        if len(set(self.vertex_ids)) != self.vertex_count():
+            errors.append(f"Face {self.id} has repeated vertex ids")
+        if self.edge_ids and len(self.edge_ids) != self.vertex_count():
+            errors.append(
+                f"Face {self.id} has {len(self.edge_ids)} edges but {self.vertex_count()} vertices"
+            )
         if self.face_type == "pent" and self.vertex_count() != 5:
             errors.append(f"Face {self.id} is pent but has {self.vertex_count()} vertices")
         if self.face_type == "hex" and self.vertex_count() != 6:
