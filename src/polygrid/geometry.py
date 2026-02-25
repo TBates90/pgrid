@@ -76,11 +76,11 @@ def _face_signed_area(
     face: Face,
     edges: Iterable[Edge],
 ) -> float | None:
-    ordered = _face_vertex_cycle(face, edges)
-    if len(ordered) != len(face.vertex_ids):
-        ordered = _ordered_face_vertices(positions, face)
-    coords = [positions[vid] for vid in ordered]
-    if not coords or not all(v.has_position() for v in coords):
+    # Prefer face.vertex_ids directly — they are already in cycle order
+    # when produced by goldberg_topology + fix_face_winding.
+    ordered = list(face.vertex_ids)
+    coords = [positions.get(vid) for vid in ordered]
+    if not coords or not all(v is not None and v.has_position() for v in coords):
         return None
     area = 0.0
     for i in range(len(coords)):

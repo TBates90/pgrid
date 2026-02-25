@@ -1,0 +1,37 @@
+ring 1 diagnostics:
+  protruding_min: 0.5871
+  protruding_max: 0.7226
+  protruding_mean: 0.6718
+  pointy_min: 0.7646
+  pointy_max: 0.7845
+  pointy_mean: 0.7746
+  inner_angle_min: 125.1847
+  inner_angle_max: 126.8153
+  inner_angle_mean: 126.0000
+  pointy_angle_min: 111.2795
+  pointy_angle_max: 111.2795
+  pointy_angle_mean: 111.2795
+  quality gates:
+    inner_angle_ok: True (mean 126.00 vs target 126.00)
+    pointy_angle_ok: False (mean 111.28 vs target 117.00)
+    protrude_ok: False (rel_range 0.202)
+ring 2 diagnostics:
+  protruding_min: 0.6867
+  protruding_max: 0.8300
+  protruding_mean: 0.7656
+  pointy_min: 0.6701
+  pointy_max: 0.8300
+  pointy_mean: 0.7101
+  inner_angle_min: 117.5254
+  inner_angle_max: 129.4483
+  inner_angle_mean: 122.4000
+  pointy_angle_min: 98.2330
+  pointy_angle_max: 108.0000
+  pointy_angle_mean: 103.1165
+  quality gates:
+    inner_angle_ok: True (mean 122.40 vs target 121.50)
+    pointy_angle_ok: False (mean 103.12 vs target 119.25)
+    protrude_ok: False (rel_range 0.187)
+quality gates:
+  min_face_signed_area: 0.5930
+  edge_crossings: False

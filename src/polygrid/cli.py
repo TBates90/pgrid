@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_pent.add_argument("--render-out", dest="render_path")
     build_pent.add_argument(
         "--embed",
-        choices=["tutte", "tutte+optimise", "none", "angle"],
+        choices=["tutte", "tutte+optimise", "none"],
         default="tutte+optimise",
     )
     build_pent.add_argument("--pent-axes", action="store_true")
@@ -43,11 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     build_pent.add_argument("--strict", action="store_true")
     build_pent.add_argument("--diagnose-json", dest="diagnose_json")
 
-    build_pent_all = sub.add_parser("build-pent-all", help="Build pentagon-centered grids for rings 0-3")
+    build_pent_all = sub.add_parser("build-pent-all", help="Build pentagon-centered grids for rings 0-N")
     build_pent_all.add_argument("--dir", dest="output_dir", default="exports")
+    build_pent_all.add_argument("--max-rings", type=int, default=3, help="Maximum number of rings (default 3)")
     build_pent_all.add_argument(
         "--embed",
-        choices=["tutte", "tutte+optimise", "none", "angle"],
+        choices=["tutte", "tutte+optimise", "none"],
         default="tutte+optimise",
     )
     build_pent_all.add_argument("--pent-axes", action="store_true")
@@ -128,9 +129,6 @@ def main() -> None:
         from .builders import build_pentagon_centered_grid
         from .diagnostics import diagnostics_report
 
-        if args.embed == "angle":
-            print("Warning: --embed angle is experimental and may self-intersect for larger rings.")
-
         try:
             grid = build_pentagon_centered_grid(
                 args.rings,
@@ -186,12 +184,9 @@ def main() -> None:
         from .builders import build_pentagon_centered_grid
         from .diagnostics import diagnostics_report
 
-        if args.embed == "angle":
-            print("Warning: --embed angle is experimental and may self-intersect for larger rings.")
-
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        for rings in range(4):
+        for rings in range(args.max_rings + 1):
             json_path = output_dir / f"pent_r{rings}.json"
             png_path = output_dir / f"pent_r{rings}.png"
             grid = build_pentagon_centered_grid(
@@ -214,28 +209,31 @@ def main() -> None:
                 )
 
                 stats = ring_diagnostics(grid, max_ring=rings)
+                diag_lines: list[str] = []
                 for ring, ring_stats in sorted(stats.items()):
                     summary = summarize_ring_stats(ring_stats)
-                    print(f"ring {ring} diagnostics:")
+                    diag_lines.append(f"ring {ring} diagnostics:")
                     for key, value in summary.items():
-                        print(f"  {key}: {value:.4f}")
+                        diag_lines.append(f"  {key}: {value:.4f}")
                     quality = ring_quality_gates(ring_stats)
-                    print("  quality gates:")
-                    print(
+                    diag_lines.append("  quality gates:")
+                    diag_lines.append(
                         f"    inner_angle_ok: {quality['inner_angle_ok']} "
                         f"(mean {quality['inner_angle_mean']:.2f} vs target {quality['inner_angle_target']:.2f})"
                     )
-                    print(
+                    diag_lines.append(
                         f"    pointy_angle_ok: {quality['pointy_angle_ok']} "
                         f"(mean {quality['pointy_angle_mean']:.2f} vs target {quality['pointy_angle_target']:.2f})"
                     )
-                    print(
+                    diag_lines.append(
                         f"    protrude_ok: {quality['protrude_ok']} "
                         f"(rel_range {quality['protrude_rel_range']:.3f})"
                     )
-                print("quality gates:")
-                print(f"  min_face_signed_area: {min_face_signed_area(grid):.4f}")
-                print(f"  edge_crossings: {has_edge_crossings(grid)}")
+                diag_lines.append("quality gates:")
+                diag_lines.append(f"  min_face_signed_area: {min_face_signed_area(grid):.4f}")
+                diag_lines.append(f"  edge_crossings: {has_edge_crossings(grid)}")
+                diag_path = output_dir / f"pent_r{rings}_diagnostics.txt"
+                diag_path.write_text("\n".join(diag_lines) + "\n", encoding="utf-8")
             if args.diagnose_json:
                 report = diagnostics_report(grid, max_ring=rings)
                 diag_path = output_dir / f"pent_r{rings}_diagnostics.json"

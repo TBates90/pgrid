@@ -11,6 +11,14 @@ from .builders import (
     hex_face_count,
     validate_pentagon_topology,
 )
+from .goldberg_topology import (
+    build_goldberg_grid,
+    goldberg_topology,
+    goldberg_face_count,
+    goldberg_embed_tutte,
+    goldberg_optimise,
+    fix_face_winding,
+)
 from .embedding import tutte_embedding
 from .embedding_strategies import apply_embedding
 from .composite import CompositeGrid, join_grids, split_composite
@@ -36,6 +44,12 @@ __all__ = [
     "render_png",
     "build_pure_hex_grid",
     "build_pentagon_centered_grid",
+    "build_goldberg_grid",
+    "goldberg_topology",
+    "goldberg_face_count",
+    "goldberg_embed_tutte",
+    "goldberg_optimise",
+    "fix_face_winding",
     "hex_face_count",
     "validate_pentagon_topology",
     "tutte_embedding",
