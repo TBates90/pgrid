@@ -41,19 +41,19 @@ class TestGoldbergTopology:
 
     @pytest.mark.parametrize("rings", range(8))
     def test_face_count(self, rings):
-        verts, edges, faces = goldberg_topology(rings)
+        verts, edges, faces, corners = goldberg_topology(rings)
         expected = goldberg_face_count(rings)
         assert len(faces) == expected
 
     @pytest.mark.parametrize("rings", range(8))
     def test_pentagon_count(self, rings):
-        _, _, faces = goldberg_topology(rings)
+        _, _, faces, _ = goldberg_topology(rings)
         pentagons = [f for f in faces if f.face_type == "pent"]
         assert len(pentagons) == 1
 
     @pytest.mark.parametrize("rings", range(8))
     def test_face_vertex_counts(self, rings):
-        _, _, faces = goldberg_topology(rings)
+        _, _, faces, _ = goldberg_topology(rings)
         for face in faces:
             if face.face_type == "pent":
                 assert len(face.vertex_ids) == 5, f"{face.id} pent has {len(face.vertex_ids)} verts"
@@ -63,7 +63,7 @@ class TestGoldbergTopology:
     @pytest.mark.parametrize("rings", range(8))
     def test_interior_vertex_degree(self, rings):
         """All interior vertices must have degree 3."""
-        _, edges, _ = goldberg_topology(rings)
+        _, edges, _, _ = goldberg_topology(rings)
         # Interior = vertices incident to ≥2-face edges only (non-boundary)
         boundary_vids = set()
         for e in edges:
@@ -82,7 +82,7 @@ class TestGoldbergTopology:
     @pytest.mark.parametrize("rings", [1, 2, 3, 4])
     def test_boundary_vertex_count(self, rings):
         """Boundary should have 5*(2R+1) vertices."""
-        _, edges, _ = goldberg_topology(rings)
+        _, edges, _, _ = goldberg_topology(rings)
         boundary_vids = set()
         for e in edges:
             if len(e.face_ids) < 2:
@@ -91,11 +91,26 @@ class TestGoldbergTopology:
 
     def test_no_duplicate_vertex_ids_in_faces(self):
         for rings in range(6):
-            _, _, faces = goldberg_topology(rings)
+            _, _, faces, _ = goldberg_topology(rings)
             for face in faces:
                 assert len(set(face.vertex_ids)) == len(face.vertex_ids), (
                     f"rings={rings} {face.id}: duplicate vids"
                 )
+
+    @pytest.mark.parametrize("rings", [1, 2, 3, 5])
+    def test_corner_count(self, rings):
+        _, _, _, corners = goldberg_topology(rings)
+        assert len(corners) == 5
+
+    @pytest.mark.parametrize("rings", [1, 2, 3, 5])
+    def test_corners_on_boundary(self, rings):
+        _, edges, _, corners = goldberg_topology(rings)
+        boundary_vids = set()
+        for e in edges:
+            if len(e.face_ids) < 2:
+                boundary_vids.update(e.vertex_ids)
+        for c in corners:
+            assert c in boundary_vids
 
 
 class TestGoldbergEmbedding:

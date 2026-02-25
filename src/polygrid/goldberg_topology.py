@@ -39,10 +39,16 @@ def goldberg_topology(rings: int) -> Tuple[
     Dict[str, Vertex],
     List[Edge],
     List[Face],
+    List[str],
 ]:
     """Build the pure combinatorial graph for a Goldberg‑face grid.
 
-    Returns (dual_vertices, edges, faces).  Vertices have no positions.
+    Returns ``(dual_vertices, edges, faces, corner_ids)``.
+    Vertices have no positions.
+
+    *corner_ids* is a list of 5 vertex id strings identifying the
+    sector‑corner vertices on the boundary — these are the "tips"
+    of the pentagonal outline.
     """
     if rings < 0:
         raise ValueError("rings must be >= 0")
@@ -87,10 +93,15 @@ def goldberg_topology(rings: int) -> Tuple[
     #   = 2k+1 per sector, ×5 = 10k+5 per layer pair.
 
     triangles: List[Tuple[str, str, str]] = []
+    # Track the 5 sector-corner triangle indices (leading-down at outermost layer)
+    _corner_tri_indices: List[int] = []
 
     # Apex → layer 1
     for i in range(5):
         triangles.append((tv(0, 0), tv(1, i), tv(1, i + 1)))
+        # For rings==0 these ARE the boundary; for rings==1 they happen to be
+        # the same as the leading-down triangles at k=1 only if max_layer==1,
+        # but we handle that below.
 
     # Layer k → k+1
     for k in range(1, max_layer):
@@ -100,7 +111,12 @@ def goldberg_topology(rings: int) -> Tuple[
 
             # Leading "down" triangle at sector start
             # Connects inner[i0] to outer[o0-1] (last of prev sector) and outer[o0]
+            tidx_leading = len(triangles)
             triangles.append((tv(k, i0), tv(k + 1, o0 - 1), tv(k + 1, o0)))
+
+            # Tag the 5 leading-down triangles of the outermost layer pair
+            if k == max_layer - 1:
+                _corner_tri_indices.append(tidx_leading)
 
             # Zigzag within sector
             for j in range(k):
@@ -205,7 +221,16 @@ def goldberg_topology(rings: int) -> Tuple[
     # ── 4. Build edges from faces ───────────────────────────────────
     edges = _edges_from_faces(dual_faces)
 
-    return dual_vertices, edges, dual_faces
+    # ── 5. Record the 5 sector‑corner vertex ids ────────────────────
+    # For rings >= 1 these are the dual vertices of the leading-down
+    # triangles at the outermost layer pair.  For rings == 0 there is
+    # no boundary (single pentagon), so corners = pentagon vertices.
+    if rings == 0:
+        corner_vids = list(dual_faces[0].vertex_ids)
+    else:
+        corner_vids = [tri_to_dvid[ti] for ti in _corner_tri_indices]
+
+    return dual_vertices, edges, dual_faces, corner_vids
 
 
 def fix_face_winding(
@@ -358,22 +383,25 @@ def goldberg_optimise(
     edges: List[Edge],
     faces: List[Face],
     rings: int,
+    corner_ids: List[str] | None = None,
     iterations: int = 600,
 ) -> Dict[str, Vertex]:
     """Optimise vertex positions for edge-length and angle regularity.
 
     Uses scipy least_squares with fully vectorised numpy residuals.
     Penalises edge-length deviation, angle deviation, and area inversion.
-    Boundary and pentagon vertices are fixed.
+
+    Only the 5 sector-corner vertices (from *corner_ids*) and the
+    pentagon vertices are held fixed, so that boundary hexagons can
+    relax outward into their natural shape.
     """
     from scipy.optimize import least_squares
     import numpy as np
 
-    # Identify fixed vertices: boundary + pentagon
-    boundary_edges = [e for e in edges if len(e.face_ids) == 1]
+    # Identify fixed vertices: 5 corners + pentagon
     fixed_vids: set[str] = set()
-    for e in boundary_edges:
-        fixed_vids.update(e.vertex_ids)
+    if corner_ids:
+        fixed_vids.update(corner_ids)
     pent = next((f for f in faces if f.face_type == "pent"), None)
     if pent:
         fixed_vids.update(pent.vertex_ids)
@@ -530,7 +558,7 @@ def build_goldberg_grid(
 
     Returns a fully embedded, validated PolyGrid.
     """
-    verts, edges, faces = goldberg_topology(rings)
+    verts, edges, faces, corner_ids = goldberg_topology(rings)
 
     if rings == 0:
         # Simple regular pentagon
@@ -553,7 +581,10 @@ def build_goldberg_grid(
     edges = _edges_from_faces(faces)
 
     if optimise:
-        positioned = goldberg_optimise(positioned, edges, faces, rings)
+        positioned = goldberg_optimise(
+            positioned, edges, faces, rings,
+            corner_ids=corner_ids,
+        )
         faces = fix_face_winding(positioned, faces)
         edges = _edges_from_faces(faces)
 
