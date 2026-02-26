@@ -26,6 +26,7 @@ try:
         build_layout_edge_mesh,
         build_layout_tile_meshes,
     )
+    from models.objects.goldberg import generate_goldberg_tiles
 
     _HAS_MODELS = True
 except ImportError:  # pragma: no cover
@@ -215,6 +216,10 @@ def render_terrain_globe_opengl(
 
     Requires ``pyglet`` and an OpenGL 3.3+ capable display.
 
+    Uses a per-tile mesh approach identical to the ``models`` library's
+    ``goldberg_demo.py`` — each tile is a separate triangle-fan mesh
+    uploaded individually and drawn with its own model matrix.
+
     Parameters
     ----------
     payload : dict
@@ -236,15 +241,26 @@ def render_terrain_globe_opengl(
             "Install with: pip install pyglet"
         ) from exc
 
-    scene = prepare_terrain_scene(payload, radius=radius)
-    mesh = scene["mesh"]
-    edge_mesh = scene["edge_mesh"]
-
-    # Defer all OpenGL calls to the window's on_draw
+    from array import array as typed_array
+    from models.core import VertexAttribute
+    from models.objects.goldberg import generate_goldberg_tiles
     from models.rendering.opengl import SimpleMeshRenderer
     import numpy as np
     import math
     import ctypes
+
+    # ── Build per-tile colour map from payload ──────────────────────
+
+    tile_colour_map: Dict[int, Tuple[float, float, float]] = {}
+    for tile in payload["tiles"]:
+        # tile["id"] is like "t0", "t1", …
+        idx = int(tile["id"][1:])
+        tile_colour_map[idx] = tuple(tile["color"][:3])
+
+    meta = payload["metadata"]
+    frequency = meta["frequency"]
+
+    # ── Shaders (matching goldberg_demo pattern) ────────────────────
 
     _VERTEX_SHADER = """
 #version 330 core
@@ -253,14 +269,16 @@ layout(location = 1) in vec3 color;
 layout(location = 2) in vec2 uv;
 
 uniform mat4 u_mvp;
+uniform mat4 u_model;
 
 out vec3 v_color;
 out vec3 v_normal;
 
 void main() {
+    vec3 world_pos = (u_model * vec4(position, 1.0)).xyz;
     v_color = color;
-    v_normal = normalize(position);
-    gl_Position = u_mvp * vec4(position, 1.0);
+    v_normal = normalize(world_pos);
+    gl_Position = u_mvp * vec4(world_pos, 1.0);
 }
 """
 
@@ -287,20 +305,21 @@ void main() {
             [0, 0, -1, 0],
         ], dtype=np.float32)
 
-    def _look_at(eye, center, up):
-        f = np.array(center) - np.array(eye)
-        f = f / np.linalg.norm(f)
-        s = np.cross(f, np.array(up))
-        s = s / np.linalg.norm(s)
-        u = np.cross(s, f)
-        m = np.eye(4, dtype=np.float32)
-        m[0, :3] = s
-        m[1, :3] = u
-        m[2, :3] = -f
-        m[0, 3] = -np.dot(s, eye)
-        m[1, 3] = -np.dot(u, eye)
-        m[2, 3] = np.dot(f, eye)
-        return m
+    def _look_at(eye, target):
+        eye_v = np.array(eye, dtype=np.float32)
+        target_v = np.array(target, dtype=np.float32)
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        forward = target_v - eye_v
+        forward /= np.linalg.norm(forward)
+        right = np.cross(forward, up)
+        right /= np.linalg.norm(right)
+        up = np.cross(right, forward)
+        view = np.identity(4, dtype=np.float32)
+        view[0, :3] = right
+        view[1, :3] = up
+        view[2, :3] = -forward
+        view[:3, 3] = -eye_v @ view[:3, :3]
+        return view
 
     def _compile_shader(source, shader_type):
         shader = gl.glCreateShader(shader_type)
@@ -311,6 +330,15 @@ void main() {
         src_array = (ctypes.POINTER(ctypes.c_char) * 1)(src_ptr)
         gl.glShaderSource(shader, 1, src_array, ctypes.byref(length))
         gl.glCompileShader(shader)
+        # Check compilation status
+        status = gl.GLint()
+        gl.glGetShaderiv(shader, gl.GL_COMPILE_STATUS, ctypes.byref(status))
+        if not status.value:
+            info_log = ctypes.create_string_buffer(1024)
+            gl.glGetShaderInfoLog(shader, 1024, None, info_log)
+            raise RuntimeError(
+                f"Shader compilation failed: {info_log.value.decode('utf-8')}"
+            )
         return shader
 
     def _create_program():
@@ -320,55 +348,137 @@ void main() {
         gl.glAttachShader(prog, vs)
         gl.glAttachShader(prog, fs)
         gl.glLinkProgram(prog)
+        # Check link status
+        status = gl.GLint()
+        gl.glGetProgramiv(prog, gl.GL_LINK_STATUS, ctypes.byref(status))
+        if not status.value:
+            info_log = ctypes.create_string_buffer(1024)
+            gl.glGetProgramInfoLog(prog, 1024, None, info_log)
+            raise RuntimeError(
+                f"Shader link failed: {info_log.value.decode('utf-8')}"
+            )
         gl.glDeleteShader(vs)
         gl.glDeleteShader(fs)
         return prog
 
+    def _tile_world_mesh(tile, color):
+        """Build a per-tile triangle-fan mesh in world space (stride=32).
+
+        Matches the ``goldberg_demo._tile_world_mesh`` pattern exactly:
+        position(3) + color(3) + uv(2) = 8 floats × 4 bytes = 32.
+        """
+        positions = [tile.center]
+        positions.extend(tile.vertices)
+
+        colors = [color for _ in positions]
+        if tile.uv_vertices:
+            center_uv = (
+                sum(uv[0] for uv in tile.uv_vertices) / len(tile.uv_vertices),
+                sum(uv[1] for uv in tile.uv_vertices) / len(tile.uv_vertices),
+            )
+            uvs = [center_uv, *tile.uv_vertices]
+        else:
+            uvs = [(0.5, 0.5) for _ in positions]
+
+        vertex_data = typed_array("f")
+        for pos, col, uv in zip(positions, colors, uvs):
+            vertex_data.extend(pos)
+            vertex_data.extend(col)
+            vertex_data.extend(uv)
+
+        indices = []
+        vertex_count = len(positions)
+        for i in range(1, vertex_count):
+            next_idx = 1 if i == vertex_count - 1 else i + 1
+            indices.extend([0, i, next_idx])
+        index_data = typed_array("I", indices)
+
+        position_attr = VertexAttribute(
+            name="position", location=0, components=3, offset=0,
+        )
+        color_attr = VertexAttribute(
+            name="color", location=1, components=3, offset=3 * 4,
+        )
+        uv_attr = VertexAttribute(
+            name="uv", location=2, components=2, offset=6 * 4,
+        )
+        return ShapeMesh(
+            vertex_data=vertex_data,
+            index_data=index_data,
+            stride=8 * 4,
+            attributes=(position_attr, color_attr, uv_attr),
+        )
+
+    # ── Create window and OpenGL resources ──────────────────────────
+
     config = pyglet.gl.Config(
+        double_buffer=True, depth_size=24,
         major_version=3, minor_version=3,
-        forward_compatible=True,
-        sample_buffers=1, samples=4,
     )
     window = pyglet.window.Window(
         width=width, height=height,
-        caption=title, config=config,
+        caption=title, resizable=True, config=config,
     )
 
+    # Generate models tiles and build per-tile meshes
+    tiles = generate_goldberg_tiles(frequency=frequency, radius=radius)
     renderer = SimpleMeshRenderer()
-    mesh_handle = renderer.upload_mesh(mesh)
-    edge_handle = renderer.upload_mesh(edge_mesh) if edge_mesh else None
+
+    tile_handles = []
+    for tile in tiles:
+        color = tile_colour_map.get(tile.index, (0.5, 0.5, 0.5))
+        mesh = _tile_world_mesh(tile, color)
+        handle = renderer.upload_mesh(mesh, draw_mode=gl.GL_TRIANGLES)
+        tile_handles.append(handle)
 
     program = _create_program()
     mvp_loc = gl.glGetUniformLocation(program, b"u_mvp")
+    model_loc = gl.glGetUniformLocation(program, b"u_model")
 
+    identity_model = np.identity(4, dtype=np.float32)
     rotation = [0.0, 0.0]
-    zoom = [3.0]
+    zoom = [3.5]
 
     @window.event
     def on_draw():
         window.clear()
         gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glUseProgram(program)
+        gl.glClearColor(0.05, 0.05, 0.08, 1.0)
+        gl.glClear(int(gl.GL_COLOR_BUFFER_BIT) | int(gl.GL_DEPTH_BUFFER_BIT))
 
-        proj = _perspective(math.radians(45), width / height, 0.1, 100.0)
+        aspect = window.width / max(1, window.height)
+        proj = _perspective(math.radians(45), aspect, 0.1, 100.0)
         eye = np.array([
             zoom[0] * math.sin(rotation[0]) * math.cos(rotation[1]),
             zoom[0] * math.sin(rotation[1]),
             zoom[0] * math.cos(rotation[0]) * math.cos(rotation[1]),
-        ])
-        view = _look_at(eye, [0, 0, 0], [0, 1, 0])
+        ], dtype=np.float32)
+        view = _look_at(eye, (0.0, 0.0, 0.0))
         mvp = (proj @ view).astype(np.float32)
-        gl.glUniformMatrix4fv(mvp_loc, 1, gl.GL_TRUE, mvp.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
 
-        renderer.draw(mesh_handle)
-        if edge_handle:
-            renderer.draw(edge_handle)
+        gl.glUseProgram(program)
+        gl.glUniformMatrix4fv(
+            mvp_loc, 1, gl.GL_TRUE,
+            mvp.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+        gl.glUniformMatrix4fv(
+            model_loc, 1, gl.GL_TRUE,
+            identity_model.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+
+        for handle in tile_handles:
+            renderer.draw(handle)
+
+        gl.glUseProgram(0)
 
     @window.event
     def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
         rotation[0] += dx * 0.01
         rotation[1] += dy * 0.01
-        rotation[1] = max(-math.pi / 2 + 0.01, min(math.pi / 2 - 0.01, rotation[1]))
+        rotation[1] = max(
+            -math.pi / 2 + 0.01,
+            min(math.pi / 2 - 0.01, rotation[1]),
+        )
 
     @window.event
     def on_mouse_scroll(x, y, scroll_x, scroll_y):
