@@ -56,7 +56,7 @@ def _generate_payload(frequency: int, preset: str, seed: int):
         "mesa_plateau": MountainConfig(
             seed=seed, ridge_frequency=1.0, ridge_octaves=2,
             peak_elevation=0.7, base_elevation=0.3,
-            terrace_count=5,
+            terrace_steps=5,
         ),
     }
 
