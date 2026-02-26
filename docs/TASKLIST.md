@@ -419,6 +419,210 @@ Feed per-tile colours and textures into the `models` library's rendering pipelin
   - Scene preparation with/without edges
   - Edge mesh builder
 
+## Phase 10 — Sub-Tile Detail Rendering 🔲
+
+**Goal:** Replace the current flat-colour-per-tile rendering with high-resolution per-tile terrain using full polygrids inside each Goldberg tile (hex grids for hexagons, pentagon-centred grids for pentagons). The globe-scale terrain from Phase 8 provides the macro heightfield; Phase 10 adds intra-tile detail that brings us toward satellite-imagery realism (see reference image: organic ridges, river valleys, vegetation gradients, coastal water).
+
+### Design overview
+
+The approach has three layers:
+
+1. **Globe layer** (existing) — a `GlobeGrid` with one face per Goldberg tile. `generate_mountains()` / `generate_rivers()` produce a coarse elevation field (92 tiles at freq=3, 252 at freq=5). This layer controls the large-scale terrain character: which tiles are ocean, lowland, highland, mountain, etc.
+
+2. **Detail layer** (new) — each Goldberg tile is expanded into a local `PolyGrid` (hex grid for hex tiles, pentagon-centred grid for pent tiles) with many sub-faces. The parent tile's elevation, biome, and neighbours' elevations seed and constrain the detail terrain so that sub-tile elevation transitions are smooth across Goldberg tile boundaries.
+
+3. **Render layer** (new) — each detail grid is rendered to a small PNG texture using elevation-to-colour mapping, hillshade lighting, and river overlays. The textures are UV-mapped onto the 3D Goldberg tile surfaces in the OpenGL viewer, replacing the current flat vertex colours.
+
+Key constraint: **boundary continuity**. Adjacent Goldberg tiles share an edge. The detail grids inside those tiles must produce compatible elevation along their shared boundary — no visible seam where two textures meet. This is achieved by sharing elevation values at boundary faces and interpolating between parent tile elevations.
+
+### 10A — Detail Grid Infrastructure (`tile_detail.py`) 🔲
+
+Refactor and extend `detail_grid.py` into a production-ready system for building and managing detail grids across all globe tiles.
+
+- [ ] **10A.1 — `TileDetailSpec` dataclass** — configuration for detail grid generation:
+  - `detail_rings` (int, default 4) — ring count for sub-tile grids. Controls resolution: a hex grid with 4 rings has 61 sub-faces per tile; with 6 rings it has 127.
+  - `noise_frequency` (float, default 6.0) — spatial frequency of intra-tile noise
+  - `noise_octaves` (int, default 5) — detail noise octaves
+  - `amplitude` (float, default 0.12) — how much local noise varies from the parent elevation
+  - `base_weight` (float, default 0.8) — parent elevation dominance (0–1)
+  - `boundary_smoothing` (int, default 2) — smoothing passes at tile boundaries
+  - `seed_offset` (int, default 0) — added to parent seed for per-tile variation
+
+- [ ] **10A.2 — `build_all_detail_grids(globe_grid, spec)` → `Dict[str, PolyGrid]`** — build a detail grid for every globe tile in one call. Returns `{face_id: detail_grid}`. Each detail grid's metadata stores `parent_face_id`, `parent_face_type`, `parent_elevation`.
+
+- [ ] **10A.3 — `DetailGridCollection` container** — manages the full set of detail grids:
+  - `.grids` — dict of `{face_id: PolyGrid}`
+  - `.stores` — dict of `{face_id: TileDataStore}`
+  - `.get(face_id)` → `(PolyGrid, TileDataStore)`
+  - `.total_face_count` — sum of all sub-faces across all tiles
+  - `.generate_all_terrain(globe_grid, globe_store, spec)` — populate elevation for every detail grid
+  - `.summary()` → human-readable stats string
+
+- [ ] **10A.4 — Tests:**
+  - `build_all_detail_grids` produces one grid per globe tile
+  - Hex tiles get hex grids, pent tiles get pent grids
+  - Correct sub-face counts for the given ring count
+  - `DetailGridCollection` stores and retrieves grids correctly
+  - Total face count matches sum of `detail_face_count` per tile type
+
+### 10B — Boundary-Aware Detail Terrain (`detail_terrain.py`) 🔲
+
+The critical piece: generate intra-tile terrain that is continuous across Goldberg tile boundaries. Without this, each tile's texture would have hard seam lines where it meets its neighbours.
+
+- [ ] **10B.1 — `compute_boundary_elevations(globe_grid, globe_store)` → `Dict[str, Dict[int, float]]`** — for each globe tile, compute the elevation that each of its edges should have at the boundary. This is the average of the parent tile's elevation and each neighbour's elevation along that shared edge. Returns `{face_id: {edge_index: boundary_elevation}}`.
+
+- [ ] **10B.2 — `classify_detail_faces(detail_grid, boundary_depth)` → `Dict[str, str]`** — for each face in a detail grid, classify it as `"interior"`, `"boundary"`, or `"corner"`. Boundary faces are those within `boundary_depth` rings of the grid edge. Corner faces are at vertices shared by 3+ Goldberg tiles.
+
+- [ ] **10B.3 — `generate_detail_terrain_bounded(detail_grid, parent_elevation, neighbor_elevations, spec)` → `TileDataStore`** — enhanced version of `generate_detail_terrain` that:
+  1. Assigns parent elevation as the base for interior faces
+  2. Interpolates toward neighbour elevations for boundary faces (lerp based on distance from edge)
+  3. Adds high-frequency noise on top (fbm, domain-warped for organic shapes)
+  4. Smooths the boundary band to eliminate discontinuities
+  5. Applies the parent tile's terrain character (ridge direction, biome type) to influence the local noise parameters
+
+- [ ] **10B.4 — `generate_all_detail_terrain(collection, globe_grid, globe_store, spec)`** — populate terrain for every detail grid in a `DetailGridCollection`, using boundary-aware generation. This is the main entry point for terrain.
+
+- [ ] **10B.5 — Tests:**
+  - Boundary faces have elevations between parent and neighbour elevations
+  - Interior faces cluster around parent elevation
+  - Adjacent tile boundary faces have similar elevations (seam test: max difference < threshold)
+  - Determinism: same inputs → identical outputs
+  - No NaN or infinite values
+
+### 10C — Enhanced Colour Ramps & Biome Rendering (`detail_render.py`) 🔲
+
+The target image shows rich, multi-tonal terrain: not just elevation-banded colour, but vegetation gradients, exposed rock, water. This step enhances the colour system for satellite realism.
+
+- [ ] **10C.1 — `BiomeConfig` dataclass** — per-biome rendering parameters:
+  - `base_ramp` — colour ramp name (satellite, terrain, etc.)
+  - `vegetation_density` (float, 0–1) — how much green appears at low/mid elevations
+  - `rock_exposure` (float, 0–1) — how much bare rock shows at high elevations
+  - `snow_line` (float) — elevation above which snow appears
+  - `water_level` (float) — elevation below which water appears
+  - `moisture` (float, 0–1) — affects green vs brown balance
+
+- [ ] **10C.2 — `_RAMP_DETAIL_SATELLITE` colour ramp** — a richer satellite ramp with more control points, designed for sub-tile resolution:
+  - Deep water → shallow water → sandy coast → lowland green → lush vegetation → dry grass → highland brown → exposed rock → grey scree → snow line → snow
+  - At least 12 control points for smooth gradients
+
+- [ ] **10C.3 — `detail_elevation_to_colour(elevation, biome_config, *, hillshade, moisture_noise)` → `(r, g, b)`** — per-face colour function that combines:
+  - Base elevation colour from ramp
+  - Hillshade darkening (light direction, slope from neighbours)
+  - Vegetation noise overlay (patchy green at mid-elevations)
+  - Rock/scree noise at high elevations
+  - Snow line with fractal edge (not a hard cutoff)
+
+- [ ] **10C.4 — `render_detail_texture_enhanced(detail_grid, store, output_path, biome_config)` → Path** — render a detail grid texture using the enhanced colour system. Produces a higher-quality PNG than the existing `render_detail_texture`.
+
+- [ ] **10C.5 — Tests:**
+  - Colour output is valid RGB for all elevation values
+  - Hillshade darkens south-facing slopes
+  - Water colour appears below water_level
+  - Snow appears above snow_line
+  - Vegetation noise varies between faces (not uniform)
+
+### 10D — Texture Atlas & UV Mapping (`texture_pipeline.py`) 🔲
+
+Build the full texture pipeline: render all detail grids, assemble into a texture atlas, and map UVs.
+
+- [ ] **10D.1 — `build_detail_atlas(collection, biome_config, output_dir, *, tile_size)` → `(Path, Dict)`** — render every detail grid to a texture, then assemble into an atlas. Returns `(atlas_path, uv_layout)` where `uv_layout` maps `face_id → (u_min, v_min, u_max, v_max)` in atlas UV space.
+
+- [ ] **10D.2 — `compute_tile_uvs(tile, atlas_layout)` → `List[Tuple[float, float]]`** — for a `GoldbergTile`, compute per-vertex UV coordinates that map into the correct atlas slot. Uses the tile's `uv_vertices` (already provided by the models library as normalised 2D projections of the tile's 3D vertices onto its tangent plane).
+
+- [ ] **10D.3 — `build_textured_tile_mesh(tile, atlas_layout)` → `ShapeMesh`** — build a per-tile mesh with position(3) + color(3) + uv(2) where the UV coordinates point into the atlas. Colour is set to white `(1, 1, 1)` so the texture provides all colour information.
+
+- [ ] **10D.4 — `build_textured_globe_meshes(frequency, atlas_layout, *, radius)` → `List[ShapeMesh]`** — build textured meshes for all tiles. Each mesh's UVs are mapped to its slot in the atlas.
+
+- [ ] **10D.5 — Tests:**
+  - Atlas image exists and has correct dimensions
+  - UV layout covers all tiles
+  - UVs are within [0, 1] range
+  - Per-tile mesh has correct vertex count and stride
+
+### 10E — Textured OpenGL Renderer (`globe_renderer.py` extension) 🔲
+
+Extend the existing OpenGL renderer to support texture-mapped tiles instead of (or in addition to) flat vertex colours.
+
+- [ ] **10E.1 — Textured shader pair** — new vertex/fragment shaders that:
+  - Vertex shader: pass through UV coordinates, compute world position and normal
+  - Fragment shader: sample the atlas texture at the interpolated UV, apply directional lighting, output final colour
+  - Fallback: if no texture, use vertex colour (backward compatible with current renderer)
+
+- [ ] **10E.2 — `render_textured_globe_opengl(payload, atlas_path, uv_layout, ...)`** — new entry point:
+  1. Load the atlas image as an OpenGL texture
+  2. Build per-tile textured meshes with atlas UVs
+  3. Upload to `SimpleMeshRenderer`
+  4. Render with the textured shader, binding the atlas texture
+  5. Same mouse rotation/zoom interaction as current viewer
+
+- [ ] **10E.3 — `view_globe.py` updates** — add `--detail-rings N` and `--textured` flags:
+  - `--textured`: generate detail grids, render textures, build atlas, launch textured renderer
+  - `--detail-rings 4`: control sub-tile resolution (default: 4)
+  - Without `--textured`: same flat-colour rendering as before (backward compatible)
+
+- [ ] **10E.4 — Tests:**
+  - Textured shader compiles and links (unit test with mock context)
+  - Textured mesh has correct stride (position + color + uv = 32 bytes)
+  - Atlas texture loading produces a valid texture ID
+  - Renderer falls back to vertex colour when no atlas provided
+
+### 10F — Performance & Scale (`detail_perf.py`) 🔲
+
+At frequency=5 (252 tiles) with detail_rings=4 (61 sub-faces per hex tile), we have ~15,000 sub-faces total. At detail_rings=6 we hit ~32,000. This step ensures the pipeline scales.
+
+- [ ] **10F.1 — Parallel detail grid generation** — use `concurrent.futures.ProcessPoolExecutor` to generate detail terrains in parallel (each tile is independent except for boundary values, which are precomputed).
+
+- [ ] **10F.2 — Texture rendering optimisation** — batch matplotlib renders or switch to direct PIL/numpy rendering for detail textures (matplotlib is slow for hundreds of small renders).
+
+- [ ] **10F.3 — Atlas packing optimisation** — pack textures tightly (hexagons and pentagons have different aspect ratios). Consider hex-shaped texture regions rather than square tiles.
+
+- [ ] **10F.4 — Caching** — cache generated detail grids and textures to disk. Only regenerate when the parent terrain or spec changes. Keyed by `(face_id, spec_hash, parent_elevation)`.
+
+- [ ] **10F.5 — Benchmarks and profiling** — measure time for: detail grid construction, terrain generation, texture rendering, atlas assembly, OpenGL upload. Target: < 5 seconds for freq=3 with detail_rings=4; < 30 seconds for freq=5 with detail_rings=6.
+
+- [ ] **10F.6 — Tests:**
+  - Parallel generation produces identical results to serial
+  - Cached results match fresh generation
+  - Pipeline completes within timeout for freq=3, detail_rings=4
+
+### 10G — Demo & Integration 🔲
+
+End-to-end demos showing the full pipeline.
+
+- [ ] **10G.1 — `scripts/demo_detail_globe.py`** — CLI script:
+  - `python scripts/demo_detail_globe.py --frequency 4 --detail-rings 4 --preset mountain_range`
+  - Generates globe → mountains → detail grids → textures → atlas → 3D render
+  - Outputs: `exports/detail_atlas.png`, `exports/detail_globe.png`, individual tile textures in `exports/detail_tiles/`
+
+- [ ] **10G.2 — Side-by-side comparison** — render the same globe at multiple detail levels (flat colour, detail_rings=2, detail_rings=4, detail_rings=6) in a 2×2 panel for visual comparison.
+
+- [ ] **10G.3 — Higher frequency demo** — `--frequency 5 --detail-rings 4` producing a globe with 252 tiles × 61 sub-faces = ~15,000 visible terrain cells — enough to start seeing realistic terrain patterns.
+
+- [ ] **10G.4 — Documentation** — update `README.md` and `JSON_CONTRACT.md` with the detail grid system, atlas format, and viewer usage.
+
+### Summary — Phase 10 Implementation Order
+
+| Step | Module | Depends on | Delivers |
+|------|--------|-----------|----------|
+| 10A | `tile_detail.py` | detail_grid.py, globe.py | Detail grid infrastructure |
+| 10B | `detail_terrain.py` | 10A + heightmap + noise | Boundary-aware sub-tile terrain |
+| 10C | `detail_render.py` | 10B + terrain_render | Enhanced colour & texture rendering |
+| 10D | `texture_pipeline.py` | 10C + atlas | Full texture pipeline with UV mapping |
+| 10E | `globe_renderer.py` ext | 10D + OpenGL | Textured 3D rendering |
+| 10F | `detail_perf.py` | 10A–10E | Performance: parallelism, caching |
+| 10G | demos + docs | 10A–10F | End-to-end demos and documentation |
+
+### Design notes — Resolution scaling
+
+| Frequency | Tiles | detail_rings=4 | detail_rings=6 | detail_rings=8 |
+|-----------|-------|-----------------|-----------------|-----------------|
+| 3 | 92 | ~5,500 sub-faces | ~11,500 | ~20,000 |
+| 4 | 162 | ~9,800 | ~20,400 | ~35,500 |
+| 5 | 252 | ~15,300 | ~31,800 | ~55,300 |
+| 8 | 642 | ~39,000 | ~81,000 | ~141,000 |
+
+The target image's level of detail corresponds roughly to freq=5 with detail_rings=6–8. Starting at freq=3, detail_rings=4 gives a good first visual while keeping iteration fast (< 5 seconds).
+
 ---
 
 ## Ongoing — Code Quality & Refactoring
