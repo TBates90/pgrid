@@ -45,3 +45,22 @@ class Face:
         if self.face_type == "hex" and self.vertex_count() != 6:
             errors.append(f"Face {self.id} is hex but has {self.vertex_count()} vertices")
         return errors
+
+
+@dataclass(frozen=True)
+class MacroEdge:
+    """One side of the polygrid's outer polygon.
+
+    *id* is an integer 0 … N-1 (N = number of sides: 5 or 6).
+    *vertex_ids* is an ordered tuple of boundary vertex ids from
+    corner_start to corner_end inclusive.
+    *edge_ids* is an ordered tuple of micro-edge ids along this side.
+    *corner_start* / *corner_end* are the corner vertex ids shared
+    with adjacent macro-edges.
+    """
+
+    id: int
+    vertex_ids: tuple[str, ...]
+    edge_ids: tuple[str, ...]
+    corner_start: str
+    corner_end: str

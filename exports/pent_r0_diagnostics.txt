@@ -1,3 +1,0 @@
-quality gates:
-  min_face_signed_area: 1.7205
-  edge_crossings: False

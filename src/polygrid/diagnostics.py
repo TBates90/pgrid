@@ -1,3 +1,5 @@
+"""Diagnostics - per-ring length / angle statistics and quality gates."""
+
 from __future__ import annotations
 
 import math
@@ -7,9 +9,32 @@ from typing import Dict, Iterable, List
 from .models import Edge, Face, Vertex
 from .polygrid import PolyGrid
 from .algorithms import build_face_adjacency, ring_faces
-from .angle_solver import ring_angle_spec
-from .geometry import _face_signed_area, _face_vertex_cycle, _interior_angle, _ordered_face_vertices
-from .grid_utils import _collect_face_vertices, _edge_length, _find_pentagon_face, _grid_center
+from .geometry import (
+    face_signed_area,
+    face_vertex_cycle,
+    interior_angle,
+    ordered_face_vertices,
+    collect_face_vertices,
+    edge_length,
+    find_pentagon_face,
+    grid_center,
+)
+
+
+@dataclass(frozen=True)
+class RingAngleSpec:
+    ring: int
+    inner_angle_deg: float
+    outer_angle_deg: float
+
+
+def ring_angle_spec(ring: int) -> RingAngleSpec:
+    """Ideal interior angles for hexagons at ring *ring*."""
+    if ring <= 0:
+        return RingAngleSpec(ring=ring, inner_angle_deg=120.0, outer_angle_deg=120.0)
+    inner = 120.0 + 6.0 / ring
+    outer = 120.0 - 3.0 / ring
+    return RingAngleSpec(ring=ring, inner_angle_deg=inner, outer_angle_deg=outer)
 
 
 @dataclass(frozen=True)
@@ -24,7 +49,7 @@ class RingStats:
 def min_face_signed_area(grid: PolyGrid) -> float:
     areas = []
     for face in grid.faces.values():
-        area = _face_signed_area(grid.vertices, face, grid.edges.values())
+        area = face_signed_area(grid.vertices, face)
         if area is not None:
             areas.append(area)
     return min(areas) if areas else 0.0
@@ -38,7 +63,7 @@ def has_edge_crossings(grid: PolyGrid) -> bool:
         va2 = grid.vertices[a2]
         if not (va1.has_position() and va2.has_position()):
             continue
-        for edge_b in edges[i + 1 :]:
+        for edge_b in edges[i + 1:]:
             b1, b2 = edge_b.vertex_ids
             if len({a1, a2, b1, b2}) < 4:
                 continue
@@ -46,17 +71,17 @@ def has_edge_crossings(grid: PolyGrid) -> bool:
             vb2 = grid.vertices[b2]
             if not (vb1.has_position() and vb2.has_position()):
                 continue
-            if _segments_intersect((va1.x, va1.y), (va2.x, va2.y), (vb1.x, vb1.y), (vb2.x, vb2.y)):
+            if _segments_intersect(
+                (va1.x, va1.y), (va2.x, va2.y),
+                (vb1.x, vb1.y), (vb2.x, vb2.y),
+            ):
                 return True
     return False
 
 
 def ring_diagnostics(grid: PolyGrid, max_ring: int) -> Dict[int, RingStats]:
-    """Compute per-ring diagnostics for lengths and angles.
-
-    Angles are returned in degrees. Lists may be empty if a ring has no samples.
-    """
-    pent_face = _find_pentagon_face(grid)
+    """Compute per-ring diagnostics for lengths and angles."""
+    pent_face = find_pentagon_face(grid.faces)
     if pent_face is None:
         return {}
 
@@ -64,15 +89,14 @@ def ring_diagnostics(grid: PolyGrid, max_ring: int) -> Dict[int, RingStats]:
     rings = ring_faces(adjacency, pent_face.id, max_depth=max_ring)
     stats: Dict[int, RingStats] = {}
 
-    center = _grid_center(grid)
+    center = grid_center(grid.vertices)
     for ring_idx in range(1, max(rings.keys()) + 1):
         ring_face_ids = rings.get(ring_idx, [])
         if not ring_face_ids:
             continue
         ring_faces_list = [grid.faces[fid] for fid in ring_face_ids if fid in grid.faces]
-        ring_vertices = set(_collect_face_vertices(grid, ring_face_ids))
-        inner_vertices = set(_collect_face_vertices(grid, rings.get(ring_idx - 1, [])))
-        ring_outer = ring_vertices - inner_vertices
+        ring_vertices = set(collect_face_vertices(grid.faces, ring_face_ids))
+        inner_vertices = set(collect_face_vertices(grid.faces, rings.get(ring_idx - 1, [])))
         if not ring_vertices:
             continue
 
@@ -82,30 +106,30 @@ def ring_diagnostics(grid: PolyGrid, max_ring: int) -> Dict[int, RingStats]:
         for edge in grid.edges.values():
             a, b = edge.vertex_ids
             if (a in ring_vertices and b in inner_vertices) or (b in ring_vertices and a in inner_vertices):
-                inner = a if a in inner_vertices else b
-                outer = b if inner == a else a
-                if inner_neighbor_counts.get(outer, 0) != 1:
+                inner_v = a if a in inner_vertices else b
+                outer_v = b if inner_v == a else a
+                if inner_neighbor_counts.get(outer_v, 0) != 1:
                     continue
-                protruding_lengths.append(_edge_length(grid.vertices, outer, inner))
+                protruding_lengths.append(edge_length(grid.vertices, outer_v, inner_v))
 
         pointy_lengths: list[float] = []
         inner_angles: list[float] = []
         pointy_angles: list[float] = []
+        ring_outer = ring_vertices - inner_vertices
+
         for face in ring_faces_list:
-            ordered = _face_vertex_cycle(face, grid.edges.values())
+            ordered = face_vertex_cycle(face, grid.edges.values())
             if len(ordered) != len(face.vertex_ids):
-                ordered = _ordered_face_vertices(grid.vertices, face)
+                ordered = ordered_face_vertices(grid.vertices, face)
             if not ordered:
                 continue
 
-            # Inner angles live on the inner-ring vertices of this face.
             inner_idxs = [idx for idx, vid in enumerate(ordered) if vid in inner_vertices]
             for idx in inner_idxs:
                 prev_vid = ordered[(idx - 1) % len(ordered)]
                 next_vid = ordered[(idx + 1) % len(ordered)]
-                inner_angles.append(_interior_angle(grid.vertices, prev_vid, ordered[idx], next_vid))
+                inner_angles.append(interior_angle(grid.vertices, prev_vid, ordered[idx], next_vid))
 
-            # Pointy vertex is the outermost vertex among this face's ring vertices.
             candidates = [vid for vid in ordered if vid in ring_outer]
             if candidates:
                 pointy = max(
@@ -118,9 +142,9 @@ def ring_diagnostics(grid: PolyGrid, max_ring: int) -> Dict[int, RingStats]:
                 idx = ordered.index(pointy)
                 prev_vid = ordered[(idx - 1) % len(ordered)]
                 next_vid = ordered[(idx + 1) % len(ordered)]
-                pointy_lengths.append(_edge_length(grid.vertices, pointy, prev_vid))
-                pointy_lengths.append(_edge_length(grid.vertices, pointy, next_vid))
-                pointy_angles.append(_interior_angle(grid.vertices, prev_vid, pointy, next_vid))
+                pointy_lengths.append(edge_length(grid.vertices, pointy, prev_vid))
+                pointy_lengths.append(edge_length(grid.vertices, pointy, next_vid))
+                pointy_angles.append(interior_angle(grid.vertices, prev_vid, pointy, next_vid))
 
         stats[ring_idx] = RingStats(
             ring=ring_idx,
@@ -155,10 +179,6 @@ def ring_quality_gates(
     angle_tol_deg: float = 3.0,
     protrude_rel_tol: float = 0.15,
 ) -> Dict[str, float | bool]:
-    """Return per-ring quality gate metrics and pass/fail flags.
-
-    Compares inner/pointy angles to ring specs and evaluates protruding length variance.
-    """
     spec = ring_angle_spec(stats.ring)
     inner_target = spec.inner_angle_deg
     pointy_target = spec.outer_angle_deg
@@ -177,10 +197,10 @@ def ring_quality_gates(
 
     return {
         "inner_angle_mean": inner_mean,
-    "inner_angle_target": inner_target,
+        "inner_angle_target": inner_target,
         "inner_angle_ok": inner_ok,
         "pointy_angle_mean": pointy_mean,
-    "pointy_angle_target": pointy_target,
+        "pointy_angle_target": pointy_target,
         "pointy_angle_ok": pointy_ok,
         "protrude_rel_range": (protrude_range / protrude_mean) if protrude_mean else 0.0,
         "protrude_ok": protrude_ok,
@@ -189,16 +209,14 @@ def ring_quality_gates(
 
 
 def diagnostics_report(grid: PolyGrid, max_ring: int) -> Dict[str, object]:
-    """Build a structured diagnostics report suitable for JSON export."""
     rings = ring_diagnostics(grid, max_ring=max_ring)
     ring_payload = {}
     for ring in sorted(rings.keys()):
-        stats = rings[ring]
+        s = rings[ring]
         ring_payload[str(ring)] = {
-            "summary": summarize_ring_stats(stats),
-            "quality": ring_quality_gates(stats),
+            "summary": summarize_ring_stats(s),
+            "quality": ring_quality_gates(s),
         }
-
     return {
         "min_face_signed_area": min_face_signed_area(grid),
         "edge_crossings": has_edge_crossings(grid),
@@ -206,16 +224,11 @@ def diagnostics_report(grid: PolyGrid, max_ring: int) -> Dict[str, object]:
     }
 
 
-def _segments_intersect(
-    a1: tuple[float, float],
-    a2: tuple[float, float],
-    b1: tuple[float, float],
-    b2: tuple[float, float],
-) -> bool:
-    def orient(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> float:
+def _segments_intersect(a1, a2, b1, b2) -> bool:
+    def orient(p, q, r):
         return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
 
-    def on_segment(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> bool:
+    def on_segment(p, q, r):
         return (
             min(p[0], r[0]) <= q[0] <= max(p[0], r[0])
             and min(p[1], r[1]) <= q[1] <= max(p[1], r[1])
@@ -238,11 +251,7 @@ def _segments_intersect(
     return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
 
 
-def _inner_neighbor_counts(
-    edges: Iterable[Edge],
-    ring_vertices: Iterable[str],
-    inner_vertices: Iterable[str],
-) -> Dict[str, int]:
+def _inner_neighbor_counts(edges, ring_vertices, inner_vertices):
     ring_set = set(ring_vertices)
     inner_set = set(inner_vertices)
     counts = {vid: 0 for vid in ring_set}
@@ -255,13 +264,13 @@ def _inner_neighbor_counts(
     return counts
 
 
-def _mean(values: List[float]) -> float:
+def _mean(values):
     return sum(values) / len(values) if values else 0.0
 
 
-def _min(values: List[float]) -> float:
+def _min(values):
     return min(values) if values else 0.0
 
 
-def _max(values: List[float]) -> float:
+def _max(values):
     return max(values) if values else 0.0

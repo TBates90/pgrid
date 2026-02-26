@@ -1,6 +1,6 @@
-"""PolyGrid package."""
+"""PolyGrid - pentagon-hex grid toolkit."""
 
-from .models import Vertex, Edge, Face
+from .models import Vertex, Edge, Face, MacroEdge
 from .polygrid import PolyGrid
 from .algorithms import build_face_adjacency, ring_faces
 from .io import load_json, save_json
@@ -19,10 +19,17 @@ from .goldberg_topology import (
     goldberg_optimise,
     fix_face_winding,
 )
-from .embedding import tutte_embedding
-from .embedding_strategies import apply_embedding
-from .composite import CompositeGrid, join_grids, split_composite
-from .angle_solver import ring_angle_spec, solve_ring_hex_lengths, solve_ring_hex_outer_length
+from .composite import CompositeGrid, StitchSpec, stitch_grids, join_grids, split_composite
+from .assembly import AssemblyPlan, pent_hex_assembly, translate_grid, rotate_grid, scale_grid
+from .transforms import Overlay, OverlayPoint, OverlaySegment, OverlayRegion, apply_voronoi, apply_partition
+from .visualize import (
+    render_assembly_panels,
+    render_single_panel,
+    render_exploded,
+    render_stitched,
+    render_stitched_with_overlay,
+    render_unstitched_with_overlay,
+)
 from .diagnostics import (
     ring_diagnostics,
     summarize_ring_stats,
@@ -30,12 +37,14 @@ from .diagnostics import (
     has_edge_crossings,
     ring_quality_gates,
     diagnostics_report,
+    ring_angle_spec,
 )
 
 __all__ = [
     "Vertex",
     "Edge",
     "Face",
+    "MacroEdge",
     "PolyGrid",
     "build_face_adjacency",
     "ring_faces",
@@ -52,18 +61,33 @@ __all__ = [
     "fix_face_winding",
     "hex_face_count",
     "validate_pentagon_topology",
-    "tutte_embedding",
-    "apply_embedding",
     "CompositeGrid",
+    "StitchSpec",
+    "stitch_grids",
     "join_grids",
     "split_composite",
-    "ring_angle_spec",
-    "solve_ring_hex_lengths",
-    "solve_ring_hex_outer_length",
+    "AssemblyPlan",
+    "pent_hex_assembly",
+    "translate_grid",
+    "rotate_grid",
+    "scale_grid",
+    "Overlay",
+    "OverlayPoint",
+    "OverlaySegment",
+    "OverlayRegion",
+    "apply_voronoi",
+    "apply_partition",
+    "render_assembly_panels",
+    "render_single_panel",
+    "render_exploded",
+    "render_stitched",
+    "render_stitched_with_overlay",
+    "render_unstitched_with_overlay",
     "ring_diagnostics",
     "summarize_ring_stats",
     "min_face_signed_area",
     "has_edge_crossings",
     "ring_quality_gates",
     "diagnostics_report",
+    "ring_angle_spec",
 ]
