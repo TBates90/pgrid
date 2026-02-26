@@ -5,7 +5,7 @@ import math
 from dataclasses import replace
 from typing import Dict, Iterable, List, Optional
 
-from .algorithms import build_face_adjacency
+from .algorithms import build_face_adjacency, get_face_adjacency
 from .models import Edge, Face, MacroEdge, Vertex
 
 
@@ -158,6 +158,14 @@ class PolyGrid:
     def compute_face_neighbors(self) -> Dict[str, list[str]]:
         return build_face_adjacency(self.faces.values(), self.edges.values())
 
+    def face_adjacency(self) -> Dict[str, list[str]]:
+        """Return face adjacency — works for both flat and globe grids.
+
+        Uses :func:`get_face_adjacency` which prefers ``neighbor_ids``
+        when populated, falling back to shared-edge computation.
+        """
+        return get_face_adjacency(self)
+
     def with_neighbors(self) -> "PolyGrid":
         adjacency = self.compute_face_neighbors()
         faces = []
@@ -178,21 +186,25 @@ class PolyGrid:
                 if face.neighbor_ids
                 else adjacency.get(face.id, [])
             )
-            faces_payload.append(
-                {
-                    "id": face.id,
-                    "type": face.face_type,
-                    "vertices": list(face.vertex_ids),
-                    "edges": list(face.edge_ids),
-                    "neighbors": neighbors,
-                }
-            )
+            face_data = {
+                "id": face.id,
+                "type": face.face_type,
+                "vertices": list(face.vertex_ids),
+                "edges": list(face.edge_ids),
+                "neighbors": neighbors,
+            }
+            if face.metadata:
+                face_data["metadata"] = face.metadata
+            faces_payload.append(face_data)
 
         vertices_payload = []
         for vertex in sorted(self.vertices.values(), key=lambda v: v.id):
             payload = {"id": vertex.id}
             if vertex.has_position():
-                payload["position"] = {"x": vertex.x, "y": vertex.y}
+                pos = {"x": vertex.x, "y": vertex.y}
+                if vertex.z is not None:
+                    pos["z"] = vertex.z
+                payload["position"] = pos
             vertices_payload.append(payload)
 
         edges_payload = []
@@ -240,6 +252,7 @@ class PolyGrid:
                 id=vertex["id"],
                 x=vertex.get("position", {}).get("x"),
                 y=vertex.get("position", {}).get("y"),
+                z=vertex.get("position", {}).get("z"),
             )
             for vertex in payload.get("vertices", [])
         ]
@@ -258,6 +271,7 @@ class PolyGrid:
                 vertex_ids=tuple(face.get("vertices", [])),
                 edge_ids=tuple(face.get("edges", [])),
                 neighbor_ids=tuple(face.get("neighbors", [])),
+                metadata=face.get("metadata", {}),
             )
             for face in payload.get("faces", [])
         ]

@@ -110,13 +110,27 @@ def edge_length(vertices: Dict[str, Vertex], a: str, b: str) -> float:
 
 
 def face_center(vertices: Dict[str, Vertex], face: Face) -> tuple[float, float] | None:
-    """Centroid of a face."""
+    """Centroid of a face (2D, using x/y coordinates)."""
     coords = [vertices[vid] for vid in face.vertex_ids]
     if not coords or not all(v.has_position() for v in coords):
         return None
     cx = sum(v.x for v in coords if v.x is not None) / len(coords)
     cy = sum(v.y for v in coords if v.y is not None) / len(coords)
     return (cx, cy)
+
+
+def face_center_3d(
+    vertices: Dict[str, Vertex], face: Face,
+) -> tuple[float, float, float] | None:
+    """Centroid of a face in 3D (x, y, z).  Returns *None* if any vertex lacks a z coordinate."""
+    coords = [vertices[vid] for vid in face.vertex_ids]
+    if not coords or not all(v.has_position_3d() for v in coords):
+        return None
+    n = len(coords)
+    cx = sum(v.x for v in coords if v.x is not None) / n
+    cy = sum(v.y for v in coords if v.y is not None) / n
+    cz = sum(v.z for v in coords if v.z is not None) / n
+    return (cx, cy, cz)
 
 
 def grid_center(vertices: Dict[str, Vertex]) -> tuple[float, float]:

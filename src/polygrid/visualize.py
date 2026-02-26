@@ -313,39 +313,69 @@ def render_unstitched_with_overlay(
     overlay: Overlay,
     draw_regions: bool = None,
 ) -> None:
-    """Render exploded components with the overlay translated to match.
+    """Render **pristine** (undistorted) components with overlay colours.
 
-    *flush_plan* has the original flush positions (which match the
-    overlay's coordinate system).  *exploded_plan* has the spread-out
-    positions used for display.  We compute each component's delta
-    between flush → exploded and translate the overlay portion that
-    falls within that component's flush bounding box.
+    The flush/exploded plans contain grids that have been scaled,
+    rotated, reflected, and boundary-snapped for stitching.  This
+    function rebuilds each component from its original builder so
+    that hex grids appear as clean, regular hexagons — the
+    positioning distortion is only visible on the stitched panels.
+
+    Overlay region assignments (which face belongs to which colour
+    group) are transferred from the merged overlay to the pristine
+    grid by face-id mapping.
     """
     if draw_regions is None:
         draw_regions = overlay.kind == "partition"
-    # Draw each component from the exploded plan
-    for idx, (name, grid) in enumerate(exploded_plan.components.items()):
+
+    # Build a face-id → region-index lookup from the merged overlay.
+    # Overlay region ids look like "reg_{prefix}{face_id}" or
+    # "part_{prefix}{face_id}".  The source_vertex_id holds the
+    # region (colour) index as a string.
+    merged_face_to_section: Dict[str, str] = {}
+    for oreg in overlay.regions:
+        # Strip the "reg_" or "part_" prefix to get the merged face id
+        for tag in ("reg_", "part_"):
+            if oreg.id.startswith(tag):
+                merged_fid = oreg.id[len(tag):]
+                merged_face_to_section[merged_fid] = oreg.source_vertex_id
+                break
+
+    # Rebuild pristine grids and lay them out
+    pristine_grids: Dict[str, PolyGrid] = {}
+    for name, grid in flush_plan.components.items():
+        pristine_grids[name] = _build_pristine_grid(grid)
+
+    # Arrange pristine grids in an exploded layout matching the
+    # original exploded plan's arrangement (same translation offsets).
+    for name in exploded_plan.components:
+        flush_grid = flush_plan.components[name]
+        expl_grid = exploded_plan.components[name]
+        pristine = pristine_grids[name]
+
+        # Translation: centre of pristine → centre of exploded position
+        pc = _grid_bbox_center(pristine)
+        ec = _grid_bbox_center(expl_grid)
+        dx = ec[0] - pc[0]
+        dy = ec[1] - pc[1]
+        pristine_grids[name] = translate_grid(pristine, dx, dy)
+
+    # Draw the pristine grids
+    for idx, (name, grid) in enumerate(pristine_grids.items()):
         color = _COMPONENT_COLORS[idx % len(_COMPONENT_COLORS)]
         _draw_grid(ax, grid, face_color=color, face_alpha=0.12,
                    edge_color="#aaaaaa")
 
-    # For each component, work out the flush→exploded shift and
-    # translate the overlay by that amount.  Draw it per-component.
-    for name in exploded_plan.components:
-        flush_grid = flush_plan.components[name]
-        expl_grid = exploded_plan.components[name]
-        fc = _grid_bbox_center(flush_grid)
-        ec = _grid_bbox_center(expl_grid)
-        dx = ec[0] - fc[0]
-        dy = ec[1] - fc[1]
-        shifted = _translate_overlay(overlay, dx, dy)
-        # Clip to this component's exploded bounding box (plus a tiny margin)
-        bbox = _grid_bbox(expl_grid, margin=0.5)
-        clipped = _clip_overlay(shifted, bbox)
-        _draw_overlay(ax, clipped, draw_regions=draw_regions,
+    # Build and draw overlay per component from pristine geometry
+    for name, grid in pristine_grids.items():
+        prefix = f"{name}_"
+        comp_overlay = _build_pristine_overlay(
+            grid, prefix, merged_face_to_section, overlay.kind, overlay.metadata,
+        )
+        _draw_overlay(ax, comp_overlay, draw_regions=draw_regions,
                       edge_width=0.6, site_size=3.0)
 
-    _autofit_plan(ax, exploded_plan)
+    _autofit_multi(ax, list(pristine_grids.values()))
     ax.set_aspect("equal", "box")
     ax.axis("off")
     ax.set_title(f"Unstitched + {overlay.kind}", fontsize=10)
@@ -579,3 +609,106 @@ def _clip_overlay(
         regions=regions,
         metadata=overlay.metadata,
     )
+
+
+def _filter_overlay_by_prefix(
+    overlay: Overlay,
+    prefix: str,
+) -> Overlay:
+    """Return a copy of *overlay* keeping only elements whose ids contain *prefix*.
+
+    For partition/region overlays the region id embeds the face id
+    (e.g. ``reg_hex0_f3`` or ``part_hex0_f3``).  This filter keeps
+    only the regions (and points/segments) that belong to a specific
+    component, avoiding cross-component bleed in exploded views.
+    """
+    pts = [p for p in overlay.points
+           if prefix in p.id or prefix in p.source_face_id]
+    segs = [s for s in overlay.segments
+            if prefix in s.id or prefix in s.source_edge_id]
+    regions = [r for r in overlay.regions if prefix in r.id]
+
+    return Overlay(
+        kind=overlay.kind,
+        points=pts,
+        segments=segs,
+        regions=regions,
+        metadata=overlay.metadata,
+    )
+
+
+def _build_pristine_grid(grid: PolyGrid) -> PolyGrid:
+    """Rebuild a component grid from its metadata to get an undistorted copy.
+
+    Uses the ``generator`` and ``rings`` keys stored in
+    :attr:`PolyGrid.metadata` by the builder functions.  If the
+    metadata is missing, returns the grid unchanged.
+    """
+    from .builders import build_pure_hex_grid, build_pentagon_centered_grid
+
+    gen = grid.metadata.get("generator")
+    rings = grid.metadata.get("rings")
+    if rings is None:
+        return grid
+
+    if gen == "hex":
+        pristine = build_pure_hex_grid(rings)
+    elif gen == "goldberg":
+        pristine = build_pentagon_centered_grid(rings)
+    else:
+        return grid
+
+    pristine.compute_macro_edges(n_sides=grid.metadata.get("sides", 6 if gen == "hex" else 5))
+    return pristine
+
+
+def _build_pristine_overlay(
+    pristine_grid: PolyGrid,
+    merged_prefix: str,
+    merged_face_to_section: Dict[str, str],
+    kind: str,
+    metadata: Dict,
+) -> Overlay:
+    """Build an overlay for a pristine grid using region assignments
+    from the merged overlay.
+
+    *merged_prefix* is e.g. ``"hex0_"``.  For each face ``f3`` in the
+    pristine grid, we look up ``"hex0_f3"`` in *merged_face_to_section*
+    to find which colour group it belongs to, then build an
+    :class:`OverlayRegion` using the pristine grid's vertex positions.
+    """
+    overlay = Overlay(kind=kind, metadata=metadata)
+
+    for face in pristine_grid.faces.values():
+        merged_fid = f"{merged_prefix}{face.id}"
+        section = merged_face_to_section.get(merged_fid)
+        if section is None:
+            continue
+        pts: List[Tuple[float, float]] = []
+        for vid in face.vertex_ids:
+            v = pristine_grid.vertices[vid]
+            if v.has_position():
+                pts.append((v.x, v.y))
+        if len(pts) < 3:
+            continue
+        overlay.regions.append(OverlayRegion(
+            id=f"reg_{merged_fid}",
+            points=pts,
+            source_vertex_id=section,
+        ))
+
+    return overlay
+
+
+def _autofit_multi(ax, grids: Iterable[PolyGrid], padding: float = 1.0) -> None:
+    """Set axis limits to fit multiple grids."""
+    all_x: List[float] = []
+    all_y: List[float] = []
+    for grid in grids:
+        for v in grid.vertices.values():
+            if v.has_position():
+                all_x.append(v.x)
+                all_y.append(v.y)
+    if all_x and all_y:
+        ax.set_xlim(min(all_x) - padding, max(all_x) + padding)
+        ax.set_ylim(min(all_y) - padding, max(all_y) + padding)

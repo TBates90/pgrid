@@ -9,9 +9,13 @@ class Vertex:
     id: str
     x: Optional[float] = None
     y: Optional[float] = None
+    z: Optional[float] = None
 
     def has_position(self) -> bool:
         return self.x is not None and self.y is not None
+
+    def has_position_3d(self) -> bool:
+        return self.x is not None and self.y is not None and self.z is not None
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,7 @@ class Face:
     vertex_ids: tuple[str, ...]
     edge_ids: tuple[str, ...] = field(default_factory=tuple)
     neighbor_ids: tuple[str, ...] = field(default_factory=tuple)
+    metadata: dict = field(default_factory=dict, compare=False, hash=False)
 
     def vertex_count(self) -> int:
         return len(self.vertex_ids)

@@ -12,7 +12,7 @@ Public API is organised into layers:
 # ── Core ────────────────────────────────────────────────────────────
 from .models import Vertex, Edge, Face, MacroEdge
 from .polygrid import PolyGrid
-from .algorithms import build_face_adjacency, ring_faces
+from .algorithms import build_face_adjacency, get_face_adjacency, ring_faces
 from .io import load_json, save_json
 
 # ── Building ────────────────────────────────────────────────────────
@@ -53,6 +53,78 @@ from .tile_data import (
     load_tile_data,
 )
 
+# ── Regions (Terrain Partitioning) ──────────────────────────────────
+from .regions import (
+    Region,
+    RegionMap,
+    RegionValidation,
+    partition_angular,
+    partition_flood_fill,
+    partition_voronoi,
+    partition_noise,
+    assign_field,
+    assign_biome,
+    regions_to_overlay,
+    validate_region_map,
+)
+
+# ── Terrain Generation (Phase 7) ────────────────────────────────────
+from .noise import (
+    fbm,
+    ridged_noise,
+    domain_warp,
+    gradient_mask,
+    terrace,
+    normalize as noise_normalize,
+    remap,
+    fbm_3d,
+    ridged_noise_3d,
+)
+from .heightmap import (
+    sample_noise_field,
+    sample_noise_field_region,
+    sample_noise_field_3d,
+    smooth_field,
+    blend_fields,
+    clamp_field,
+    normalize_field,
+)
+from .mountains import (
+    MountainConfig,
+    generate_mountains,
+    MOUNTAIN_RANGE,
+    ALPINE_PEAKS,
+    ROLLING_HILLS,
+    MESA_PLATEAU,
+)
+from .terrain_render import (
+    elevation_to_overlay,
+    hillshade,
+    render_terrain,
+)
+from .rivers import (
+    RiverSegment,
+    RiverNetwork,
+    RiverConfig,
+    steepest_descent_path,
+    find_drainage_basins,
+    fill_depressions,
+    flow_accumulation,
+    generate_rivers,
+    carve_river_valleys,
+    assign_river_data,
+    river_to_overlay,
+)
+from .pipeline import (
+    TerrainStep,
+    StepResult,
+    TerrainPipeline,
+    PipelineResult,
+    MountainStep,
+    RiverStep,
+    CustomStep,
+)
+
 # ── Rendering (requires matplotlib) ────────────────────────────────
 from .visualize import (
     render_png,
@@ -63,6 +135,24 @@ from .visualize import (
     render_stitched_with_overlay,
     render_unstitched_with_overlay,
 )
+
+# ── Globe (requires models library) ────────────────────────────────
+try:
+    from .globe import build_globe_grid, GlobeGrid
+except ImportError:
+    pass  # models library not installed — globe features unavailable
+
+try:
+    from .globe_mesh import (
+        terrain_colors_for_layout,
+        terrain_colors_from_tile_colours,
+        build_terrain_layout_mesh,
+        build_terrain_face_meshes,
+        build_terrain_tile_meshes,
+        build_terrain_edge_mesh,
+    )
+except ImportError:
+    pass  # models library not installed — globe mesh features unavailable
 
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
@@ -83,6 +173,7 @@ __all__ = [
     "MacroEdge",
     "PolyGrid",
     "build_face_adjacency",
+    "get_face_adjacency",
     "ring_faces",
     "load_json",
     "save_json",
@@ -121,6 +212,68 @@ __all__ = [
     "TileDataStore",
     "save_tile_data",
     "load_tile_data",
+    # Regions
+    "Region",
+    "RegionMap",
+    "RegionValidation",
+    "partition_angular",
+    "partition_flood_fill",
+    "partition_voronoi",
+    "partition_noise",
+    "assign_field",
+    "assign_biome",
+    "regions_to_overlay",
+    "validate_region_map",
+    # Terrain Generation (Phase 7)
+    # -- Noise primitives
+    "fbm",
+    "ridged_noise",
+    "domain_warp",
+    "gradient_mask",
+    "terrace",
+    "noise_normalize",
+    "remap",
+    "fbm_3d",
+    "ridged_noise_3d",
+    # -- Heightmap bridge
+    "sample_noise_field",
+    "sample_noise_field_region",
+    "sample_noise_field_3d",
+    "smooth_field",
+    "blend_fields",
+    "clamp_field",
+    "normalize_field",
+    # -- Mountains
+    "MountainConfig",
+    "generate_mountains",
+    "MOUNTAIN_RANGE",
+    "ALPINE_PEAKS",
+    "ROLLING_HILLS",
+    "MESA_PLATEAU",
+    # -- Terrain rendering
+    "elevation_to_overlay",
+    "hillshade",
+    "render_terrain",
+    # -- Rivers
+    "RiverSegment",
+    "RiverNetwork",
+    "RiverConfig",
+    "steepest_descent_path",
+    "find_drainage_basins",
+    "fill_depressions",
+    "flow_accumulation",
+    "generate_rivers",
+    "carve_river_valleys",
+    "assign_river_data",
+    "river_to_overlay",
+    # -- Pipeline
+    "TerrainStep",
+    "StepResult",
+    "TerrainPipeline",
+    "PipelineResult",
+    "MountainStep",
+    "RiverStep",
+    "CustomStep",
     # Rendering
     "render_png",
     "render_single_panel",
@@ -137,4 +290,14 @@ __all__ = [
     "ring_quality_gates",
     "diagnostics_report",
     "ring_angle_spec",
+    # Globe (optional — requires models library)
+    "build_globe_grid",
+    "GlobeGrid",
+    # Globe mesh bridge (optional — requires models library)
+    "terrain_colors_for_layout",
+    "terrain_colors_from_tile_colours",
+    "build_terrain_layout_mesh",
+    "build_terrain_face_meshes",
+    "build_terrain_tile_meshes",
+    "build_terrain_edge_mesh",
 ]

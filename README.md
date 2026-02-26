@@ -34,6 +34,23 @@ polygrid assembly --rings 3 --out exports/assembly.png
 pytest
 ```
 
+### Terrain partitioning
+
+Partition an assembly into named regions and render the stitched +
+unstitched views with colour-coded regions:
+
+```bash
+# 5 Voronoi regions on a rings-2 assembly (default)
+python scripts/demo_regions.py
+
+# Customise rings, region count, and output path
+python scripts/demo_regions.py --rings 3 --regions 6 --out exports/regions.png
+```
+
+Other partitioning algorithms are available — `partition_angular`,
+`partition_flood_fill`, and `partition_noise` (organic boundaries).
+See [`docs/MODULE_REFERENCE.md`](docs/MODULE_REFERENCE.md) for details.
+
 ## Package layout
 
 ```
@@ -48,6 +65,7 @@ src/polygrid/
     composite.py           # Multi-grid stitching (vertex merge, edge dedup)
     assembly.py            # Assembly recipes (pent+hex), grid transforms
     transforms.py          # Voronoi dual, partition, overlay model
+    regions.py             # Terrain partitioning (Region, RegionMap, algorithms)
     tile_data.py           # Per-face data layer (schema, store, queries)
     visualize.py           # Multi-panel composite visualisation
     render.py              # Deprecated shim (use visualize)
@@ -60,7 +78,7 @@ docs/
     TASKLIST.md            # Comprehensive roadmap
     JSON_CONTRACT.md       # JSON serialisation format
 
-tests/                     # 201 tests across 17 files
+tests/                     # 277 tests across 18 files
 scripts/                   # Demo and diagnostic scripts
 ```
 
@@ -72,8 +90,8 @@ Strict layering with clear separation of concerns:
 |-------|---------|---------------|
 | **Core** | `models`, `polygrid`, `algorithms`, `geometry`, `io` | Topology, graph operations, serialisation |
 | **Building** | `builders`, `goldberg_topology`, `composite`, `assembly` | Grid construction and composition |
-| **Transforms** | `transforms` | Algorithms that produce overlay data |
 | **Tile Data** | `tile_data` | Per-face key-value storage, schema validation, queries |
+| **Transforms** | `transforms`, `regions` | Overlays, partitioning algorithms, region management |
 | **Rendering** | `visualize` | Matplotlib visualisation (optional dep) |
 
 The core layer has **zero rendering dependencies**. All algorithm work operates on abstract graph topology.
@@ -85,6 +103,7 @@ The core layer has **zero rendering dependencies**. All algorithm work operates 
 - **`CompositeGrid`** — multiple grids merged by stitching along macro-edges.
 - **`AssemblyPlan`** — a recipe: named components + stitch specs. Builds into a `CompositeGrid`.
 - **`TileDataStore`** — per-face data (elevation, biome, etc.) bound to a grid, with neighbour/ring queries.
+- **`RegionMap`** — partitions a grid into named `Region`s (e.g. continents, oceans) with validation and adjacency queries.
 - **`Overlay`** — algorithm output (points, segments, regions) drawn on top of a grid.
 
 ## Dependencies
@@ -99,7 +118,7 @@ The core layer has **zero rendering dependencies**. All algorithm work operates 
 ## Tests
 
 ```bash
-pytest          # 149 tests, ~22s
+pytest          # 277 tests, ~20s
 pytest -v       # verbose output
 pytest -k gold  # run only Goldberg tests
 ```

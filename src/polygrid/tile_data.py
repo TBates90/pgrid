@@ -35,7 +35,7 @@ from typing import (
     Union,
 )
 
-from .algorithms import build_face_adjacency, ring_faces
+from .algorithms import build_face_adjacency, get_face_adjacency, ring_faces
 from .polygrid import PolyGrid
 
 
@@ -335,9 +335,7 @@ class TileDataStore:
 
     def _ensure_adjacency(self) -> Dict[str, List[str]]:
         if self._adjacency is None:
-            self._adjacency = build_face_adjacency(
-                self._grid.faces.values(), self._grid.edges.values()
-            )
+            self._adjacency = get_face_adjacency(self._grid)
         return self._adjacency
 
     # ── basic CRUD (delegate to TileData) ───────────────────────────

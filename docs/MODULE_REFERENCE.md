@@ -112,6 +112,26 @@ Per-face key-value storage for terrain generation data:
 
 ---
 
+## Terrain Partitioning
+
+### `regions.py`
+Splits grids into named regions for terrain generation:
+- `Region` — named collection of face ids with metadata
+- `RegionMap` — container holding all regions; face↔region lookups, region adjacency queries
+- `RegionValidation` — result of validation (ok, errors)
+- `validate_region_map()` — checks coverage, no gaps/overlaps, min size, max count, required adjacency
+- **Algorithms:**
+  - `partition_angular(grid, n_sections)` — equal angular sectors
+  - `partition_flood_fill(grid, seeds)` — competitive BFS expansion with tie-breaking
+  - `partition_voronoi(grid, seeds)` — nearest-seed by centroid distance
+  - `partition_noise(grid, seeds)` — Voronoi with noise-perturbed distances (organic boundaries)
+- `assign_field(region, store, key, value)` / `assign_biome(region, store, biome_type)` — TileData integration
+- `regions_to_overlay(region_map, grid)` — converts to `Overlay` for visualisation
+
+**Depends on:** `algorithms`, `geometry`, `models`, `polygrid`, `transforms`
+
+---
+
 ## Rendering Layer (requires matplotlib)
 
 ### `render.py` *(deprecated shim)*

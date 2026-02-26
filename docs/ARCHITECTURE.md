@@ -28,7 +28,10 @@ The project is organised around a strict layering:
 │                     render.py                        │
 ├─────────────────────────────────────────────────────┤
 │                   transforms.py                      │  Algorithms (Voronoi,
-│                   (future: terrain.py, biomes.py)    │  partition, terrain gen)
+│                    regions.py                        │  partition, terrain gen)
+│                   (future: terrain.py, biomes.py)    │
+├─────────────────────────────────────────────────────┤
+│                    tile_data.py                      │  Per-tile data layer
 ├─────────────────────────────────────────────────────┤
 │    assembly.py  │  composite.py  │  builders.py      │  Composition & building
 │                 │                │  goldberg_topology │
@@ -42,9 +45,10 @@ The project is organised around a strict layering:
 
 | Layer | Knows about | Does NOT know about |
 |-------|------------|---------------------|
-| **Core** (`models`, `polygrid`, `algorithms`, `geometry`, `io`) | Vertices, edges, faces, adjacency | Rendering, assembly, transforms |
+| **Core** (`models`, `polygrid`, `algorithms`, `geometry`, `io`) | Vertices, edges, faces, adjacency | Rendering, assembly, transforms, tile data |
 | **Building** (`builders`, `goldberg_topology`, `composite`, `assembly`) | Core layer | Rendering, game-specific data |
-| **Transforms** (`transforms`, future terrain/biome modules) | Core layer, optionally building layer | Rendering |
+| **Tile Data** (`tile_data`) | Core layer (algorithms, polygrid) | Rendering, transforms, regions |
+| **Transforms** (`transforms`, `regions`) | Core layer, tile data | Rendering |
 | **Rendering** (`visualize`, `render`) | Everything above | Nothing below it depends on rendering |
 | **Scripts / CLI** | Everything | — |
 
@@ -183,6 +187,55 @@ neighbors = store.get_neighbors_data("f1", "elevation")
 
 ---
 
+## Terrain Partitioning
+
+The **regions module** (`regions.py`) splits a grid into named regions (continents, oceans, biome zones) that terrain-generation algorithms operate on.
+
+### Data model
+
+| Class | Responsibility |
+|-------|---------------|
+| `Region` | Named collection of face ids with metadata (e.g. biome type) |
+| `RegionMap` | Container for all regions; face↔region lookups, region adjacency queries |
+| `RegionValidation` | Validation result (ok + error list) |
+
+### Partitioning algorithms
+
+| Algorithm | Strategy | Use case |
+|-----------|----------|----------|
+| `partition_angular` | Equal angular sectors around grid centroid | Quick geometric split |
+| `partition_flood_fill` | Competitive BFS from seed faces | Organic, topology-aware shapes |
+| `partition_voronoi` | Nearest seed by centroid distance | Clean, regular boundaries |
+| `partition_noise` | Voronoi + distance perturbation | Organic, irregular boundaries |
+
+### Constraints & validation
+`validate_region_map()` checks: full coverage (every face assigned), no gaps, no overlaps, min region size, max region count, and required inter-region adjacency (e.g. "every continent must touch ocean").
+
+### TileData integration
+- `assign_field(region, store, key, value)` — bulk-set a field for all faces in a region.
+- `assign_biome(region, store, biome_type)` — convenience wrapper; also stores biome in region metadata.
+
+### Visualisation
+`regions_to_overlay(region_map, grid)` converts a `RegionMap` into an `Overlay` (kind=`"partition"`) that plugs directly into the existing partition rendering pipeline in `visualize.py`.
+
+### Intended usage
+```python
+# Partition into 4 Voronoi regions
+seeds = pick_seed_faces(grid, n=4)
+rm = partition_voronoi(grid, seeds, names=["land", "sea", "desert", "forest"])
+assert validate_region_map(rm).ok
+
+# Assign biomes via TileData
+for region in rm.regions:
+    assign_biome(region, store, region.name)
+
+# Render
+overlay = regions_to_overlay(rm, grid)
+render_stitched_with_overlay(assembly, overlay, "regions.png")
+```
+
+---
+
 ## Goldberg Polyhedron Integration (Planned)
 
 The full Goldberg polyhedron has 12 pentagonal faces and a configurable number of hexagonal faces. Each face of the polyhedron is itself a `PolyGrid` (pentagon-centred for pent faces, hex for hex faces).
@@ -193,7 +246,7 @@ PolyGrid can represent the **whole-globe topology** as well — just the 12+N fa
 
 ## Testing
 
-201 tests across 17 test files, covering:
+277 tests across 18 test files, covering:
 
 - Core model validation and serialisation
 - Goldberg topology invariants (face counts, vertex degrees, boundary counts, corner detection)
@@ -202,9 +255,11 @@ PolyGrid can represent the **whole-globe topology** as well — just the 12+N fa
 - Stitching correctness (vertex merging, edge dedup)
 - Assembly (component count, stitch count, boundary alignment)
 - Transforms (Voronoi properties, partition coverage)
+- Tile data layer (CRUD, schema validation, serialisation, neighbour/ring queries, bulk ops)
+- Terrain partitioning (all 4 algorithms, validation, constraints, TileData integration, overlay conversion, cross-algorithm parametrized tests)
 - Visualisation (PNG output, overlay rendering)
 
-All tests run in ~22s. No external service dependencies.
+All tests run in ~20s. No external service dependencies.
 
 ---
 
@@ -216,3 +271,4 @@ All tests run in ~22s. No external service dependencies.
 | pytest | Testing | `dev` |
 | matplotlib | Rendering | `render` |
 | numpy, scipy | Embedding & optimisation | `embed` |
+| opensimplex | Noise-based region boundaries | `noise` (optional — deterministic fallback if absent) |
