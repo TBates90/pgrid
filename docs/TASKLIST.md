@@ -54,18 +54,18 @@ Comprehensive task list for evolving PolyGrid from a topology toolkit into a pro
 
 ---
 
-## Phase 5 — Tile Data Layer 🔲
+## Phase 5 — Tile Data Layer ✅
 
 The foundation for terrain generation: a way to attach and query per-face data.
 
-- [ ] **`TileData` model** — a container mapping face ids to arbitrary key-value data. Separate from `PolyGrid` (SoC: topology vs game data). Likely a class wrapping `Dict[str, Dict[str, Any]]`.
-- [ ] **Schema / typed fields** — define a `TileSchema` that declares what keys exist and their types (e.g. `elevation: float`, `biome: str`, `moisture: float`). Validates on write.
-- [ ] **`TileDataStore`** — attach a `TileData` to a `PolyGrid` or `CompositeGrid`. Provides accessors: `get(face_id, key)`, `set(face_id, key, value)`, `bulk_set(face_ids, key, value)`.
-- [ ] **JSON serialisation** — `TileData` round-trips to JSON alongside (or separate from) the grid JSON. Face ids are the join key.
-- [ ] **Neighbour-aware queries** — `get_neighbors_data(face_id, key)` returns data from adjacent faces. Useful for smoothing, erosion, spread algorithms.
-- [ ] **Ring-based queries** — `get_ring_data(face_id, radius, key)` returns data from all faces within N hops.
-- [ ] **Bulk operations** — `apply_to_all(key, fn)`, `apply_to_ring(center, radius, key, fn)`.
-- [ ] **Tests** — CRUD, serialisation round-trip, neighbour queries, schema validation.
+- [x] **`TileData` model** — container mapping face ids to key-value data, validated against a `TileSchema`. Separate from `PolyGrid` (SoC). Wraps `Dict[str, Dict[str, Any]]`.
+- [x] **Schema / typed fields** — `TileSchema` declares field names, types (`int`, `float`, `str`, `bool`), and optional defaults. `FieldDef` dataclass per field. Validates on every write.
+- [x] **`TileDataStore`** — binds a `TileData` to a `PolyGrid`. Provides `get`, `set`, `bulk_set`, `initialise_all`, lazy-built adjacency cache.
+- [x] **JSON serialisation** — `TileData` round-trips to JSON (schema + tiles dict). File I/O via `save_tile_data` / `load_tile_data`. Handles JSON int→float coercion.
+- [x] **Neighbour-aware queries** — `get_neighbors_data(face_id, key)` returns `[(neighbor_id, value)]` for adjacent faces.
+- [x] **Ring-based queries** — `get_ring_data(face_id, radius, key)` returns `{ring: [(face_id, value)]}` via BFS.
+- [x] **Bulk operations** — `apply_to_all(key, fn)`, `apply_to_ring(center, radius, key, fn)`, `apply_to_faces(face_ids, key, fn)`.
+- [x] **Tests** — 52 tests: CRUD, schema validation, serialisation round-trip, neighbour queries, ring queries, bulk ops, file I/O, pent-grid integration.
 
 ## Phase 6 — Terrain Partitioning 🔲
 

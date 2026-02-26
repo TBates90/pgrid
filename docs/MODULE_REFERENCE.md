@@ -98,6 +98,20 @@ Overlay data model + transform functions:
 
 ---
 
+## Tile Data Layer
+
+### `tile_data.py`
+Per-face key-value storage for terrain generation data:
+- `FieldDef` — typed field definition (name, dtype, optional default)
+- `TileSchema` — declares which fields exist and their types; validates on write
+- `TileData` — raw data container (`{face_id: {key: value}}`); JSON-serialisable
+- `TileDataStore` — binds `TileData` to a `PolyGrid`; adds neighbour/ring queries and bulk operations
+- `save_tile_data` / `load_tile_data` — file I/O helpers
+
+**Depends on:** `algorithms`, `polygrid`
+
+---
+
 ## Rendering Layer (requires matplotlib)
 
 ### `render.py` *(deprecated shim)*

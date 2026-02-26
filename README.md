@@ -48,8 +48,9 @@ src/polygrid/
     composite.py           # Multi-grid stitching (vertex merge, edge dedup)
     assembly.py            # Assembly recipes (pent+hex), grid transforms
     transforms.py          # Voronoi dual, partition, overlay model
+    tile_data.py           # Per-face data layer (schema, store, queries)
     visualize.py           # Multi-panel composite visualisation
-    render.py              # Simple single-grid PNG renderer
+    render.py              # Deprecated shim (use visualize)
     diagnostics.py         # Per-ring quality diagnostics
     cli.py                 # Command-line interface
 
@@ -59,7 +60,7 @@ docs/
     TASKLIST.md            # Comprehensive roadmap
     JSON_CONTRACT.md       # JSON serialisation format
 
-tests/                     # 149 tests across 16 files
+tests/                     # 201 tests across 17 files
 scripts/                   # Demo and diagnostic scripts
 ```
 
@@ -72,7 +73,8 @@ Strict layering with clear separation of concerns:
 | **Core** | `models`, `polygrid`, `algorithms`, `geometry`, `io` | Topology, graph operations, serialisation |
 | **Building** | `builders`, `goldberg_topology`, `composite`, `assembly` | Grid construction and composition |
 | **Transforms** | `transforms` | Algorithms that produce overlay data |
-| **Rendering** | `visualize`, `render` | Matplotlib visualisation (optional dep) |
+| **Tile Data** | `tile_data` | Per-face key-value storage, schema validation, queries |
+| **Rendering** | `visualize` | Matplotlib visualisation (optional dep) |
 
 The core layer has **zero rendering dependencies**. All algorithm work operates on abstract graph topology.
 
@@ -82,6 +84,7 @@ The core layer has **zero rendering dependencies**. All algorithm work operates 
 - **`MacroEdge`** — one side of the grid's outer polygon. Used for stitching.
 - **`CompositeGrid`** — multiple grids merged by stitching along macro-edges.
 - **`AssemblyPlan`** — a recipe: named components + stitch specs. Builds into a `CompositeGrid`.
+- **`TileDataStore`** — per-face data (elevation, biome, etc.) bound to a grid, with neighbour/ring queries.
 - **`Overlay`** — algorithm output (points, segments, regions) drawn on top of a grid.
 
 ## Dependencies

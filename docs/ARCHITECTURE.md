@@ -145,20 +145,41 @@ Rendering is strictly a **leaf** dependency — nothing in the core or algorithm
 
 ---
 
-## Per-Tile Data (Planned)
+## Per-Tile Data
 
-The next major feature is a **tile data store** — a way to attach arbitrary key-value data to individual faces. This will be used for:
+The **tile data layer** (`tile_data.py`) provides per-face key-value storage, kept strictly separate from grid topology.
 
-- Biome type (mountain, desert, grassland, lake, ocean, etc.)
-- Elevation, moisture, temperature
-- Terrain features (rivers, roads, settlements)
-- Texture references for 3D rendering
+### Components
 
-Design principles:
+| Class | Responsibility |
+|-------|---------------|
+| `FieldDef` | Defines a single field: name, type (`int`/`float`/`str`/`bool`), optional default |
+| `TileSchema` | Declares the set of fields; validates values on write |
+| `TileData` | Raw data container — `{face_id: {key: value}}` with schema enforcement |
+| `TileDataStore` | Binds `TileData` to a `PolyGrid`; adds neighbour/ring queries and bulk operations |
+
+### Design principles
 - Data lives **alongside** the PolyGrid, not inside it — SoC between topology and game data.
 - Data is keyed by face id.
-- Serialisable to JSON (for export to the 3D renderer).
-- Algorithm passes read/write tile data via a clean interface.
+- Schema validates every write — catches type errors early.
+- JSON-serialisable (separate from grid JSON; face ids are the join key).
+- Neighbour-aware: `get_neighbors_data()`, `get_ring_data()` use the grid's adjacency graph.
+- Bulk operations: `apply_to_all()`, `apply_to_ring()`, `apply_to_faces()` for algorithm passes.
+- Adjacency is lazily built and cached.
+
+### Intended usage
+```python
+schema = TileSchema([
+    FieldDef("elevation", float, 0.0),
+    FieldDef("biome", str, "none"),
+])
+store = TileDataStore(grid, schema=schema)
+store.initialise_all()                        # fill with defaults
+store.set("f1", "elevation", 42.0)            # set one face
+store.bulk_set(face_ids, "biome", "mountain") # set many
+store.apply_to_all("elevation", lambda fid, v: v + noise(fid))
+neighbors = store.get_neighbors_data("f1", "elevation")
+```
 
 ---
 
@@ -172,7 +193,7 @@ PolyGrid can represent the **whole-globe topology** as well — just the 12+N fa
 
 ## Testing
 
-149 tests across 16 test files, covering:
+201 tests across 17 test files, covering:
 
 - Core model validation and serialisation
 - Goldberg topology invariants (face counts, vertex degrees, boundary counts, corner detection)

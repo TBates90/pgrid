@@ -43,6 +43,16 @@ from .transforms import (
     apply_partition,
 )
 
+# ── Tile Data ───────────────────────────────────────────────────────
+from .tile_data import (
+    FieldDef,
+    TileSchema,
+    TileData,
+    TileDataStore,
+    save_tile_data,
+    load_tile_data,
+)
+
 # ── Rendering (requires matplotlib) ────────────────────────────────
 from .visualize import (
     render_png,
@@ -104,6 +114,13 @@ __all__ = [
     "OverlayRegion",
     "apply_voronoi",
     "apply_partition",
+    # Tile Data
+    "FieldDef",
+    "TileSchema",
+    "TileData",
+    "TileDataStore",
+    "save_tile_data",
+    "load_tile_data",
     # Rendering
     "render_png",
     "render_single_panel",
