@@ -426,6 +426,83 @@ def render_single_panel(
     plt.close(fig)
 
 
+def render_png(
+    grid: PolyGrid,
+    output_path: str | Path,
+    face_alpha: float = 0.15,
+    edge_color: str = "#2b2b2b",
+    face_color: str = "#5aa9e6",
+    vertex_color: str = "#2b2b2b",
+    vertex_size: float = 8.0,
+    padding: float = 0.5,
+    dpi: int = 150,
+    show_pent_axes: bool = False,
+) -> None:
+    """Render a single grid to PNG with optional pentagon symmetry axes.
+
+    This is the primary single-grid rendering entry point, supporting
+    all style parameters and the pentagon-axes diagnostic overlay.
+    """
+    plt, Polygon, _ = _ensure_mpl()
+
+    fig, ax = plt.subplots()
+    _draw_grid(
+        ax, grid,
+        face_color=face_color,
+        edge_color=edge_color,
+        face_alpha=face_alpha,
+        vertex_size=vertex_size,
+        vertex_color=vertex_color,
+    )
+
+    if show_pent_axes:
+        _draw_pent_axes(ax, grid)
+
+    _autofit(ax, grid, padding=padding)
+    ax.set_aspect("equal", "box")
+    ax.axis("off")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+
+def _draw_pent_axes(ax, grid: PolyGrid) -> None:
+    """Draw symmetry axes through pentagon edge midpoints."""
+    pent = next(
+        (f for f in grid.faces.values() if f.face_type == "pent"), None
+    )
+    if pent is None:
+        return
+    verts = [grid.vertices[vid] for vid in pent.vertex_ids]
+    if not all(v.has_position() for v in verts):
+        return
+    cx = sum(v.x for v in verts if v.x is not None) / len(verts)
+    cy = sum(v.y for v in verts if v.y is not None) / len(verts)
+
+    xs = [v.x for v in grid.vertices.values() if v.x is not None]
+    ys = [v.y for v in grid.vertices.values() if v.y is not None]
+    if not xs or not ys:
+        return
+    length = max(max(xs) - min(xs), max(ys) - min(ys)) * 1.2
+
+    for i in range(len(verts)):
+        v1 = verts[i]
+        v2 = verts[(i + 1) % len(verts)]
+        mx = (v1.x + v2.x) / 2
+        my = (v1.y + v2.y) / 2
+        dx, dy = mx - cx, my - cy
+        norm = math.hypot(dx, dy) or 1.0
+        dx /= norm
+        dy /= norm
+        ax.plot(
+            [cx - dx * length, cx + dx * length],
+            [cy - dy * length, cy + dy * length],
+            color="#d1495b", linewidth=1.0, linestyle=(0, (3, 3)),
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Internal helpers
 # ═══════════════════════════════════════════════════════════════════

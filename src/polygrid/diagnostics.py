@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 from .models import Edge, Face, Vertex
 from .polygrid import PolyGrid
@@ -47,6 +47,11 @@ class RingStats:
 
 
 def min_face_signed_area(grid: PolyGrid) -> float:
+    """Return the smallest signed area across all faces in *grid*.
+
+    A negative value indicates at least one face has clockwise winding
+    (likely a topology or embedding bug).
+    """
     areas = []
     for face in grid.faces.values():
         area = face_signed_area(grid.vertices, face)
@@ -56,6 +61,11 @@ def min_face_signed_area(grid: PolyGrid) -> float:
 
 
 def has_edge_crossings(grid: PolyGrid) -> bool:
+    """Return True if any pair of edges in *grid* intersect improperly.
+
+    Only checks positioned edges.  An O(n²) brute-force sweep — fine
+    for grids up to a few thousand edges.
+    """
     edges = list(grid.edges.values())
     for i, edge_a in enumerate(edges):
         a1, a2 = edge_a.vertex_ids
@@ -158,6 +168,7 @@ def ring_diagnostics(grid: PolyGrid, max_ring: int) -> Dict[int, RingStats]:
 
 
 def summarize_ring_stats(stats: RingStats) -> Dict[str, float]:
+    """Reduce a :class:`RingStats` to a flat dict of min/max/mean values."""
     return {
         "protruding_min": _min(stats.protruding_lengths),
         "protruding_max": _max(stats.protruding_lengths),
@@ -179,6 +190,11 @@ def ring_quality_gates(
     angle_tol_deg: float = 3.0,
     protrude_rel_tol: float = 0.15,
 ) -> Dict[str, float | bool]:
+    """Check per-ring quality against ideal angle and length targets.
+
+    Returns a dict with individual gate results and a top-level
+    ``"passed"`` boolean.
+    """
     spec = ring_angle_spec(stats.ring)
     inner_target = spec.inner_angle_deg
     pointy_target = spec.outer_angle_deg
@@ -209,6 +225,11 @@ def ring_quality_gates(
 
 
 def diagnostics_report(grid: PolyGrid, max_ring: int) -> Dict[str, object]:
+    """Build a full diagnostics report suitable for JSON export.
+
+    Returns a dict with ``min_face_signed_area``, ``edge_crossings``,
+    and per-ring ``summary`` + ``quality`` sub-dicts.
+    """
     rings = ring_diagnostics(grid, max_ring=max_ring)
     ring_payload = {}
     for ring in sorted(rings.keys()):
@@ -224,11 +245,17 @@ def diagnostics_report(grid: PolyGrid, max_ring: int) -> Dict[str, object]:
     }
 
 
-def _segments_intersect(a1, a2, b1, b2) -> bool:
-    def orient(p, q, r):
+def _segments_intersect(
+    a1: Tuple[float, float],
+    a2: Tuple[float, float],
+    b1: Tuple[float, float],
+    b2: Tuple[float, float],
+) -> bool:
+    """Return True if line segment a1-a2 properly intersects b1-b2."""
+    def orient(p: Tuple[float, float], q: Tuple[float, float], r: Tuple[float, float]) -> float:
         return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
 
-    def on_segment(p, q, r):
+    def on_segment(p: Tuple[float, float], q: Tuple[float, float], r: Tuple[float, float]) -> bool:
         return (
             min(p[0], r[0]) <= q[0] <= max(p[0], r[0])
             and min(p[1], r[1]) <= q[1] <= max(p[1], r[1])
@@ -251,7 +278,12 @@ def _segments_intersect(a1, a2, b1, b2) -> bool:
     return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
 
 
-def _inner_neighbor_counts(edges, ring_vertices, inner_vertices):
+def _inner_neighbor_counts(
+    edges: Iterable[Edge],
+    ring_vertices: Iterable[str],
+    inner_vertices: Iterable[str],
+) -> Dict[str, int]:
+    """Count how many inner-ring neighbours each ring vertex has."""
     ring_set = set(ring_vertices)
     inner_set = set(inner_vertices)
     counts = {vid: 0 for vid in ring_set}
@@ -264,13 +296,16 @@ def _inner_neighbor_counts(edges, ring_vertices, inner_vertices):
     return counts
 
 
-def _mean(values):
+def _mean(values: List[float]) -> float:
+    """Return arithmetic mean, or 0.0 for empty list."""
     return sum(values) / len(values) if values else 0.0
 
 
-def _min(values):
+def _min(values: List[float]) -> float:
+    """Return minimum, or 0.0 for empty list."""
     return min(values) if values else 0.0
 
 
-def _max(values):
+def _max(values: List[float]) -> float:
+    """Return maximum, or 0.0 for empty list."""
     return max(values) if values else 0.0

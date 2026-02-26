@@ -61,7 +61,11 @@ def face_vertex_cycle(face: Face, edges: Iterable[Edge]) -> List[str]:
 
 
 def interior_angle(vertices: Dict[str, Vertex], a: str, b: str, c: str) -> float:
-    """Interior angle at vertex b in the triangle a-b-c (radians)."""
+    """Interior angle at vertex *b* in the path a→b→c, in radians.
+
+    Always returns the larger of the two possible angles (i.e. the
+    interior angle of the polygon, not the reflex angle).
+    """
     va = vertices[a]
     vb = vertices[b]
     vc = vertices[c]
@@ -81,7 +85,11 @@ def face_signed_area(
     face: Face,
     edges: Iterable[Edge] | None = None,
 ) -> float | None:
-    """Signed area of face using the shoelace formula."""
+    """Signed area of *face* via the shoelace formula.
+
+    Returns a positive value if vertices are wound counter-clockwise,
+    negative if clockwise, or ``None`` if any vertex lacks a position.
+    """
     ordered = list(face.vertex_ids)
     coords = [positions.get(vid) for vid in ordered]
     if not coords or not all(v is not None and v.has_position() for v in coords):
@@ -129,7 +137,7 @@ def find_pentagon_face(faces: Dict[str, Face]) -> Face | None:
 def collect_face_vertices(
     faces: Dict[str, Face], face_ids: Iterable[str]
 ) -> List[str]:
-    """Ordered unique vertex ids across a set of faces."""
+    """Return unique vertex ids from the given faces, preserving first-seen order."""
     vertex_ids: list[str] = []
     for fid in face_ids:
         face = faces.get(fid)
@@ -140,7 +148,10 @@ def collect_face_vertices(
 
 
 def boundary_vertex_cycle(edges: Iterable[Edge]) -> List[str]:
-    """Walk boundary edges (those with < 2 faces) to produce an ordered cycle."""
+    """Walk boundary edges (those with < 2 faces) to produce an ordered vertex cycle.
+
+    Returns an empty list if the boundary is not a simple closed loop.
+    """
     boundary_edges = [e for e in edges if len(e.face_ids) < 2]
     if not boundary_edges:
         return []
@@ -173,16 +184,3 @@ def boundary_vertex_cycle(edges: Iterable[Edge]) -> List[str]:
             break
 
     return cycle
-
-
-# Legacy aliases
-_ordered_face_vertices = ordered_face_vertices
-_face_vertex_cycle = face_vertex_cycle
-_interior_angle = interior_angle
-_face_signed_area = face_signed_area
-_edge_length = edge_length
-_face_center = face_center
-_grid_center = grid_center
-_find_pentagon_face = find_pentagon_face
-_collect_face_vertices = collect_face_vertices
-_boundary_vertex_cycle = boundary_vertex_cycle

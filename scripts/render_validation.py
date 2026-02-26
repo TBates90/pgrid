@@ -7,7 +7,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from polygrid.builders import build_pentagon_centered_grid, build_pure_hex_grid
-from polygrid.render import render_png
+from polygrid.visualize import render_png
 
 
 def main() -> None:

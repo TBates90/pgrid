@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .io import load_json, save_json
+
+if TYPE_CHECKING:
+    from .polygrid import PolyGrid
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,7 +87,7 @@ def main() -> None:
         print("OK")
 
     elif args.command == "render":
-        from .render import render_png
+        from .visualize import render_png
         grid = load_json(args.input_path)
         render_png(grid, args.output_path, show_pent_axes=args.pent_axes)
         print(f"Saved {args.output_path}")
@@ -108,7 +112,7 @@ def _cmd_build_hex(args) -> None:
     grid = build_pure_hex_grid(args.rings)
     save_json(grid, args.output_path)
     if args.render_path:
-        from .render import render_png
+        from .visualize import render_png
         render_png(grid, args.render_path, show_pent_axes=args.pent_axes)
     if args.diagnose:
         _print_diagnostics(grid, args.rings)
@@ -135,7 +139,7 @@ def _cmd_build_pent(args) -> None:
 
     save_json(grid, args.output_path)
     if args.render_path:
-        from .render import render_png
+        from .visualize import render_png
         render_png(grid, args.render_path, show_pent_axes=args.pent_axes)
     if args.diagnose:
         _print_diagnostics(grid, args.rings)
@@ -163,7 +167,7 @@ def _cmd_build_pent_all(args) -> None:
         )
         save_json(grid, json_path)
 
-        from .render import render_png
+        from .visualize import render_png
         render_png(grid, png_path, show_pent_axes=args.pent_axes)
 
         if args.diagnose:
@@ -179,12 +183,12 @@ def _cmd_build_pent_all(args) -> None:
         print(f"Saved {json_path}")
 
 
-def _print_diagnostics(grid, max_ring: int) -> None:
+def _print_diagnostics(grid: "PolyGrid", max_ring: int) -> None:
     for line in _diagnostics_lines(grid, max_ring):
         print(line)
 
 
-def _diagnostics_lines(grid, max_ring: int) -> list[str]:
+def _diagnostics_lines(grid: "PolyGrid", max_ring: int) -> list[str]:
     from .diagnostics import (
         ring_diagnostics,
         summarize_ring_stats,

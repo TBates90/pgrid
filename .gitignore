@@ -6,9 +6,22 @@ dist/
 # Python cache
 __pycache__/
 *.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
 
 # Test cache
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Generated outputs
+exports/
 
 # Editor/OS
 .DS_Store
+*.swp
+*.swo
+*~
