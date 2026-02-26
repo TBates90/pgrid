@@ -435,9 +435,29 @@ void main() {
     mvp_loc = gl.glGetUniformLocation(program, b"u_mvp")
     model_loc = gl.glGetUniformLocation(program, b"u_model")
 
-    identity_model = np.identity(4, dtype=np.float32)
-    rotation = [0.0, 0.0]
-    zoom = [3.5]
+    # Camera stays fixed on the Z axis looking at the origin.
+    # Mouse drag rotates the *model* (globe) in place via u_model.
+    yaw = [0.0]    # rotation around Y axis (left/right drag)
+    pitch = [0.0]  # rotation around X axis (up/down drag)
+    zoom = [3.5]   # camera distance from origin
+
+    def _rotation_y(angle):
+        c, s = math.cos(angle), math.sin(angle)
+        return np.array([
+            [ c, 0, s, 0],
+            [ 0, 1, 0, 0],
+            [-s, 0, c, 0],
+            [ 0, 0, 0, 1],
+        ], dtype=np.float32)
+
+    def _rotation_x(angle):
+        c, s = math.cos(angle), math.sin(angle)
+        return np.array([
+            [1,  0, 0, 0],
+            [0,  c, -s, 0],
+            [0,  s,  c, 0],
+            [0,  0,  0, 1],
+        ], dtype=np.float32)
 
     @window.event
     def on_draw():
@@ -448,13 +468,13 @@ void main() {
 
         aspect = window.width / max(1, window.height)
         proj = _perspective(math.radians(45), aspect, 0.1, 100.0)
-        eye = np.array([
-            zoom[0] * math.sin(rotation[0]) * math.cos(rotation[1]),
-            zoom[0] * math.sin(rotation[1]),
-            zoom[0] * math.cos(rotation[0]) * math.cos(rotation[1]),
-        ], dtype=np.float32)
+        # Fixed camera on +Z axis, looking at origin
+        eye = np.array([0.0, 0.0, zoom[0]], dtype=np.float32)
         view = _look_at(eye, (0.0, 0.0, 0.0))
         mvp = (proj @ view).astype(np.float32)
+
+        # Globe rotation: pitch (X) then yaw (Y)
+        model = (_rotation_y(yaw[0]) @ _rotation_x(pitch[0])).astype(np.float32)
 
         gl.glUseProgram(program)
         gl.glUniformMatrix4fv(
@@ -463,7 +483,7 @@ void main() {
         )
         gl.glUniformMatrix4fv(
             model_loc, 1, gl.GL_TRUE,
-            identity_model.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            model.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
         )
 
         for handle in tile_handles:
@@ -473,12 +493,10 @@ void main() {
 
     @window.event
     def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
-        rotation[0] += dx * 0.01
-        rotation[1] += dy * 0.01
-        rotation[1] = max(
-            -math.pi / 2 + 0.01,
-            min(math.pi / 2 - 0.01, rotation[1]),
-        )
+        yaw[0] += dx * 0.01
+        pitch[0] += dy * 0.01
+        # Clamp pitch to avoid flipping
+        pitch[0] = max(-math.pi / 2 + 0.01, min(math.pi / 2 - 0.01, pitch[0]))
 
     @window.event
     def on_mouse_scroll(x, y, scroll_x, scroll_y):
