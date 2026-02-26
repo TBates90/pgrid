@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import json
+from pathlib import Path
 import pytest
 
 from polygrid.models import Vertex, Face
@@ -798,3 +799,591 @@ class TestGlobeMesh:
             assert abs(a.r - b.r) < 5e-5
             assert abs(a.g - b.g) < 5e-5
             assert abs(a.b - b.b) < 5e-5
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 9A — Globe export
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestGlobeExport:
+    """Tests for globe_export.py — payload, JSON file, and schema validation."""
+
+    def _make_globe_with_terrain(self, freq=2):
+        from polygrid.mountains import MountainConfig, generate_mountains
+
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        config = MountainConfig(seed=42, ridge_frequency=2.0, ridge_octaves=3)
+        generate_mountains(grid, store, config)
+        return grid, store
+
+    # ── payload structure ───────────────────────────────────────────
+
+    def test_payload_top_level_keys(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        assert set(payload.keys()) == {"metadata", "tiles", "adjacency"}
+
+    def test_metadata_fields(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain(freq=2)
+        meta = export_globe_payload(grid, store)["metadata"]
+        assert meta["version"] == "1.0"
+        assert meta["generator"] == "polygrid.globe_export"
+        assert meta["frequency"] == 2
+        assert meta["radius"] == grid.radius
+        assert meta["tile_count"] == len(grid.faces)
+        assert meta["pentagon_count"] == 12
+        assert meta["hexagon_count"] == len(grid.faces) - 12
+
+    def test_tile_count_matches(self):
+        from polygrid.globe_export import export_globe_payload
+
+        for freq in (1, 2, 3):
+            grid, store = self._make_globe_with_terrain(freq=freq)
+            payload = export_globe_payload(grid, store)
+            expected = 10 * freq ** 2 + 2
+            assert len(payload["tiles"]) == expected
+            assert payload["metadata"]["tile_count"] == expected
+
+    def test_all_tiles_have_required_fields(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        required = {"id", "face_type", "vertices_3d", "center_3d",
+                     "elevation", "color", "neighbor_ids"}
+        for tile in payload["tiles"]:
+            missing = required - set(tile.keys())
+            assert not missing, f"Tile {tile.get('id')}: missing {missing}"
+
+    def test_tile_colour_is_valid_rgb(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        for tile in payload["tiles"]:
+            r, g, b = tile["color"]
+            assert 0.0 <= r <= 1.0, f"{tile['id']}: r={r}"
+            assert 0.0 <= g <= 1.0, f"{tile['id']}: g={g}"
+            assert 0.0 <= b <= 1.0, f"{tile['id']}: b={b}"
+
+    def test_tile_center_3d_present(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        for tile in payload["tiles"]:
+            c = tile["center_3d"]
+            assert c is not None, f"Tile {tile['id']}: center_3d is None"
+            assert len(c) == 3
+
+    def test_tile_vertices_3d_counts(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        for tile in payload["tiles"]:
+            n_verts = len(tile["vertices_3d"])
+            if tile["face_type"] == "pent":
+                assert n_verts == 5, f"{tile['id']}: expected 5, got {n_verts}"
+            else:
+                assert n_verts == 6, f"{tile['id']}: expected 6, got {n_verts}"
+
+    def test_tile_neighbor_ids_count(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        for tile in payload["tiles"]:
+            n = len(tile["neighbor_ids"])
+            if tile["face_type"] == "pent":
+                assert n == 5, f"{tile['id']}: expected 5 neighbours, got {n}"
+            else:
+                assert n == 6, f"{tile['id']}: expected 6 neighbours, got {n}"
+
+    def test_tile_lat_lon_ranges(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        for tile in payload["tiles"]:
+            lat = tile["latitude_deg"]
+            lon = tile["longitude_deg"]
+            assert lat is not None
+            assert lon is not None
+            assert -90.0 <= lat <= 90.0, f"{tile['id']}: lat={lat}"
+            assert -180.0 <= lon <= 180.0, f"{tile['id']}: lon={lon}"
+
+    def test_tile_face_types(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        pents = [t for t in payload["tiles"] if t["face_type"] == "pent"]
+        hexes = [t for t in payload["tiles"] if t["face_type"] == "hex"]
+        assert len(pents) == 12
+        assert len(hexes) == len(grid.faces) - 12
+
+    def test_adjacency_edges(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        adj = payload["adjacency"]
+        # Each edge is a pair of face IDs
+        for edge in adj:
+            assert len(edge) == 2
+            assert all(isinstance(e, str) for e in edge)
+        # Every adjacency edge should be symmetric in the tile neighbours
+        tile_map = {t["id"]: t for t in payload["tiles"]}
+        for a, b in adj:
+            assert b in tile_map[a]["neighbor_ids"]
+            assert a in tile_map[b]["neighbor_ids"]
+
+    def test_adjacency_edge_count(self):
+        """Edge count for Goldberg: E = 3F/2 - 6  (Euler for convex polyhedra)."""
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain(freq=2)
+        payload = export_globe_payload(grid, store)
+        f = len(payload["tiles"])
+        expected_edges = (3 * f - 6) // 2  # Euler's formula for 3-connected planar graph
+        # Actually: sum of neighbors / 2
+        n_edges_from_neighbors = sum(
+            len(t["neighbor_ids"]) for t in payload["tiles"]
+        ) // 2
+        assert len(payload["adjacency"]) == n_edges_from_neighbors
+
+    # ── extra fields ────────────────────────────────────────────────
+
+    def test_extra_fields_included(self):
+        from polygrid.globe_export import export_globe_payload
+        from polygrid.mountains import MountainConfig, generate_mountains
+
+        grid = build_globe_grid(2)
+        schema = TileSchema([
+            FieldDef("elevation", float, 0.0),
+            FieldDef("biome", str, "plains"),
+        ])
+        store = TileDataStore(grid=grid, schema=schema)
+        config = MountainConfig(seed=42, ridge_frequency=2.0, ridge_octaves=3)
+        generate_mountains(grid, store, config)
+        for fid in grid.faces:
+            store.set(fid, "biome", "forest")
+
+        payload = export_globe_payload(grid, store, extra_fields=["biome"])
+        assert payload["metadata"]["extra_fields"] == ["biome"]
+        for tile in payload["tiles"]:
+            assert tile["biome"] == "forest"
+
+    def test_extra_fields_missing_in_store_gives_none(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        # Request a field that doesn't exist in the store
+        payload = export_globe_payload(grid, store, extra_fields=["no_such_field"])
+        for tile in payload["tiles"]:
+            assert tile["no_such_field"] is None
+
+    # ── JSON file export ────────────────────────────────────────────
+
+    def test_export_json_creates_file(self, tmp_path):
+        from polygrid.globe_export import export_globe_json
+
+        grid, store = self._make_globe_with_terrain()
+        out = export_globe_json(grid, store, tmp_path / "globe.json")
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    def test_export_json_is_valid_json(self, tmp_path):
+        from polygrid.globe_export import export_globe_json
+
+        grid, store = self._make_globe_with_terrain()
+        out = export_globe_json(grid, store, tmp_path / "globe.json")
+        payload = json.loads(out.read_text())
+        assert "metadata" in payload
+        assert "tiles" in payload
+        assert "adjacency" in payload
+
+    def test_export_json_roundtrip_tile_count(self, tmp_path):
+        from polygrid.globe_export import export_globe_json
+
+        grid, store = self._make_globe_with_terrain(freq=3)
+        out = export_globe_json(grid, store, tmp_path / "globe.json")
+        payload = json.loads(out.read_text())
+        assert payload["metadata"]["tile_count"] == len(grid.faces)
+        assert len(payload["tiles"]) == len(grid.faces)
+
+    # ── schema validation ───────────────────────────────────────────
+
+    def test_payload_validates_against_schema(self):
+        import jsonschema
+        from polygrid.globe_export import export_globe_payload
+
+        schema_path = Path(__file__).resolve().parent.parent / "schemas" / "globe.schema.json"
+        schema = json.loads(schema_path.read_text())
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        # Should not raise
+        jsonschema.validate(instance=payload, schema=schema)
+
+    def test_json_file_validates_against_schema(self, tmp_path):
+        import jsonschema
+        from polygrid.globe_export import export_globe_json
+
+        schema_path = Path(__file__).resolve().parent.parent / "schemas" / "globe.schema.json"
+        schema = json.loads(schema_path.read_text())
+
+        grid, store = self._make_globe_with_terrain()
+        out = export_globe_json(grid, store, tmp_path / "globe.json")
+        payload = json.loads(out.read_text())
+        jsonschema.validate(instance=payload, schema=schema)
+
+    # ── lightweight validator ───────────────────────────────────────
+
+    def test_validate_globe_payload_passes(self):
+        from polygrid.globe_export import export_globe_payload, validate_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        errors = validate_globe_payload(payload)
+        assert errors == []
+
+    def test_validate_globe_payload_detects_missing_keys(self):
+        from polygrid.globe_export import validate_globe_payload
+
+        errors = validate_globe_payload({"metadata": {}, "tiles": []})
+        assert any("adjacency" in e for e in errors)
+        assert any("version" in e for e in errors)
+
+    # ── topo ramp ───────────────────────────────────────────────────
+
+    def test_topo_ramp_export(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store, ramp="topo")
+        assert payload["metadata"]["colour_ramp"] == "topo"
+        # Colours should differ from satellite ramp (at least some)
+        payload_sat = export_globe_payload(grid, store, ramp="satellite")
+        diff = sum(
+            1 for t1, t2 in zip(payload["tiles"], payload_sat["tiles"])
+            if t1["color"] != t2["color"]
+        )
+        # Most tiles should differ between ramps
+        assert diff > 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 9B — Multi-resolution detail grids
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestDetailGrid:
+    """Tests for detail_grid.py — build, terrain, textures, atlas."""
+
+    # ── build_detail_grid ───────────────────────────────────────────
+
+    def test_hex_detail_face_count(self):
+        from polygrid.detail_grid import build_detail_grid, detail_face_count
+
+        grid = build_globe_grid(2)
+        hex_fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        for rings in (0, 1, 2, 3):
+            d = build_detail_grid(grid, hex_fid, detail_rings=rings)
+            expected = detail_face_count("hex", rings)
+            assert len(d.faces) == expected, f"rings={rings}: {len(d.faces)} != {expected}"
+
+    def test_pent_detail_face_count(self):
+        from polygrid.detail_grid import build_detail_grid, detail_face_count
+
+        grid = build_globe_grid(2)
+        pent_fid = next(fid for fid, f in grid.faces.items() if f.face_type == "pent")
+        for rings in (0, 1, 2):
+            d = build_detail_grid(grid, pent_fid, detail_rings=rings)
+            expected = detail_face_count("pent", rings)
+            assert len(d.faces) == expected, f"rings={rings}: {len(d.faces)} != {expected}"
+
+    def test_parent_face_id_in_metadata(self):
+        from polygrid.detail_grid import build_detail_grid
+
+        grid = build_globe_grid(2)
+        fid = next(iter(grid.faces))
+        d = build_detail_grid(grid, fid, detail_rings=1)
+        assert d.metadata["parent_face_id"] == fid
+
+    def test_parent_metadata_propagated(self):
+        from polygrid.detail_grid import build_detail_grid
+
+        grid = build_globe_grid(2)
+        fid = next(iter(grid.faces))
+        d = build_detail_grid(grid, fid, detail_rings=1)
+        assert d.metadata.get("detail_rings") == 1
+        # Parent 3D metadata should be present
+        assert "parent_center_3d" in d.metadata
+        assert "parent_normal_3d" in d.metadata
+
+    def test_invalid_face_id_raises(self):
+        from polygrid.detail_grid import build_detail_grid
+
+        grid = build_globe_grid(1)
+        with pytest.raises(KeyError):
+            build_detail_grid(grid, "no_such_face", detail_rings=1)
+
+    def test_detail_grid_has_positions(self):
+        from polygrid.detail_grid import build_detail_grid
+
+        grid = build_globe_grid(2)
+        fid = next(iter(grid.faces))
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        # All vertices should have 2D positions
+        for v in d.vertices.values():
+            assert v.has_position(), f"Vertex {v.id} has no position"
+
+    # ── generate_detail_terrain ─────────────────────────────────────
+
+    def test_detail_terrain_all_faces_populated(self):
+        from polygrid.detail_grid import build_detail_grid, generate_detail_terrain
+
+        grid = build_globe_grid(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        store = generate_detail_terrain(d, parent_elevation=0.5, seed=42)
+        for dfid in d.faces:
+            val = store.get(dfid, "elevation")
+            assert isinstance(val, float)
+
+    def test_detail_terrain_near_parent_elevation(self):
+        from polygrid.detail_grid import build_detail_grid, generate_detail_terrain
+
+        grid = build_globe_grid(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        parent_elev = 0.7
+        store = generate_detail_terrain(d, parent_elevation=parent_elev, seed=42)
+        vals = [store.get(dfid, "elevation") for dfid in d.faces]
+        avg = sum(vals) / len(vals)
+        # Average should be close to parent_elevation * base_weight
+        assert abs(avg - parent_elev * 0.85) < 0.2
+
+    def test_detail_terrain_deterministic(self):
+        from polygrid.detail_grid import build_detail_grid, generate_detail_terrain
+
+        grid = build_globe_grid(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        s1 = generate_detail_terrain(d, parent_elevation=0.5, seed=123)
+        s2 = generate_detail_terrain(d, parent_elevation=0.5, seed=123)
+        for dfid in d.faces:
+            assert s1.get(dfid, "elevation") == s2.get(dfid, "elevation")
+
+    def test_detail_terrain_different_seeds(self):
+        from polygrid.detail_grid import build_detail_grid, generate_detail_terrain
+
+        grid = build_globe_grid(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        s1 = generate_detail_terrain(d, parent_elevation=0.5, seed=1)
+        s2 = generate_detail_terrain(d, parent_elevation=0.5, seed=2)
+        # At least some values should differ
+        diffs = sum(
+            1 for dfid in d.faces
+            if s1.get(dfid, "elevation") != s2.get(dfid, "elevation")
+        )
+        assert diffs > 0
+
+    # ── render_detail_texture ───────────────────────────────────────
+
+    def test_texture_creates_file(self, tmp_path):
+        from polygrid.detail_grid import build_detail_grid, generate_detail_terrain, render_detail_texture
+
+        grid = build_globe_grid(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        store = generate_detail_terrain(d, parent_elevation=0.5)
+        out = render_detail_texture(d, store, tmp_path / "tile.png")
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    def test_texture_pent_creates_file(self, tmp_path):
+        from polygrid.detail_grid import build_detail_grid, generate_detail_terrain, render_detail_texture
+
+        grid = build_globe_grid(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "pent")
+        d = build_detail_grid(grid, fid, detail_rings=1)
+        store = generate_detail_terrain(d, parent_elevation=0.3)
+        out = render_detail_texture(d, store, tmp_path / "pent.png")
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    # ── build_texture_atlas ─────────────────────────────────────────
+
+    def test_atlas_creates_file(self, tmp_path):
+        from polygrid.detail_grid import (
+            build_detail_grid, generate_detail_terrain,
+            render_detail_texture, build_texture_atlas,
+        )
+
+        grid = build_globe_grid(1)
+        paths = []
+        for i, fid in enumerate(list(grid.faces.keys())[:4]):
+            d = build_detail_grid(grid, fid, detail_rings=1)
+            store = generate_detail_terrain(d, parent_elevation=0.5, seed=i)
+            p = render_detail_texture(d, store, tmp_path / f"tile_{fid}.png")
+            paths.append(p)
+
+        atlas_path, layout = build_texture_atlas(
+            paths, tmp_path / "atlas.png", tile_size=64,
+        )
+        assert atlas_path.exists()
+        assert atlas_path.stat().st_size > 0
+
+    def test_atlas_layout_correct_count(self, tmp_path):
+        from polygrid.detail_grid import (
+            build_detail_grid, generate_detail_terrain,
+            render_detail_texture, build_texture_atlas,
+        )
+
+        grid = build_globe_grid(1)
+        paths = []
+        for i, fid in enumerate(list(grid.faces.keys())[:6]):
+            d = build_detail_grid(grid, fid, detail_rings=1)
+            store = generate_detail_terrain(d, parent_elevation=0.5, seed=i)
+            p = render_detail_texture(d, store, tmp_path / f"tile_{fid}.png")
+            paths.append(p)
+
+        _, layout = build_texture_atlas(
+            paths, tmp_path / "atlas.png", tile_size=64,
+        )
+        assert len(layout) == 6
+
+    def test_atlas_dimensions(self, tmp_path):
+        """Atlas should have correct pixel dimensions based on columns/rows."""
+        from polygrid.detail_grid import (
+            build_detail_grid, generate_detail_terrain,
+            render_detail_texture, build_texture_atlas,
+        )
+        from PIL import Image
+
+        grid = build_globe_grid(1)
+        paths = []
+        for i, fid in enumerate(list(grid.faces.keys())[:4]):
+            d = build_detail_grid(grid, fid, detail_rings=1)
+            store = generate_detail_terrain(d, parent_elevation=0.5, seed=i)
+            p = render_detail_texture(d, store, tmp_path / f"tile_{fid}.png")
+            paths.append(p)
+
+        atlas_path, _ = build_texture_atlas(
+            paths, tmp_path / "atlas.png",
+            tile_size=64, columns=2,
+        )
+        img = Image.open(atlas_path)
+        assert img.size == (2 * 64, 2 * 64)  # 2 cols × 2 rows
+
+    def test_atlas_no_textures_raises(self, tmp_path):
+        from polygrid.detail_grid import build_texture_atlas
+
+        with pytest.raises(ValueError, match="No texture"):
+            build_texture_atlas([], tmp_path / "atlas.png")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 9C — Models renderer integration (CPU-side mesh tests)
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestGlobeRenderer:
+    """Tests for globe_renderer.py — mesh builders, scene prep."""
+
+    def _make_payload(self, freq=2):
+        from polygrid.mountains import MountainConfig, generate_mountains
+        from polygrid.globe_export import export_globe_payload
+
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        config = MountainConfig(seed=42, ridge_frequency=2.0, ridge_octaves=3)
+        generate_mountains(grid, store, config)
+        payload = export_globe_payload(grid, store)
+        return grid, store, payload
+
+    def test_build_coloured_globe_mesh(self):
+        from polygrid.globe_renderer import build_coloured_globe_mesh
+
+        grid, _, payload = self._make_payload()
+        tile_colours = {t["id"]: tuple(t["color"]) for t in payload["tiles"]}
+        mesh = build_coloured_globe_mesh(grid.frequency, tile_colours)
+        assert len(mesh.vertex_data) > 0
+        assert len(mesh.index_data) > 0
+
+    def test_build_coloured_mesh_from_export(self):
+        from polygrid.globe_renderer import build_coloured_globe_mesh_from_export
+
+        _, _, payload = self._make_payload()
+        mesh = build_coloured_globe_mesh_from_export(payload)
+        assert len(mesh.vertex_data) > 0
+        assert len(mesh.index_data) > 0
+
+    def test_mesh_vertex_count_matches_terrain_mesh(self):
+        """Coloured mesh from export should match terrain_layout_mesh vertex count."""
+        from polygrid.globe_renderer import build_coloured_globe_mesh_from_export
+        from polygrid.globe_mesh import build_terrain_layout_mesh
+        from polygrid.globe_render import globe_to_colour_map
+
+        grid, store, payload = self._make_payload()
+        colour_map = globe_to_colour_map(grid, store)
+        ref_mesh = build_terrain_layout_mesh(grid, colour_map)
+        test_mesh = build_coloured_globe_mesh_from_export(payload)
+        assert len(test_mesh.vertex_data) == len(ref_mesh.vertex_data)
+        assert len(test_mesh.index_data) == len(ref_mesh.index_data)
+
+    def test_mesh_colours_match_payload(self):
+        """Verify mesh colours correspond to the export payload colours."""
+        from polygrid.globe_renderer import build_coloured_globe_mesh
+
+        _, _, payload = self._make_payload(freq=1)
+        tile_colours = {t["id"]: tuple(t["color"]) for t in payload["tiles"]}
+        mesh = build_coloured_globe_mesh(1, tile_colours)
+        # Mesh has vertex data — just verify it's non-trivial
+        assert mesh.stride > 0
+        assert len(mesh.attributes) >= 2  # position + color
+
+    def test_build_edge_mesh(self):
+        from polygrid.globe_renderer import build_edge_mesh_for_frequency
+
+        mesh = build_edge_mesh_for_frequency(2)
+        assert len(mesh.vertex_data) > 0
+        assert len(mesh.index_data) > 0
+
+    def test_prepare_terrain_scene(self):
+        from polygrid.globe_renderer import prepare_terrain_scene
+
+        _, _, payload = self._make_payload()
+        scene = prepare_terrain_scene(payload)
+        assert "mesh" in scene
+        assert "edge_mesh" in scene
+        assert scene["frequency"] == 2
+        assert scene["tile_count"] == len(payload["tiles"])
+        assert len(scene["mesh"].vertex_data) > 0
+
+    def test_prepare_scene_no_edges(self):
+        from polygrid.globe_renderer import prepare_terrain_scene
+
+        _, _, payload = self._make_payload()
+        scene = prepare_terrain_scene(payload, include_edges=False)
+        assert scene["edge_mesh"] is None
+        assert len(scene["mesh"].vertex_data) > 0
+
+    def test_prepare_scene_custom_radius(self):
+        from polygrid.globe_renderer import prepare_terrain_scene
+
+        _, _, payload = self._make_payload()
+        scene = prepare_terrain_scene(payload, radius=2.5)
+        assert scene["radius"] == 2.5

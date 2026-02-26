@@ -1,0 +1,155 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.com/globe.schema.json",
+  "title": "GlobeGrid Export",
+  "description": "Comprehensive export of a polygrid GlobeGrid with terrain data.",
+  "type": "object",
+  "required": ["metadata", "tiles", "adjacency"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["version", "frequency", "radius", "tile_count"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Export format version."
+        },
+        "generator": {
+          "type": "string",
+          "description": "Generator module name."
+        },
+        "frequency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Goldberg subdivision frequency."
+        },
+        "radius": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Polyhedron radius."
+        },
+        "tile_count": {
+          "type": "integer",
+          "minimum": 12,
+          "description": "Total number of tiles (10*freq^2 + 2)."
+        },
+        "pentagon_count": {
+          "type": "integer",
+          "const": 12,
+          "description": "Always 12 pentagons in a Goldberg polyhedron."
+        },
+        "hexagon_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of hexagonal tiles."
+        },
+        "field_name": {
+          "type": "string",
+          "description": "Name of the primary elevation field."
+        },
+        "colour_ramp": {
+          "type": "string",
+          "enum": ["satellite", "topo"],
+          "description": "Colour ramp used for terrain colouring."
+        },
+        "extra_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional field names exported per tile."
+        }
+      },
+      "additionalProperties": true
+    },
+    "tiles": {
+      "type": "array",
+      "description": "Per-tile data, one entry per Goldberg tile.",
+      "items": {
+        "type": "object",
+        "required": ["id", "face_type", "vertices_3d", "center_3d", "elevation", "color", "neighbor_ids"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Polygrid face ID (e.g. 't0')."
+          },
+          "face_type": {
+            "type": "string",
+            "enum": ["pent", "hex"],
+            "description": "Tile shape."
+          },
+          "models_tile_id": {
+            "type": ["integer", "null"],
+            "description": "Integer tile ID in the models library."
+          },
+          "vertices_3d": {
+            "type": "array",
+            "description": "3D vertex positions [[x,y,z], ...].",
+            "items": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 3
+            },
+            "minItems": 5,
+            "maxItems": 6
+          },
+          "center_3d": {
+            "type": ["array", "null"],
+            "description": "3D centre [x, y, z].",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "normal_3d": {
+            "type": ["array", "null"],
+            "description": "Outward unit normal [x, y, z].",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "latitude_deg": {
+            "type": ["number", "null"],
+            "minimum": -90,
+            "maximum": 90,
+            "description": "Latitude in degrees."
+          },
+          "longitude_deg": {
+            "type": ["number", "null"],
+            "minimum": -180,
+            "maximum": 180,
+            "description": "Longitude in degrees."
+          },
+          "elevation": {
+            "type": "number",
+            "description": "Terrain elevation value."
+          },
+          "color": {
+            "type": "array",
+            "description": "RGB colour [r, g, b] in [0, 1].",
+            "items": { "type": "number", "minimum": 0, "maximum": 1 },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "neighbor_ids": {
+            "type": "array",
+            "description": "Adjacent tile face IDs.",
+            "items": { "type": "string" },
+            "minItems": 5,
+            "maxItems": 6
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "adjacency": {
+      "type": "array",
+      "description": "Edge list: each entry is [face_id_a, face_id_b].",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    }
+  },
+  "additionalProperties": false
+}

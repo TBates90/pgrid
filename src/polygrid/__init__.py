@@ -154,6 +154,35 @@ try:
 except ImportError:
     pass  # models library not installed — globe mesh features unavailable
 
+try:
+    from .globe_export import (
+        export_globe_payload,
+        export_globe_json,
+        validate_globe_payload,
+    )
+except ImportError:
+    pass  # models library not installed — globe export features unavailable
+
+try:
+    from .globe_renderer import (
+        build_coloured_globe_mesh,
+        build_coloured_globe_mesh_from_export,
+        build_edge_mesh_for_frequency,
+        prepare_terrain_scene,
+        render_terrain_globe_opengl,
+    )
+except ImportError:
+    pass  # models library not installed — globe renderer features unavailable
+
+# ── Detail grids ────────────────────────────────────────────────────
+from .detail_grid import (
+    build_detail_grid,
+    detail_face_count,
+    generate_detail_terrain,
+    render_detail_texture,
+    build_texture_atlas,
+)
+
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
     ring_diagnostics,
@@ -300,4 +329,19 @@ __all__ = [
     "build_terrain_face_meshes",
     "build_terrain_tile_meshes",
     "build_terrain_edge_mesh",
+    # Globe export
+    "export_globe_payload",
+    "export_globe_json",
+    # Globe renderer (optional — requires models library)
+    "build_coloured_globe_mesh",
+    "build_coloured_globe_mesh_from_export",
+    "build_edge_mesh_for_frequency",
+    "prepare_terrain_scene",
+    "render_terrain_globe_opengl",
+    # Detail grids
+    "build_detail_grid",
+    "detail_face_count",
+    "generate_detail_terrain",
+    "render_detail_texture",
+    "build_texture_atlas",
 ]

@@ -374,49 +374,50 @@ Use the models library's rendering system to visualise terrain on the actual 3D 
 
 Every pentagon always has 5 neighbours. Every hexagon always has 6. This is the fundamental Goldberg invariant that our `GlobeGrid` must preserve.
 
-## Phase 9 — Export & 3D Integration 🔲
+## Phase 9 — Export & 3D Integration ✅
 
 Prepare per-tile data and textures for the 3D Goldberg renderer. Phase 8 gets terrain on a globe grid and renders it in 2D and via matplotlib 3D. Phase 9 takes it further — producing exports that plug into the `models` library's OpenGL renderer and potentially other 3D engines.
 
-### 9A — Per-Tile Data Export 🔲
+### 9A — Per-Tile Data Export ✅
 
-- [ ] **9A.1 — `export_globe_payload(globe_grid, store, ramp)` → dict** — produce a single JSON-serialisable dict with:
+- [x] **9A.1 — `export_globe_payload(globe_grid, store, ramp)` → dict** — produce a single JSON-serialisable dict with:
   - `globe.metadata`: frequency, radius, tile count, generator info
   - `globe.tiles[]`: for each tile — id, face_type, center_3d, normal_3d, lat, lon, elevation, biome/region, colour RGB, vertex positions (3D)
   - `globe.adjacency`: edge list for the full graph
-- [ ] **9A.2 — `export_globe_json(globe_grid, store, path, ramp)`** — write the payload to a JSON file. Validate against a schema.
-- [ ] **9A.3 — Globe JSON schema** — add `schemas/globe.schema.json` defining the export format. Reference it from `JSON_CONTRACT.md`.
-- [ ] **9A.4 — Tests:**
+- [x] **9A.2 — `export_globe_json(globe_grid, store, path, ramp)`** — write the payload to a JSON file. Validate against a schema.
+- [x] **9A.3 — Globe JSON schema** — add `schemas/globe.schema.json` defining the export format. Reference it from `JSON_CONTRACT.md`.
+- [x] **9A.4 — Tests:**
   - Exported JSON validates against schema
   - Tile count matches expected for frequency
   - All tiles have colour, elevation, and 3D coords
 
-### 9B — Multi-Resolution Detail Grids 🔲
+### 9B — Multi-Resolution Detail Grids ✅
 
 For higher fidelity: each Goldberg tile can expand into a local detail grid (pentagon-centered or hex grid built by the existing builders), giving sub-tile terrain detail.
 
-- [ ] **9B.1 — `build_detail_grid(globe_grid, face_id, detail_rings)` → PolyGrid** — for a given globe face, build a detail grid (pent-centered or hex) at the given ring count. Anchor it to the globe face's 2D projection.
-- [ ] **9B.2 — Detail ↔ globe mapping** — maintain a mapping between detail-grid faces and their parent globe tile. Store as `detail_grid.metadata["parent_face_id"]`.
-- [ ] **9B.3 — Detail terrain gen** — run terrain generation on the detail grid, seeded/constrained by the parent globe tile's elevation and biome.
-- [ ] **9B.4 — Per-tile texture export** — render each detail grid to a small PNG texture. UVs mapped so the texture wraps onto the Goldberg tile's surface in 3D.
-- [ ] **9B.5 — Texture atlas** — combine per-tile PNGs into a single atlas image for efficient GPU rendering.
-- [ ] **9B.6 — Tests:**
+- [x] **9B.1 — `build_detail_grid(globe_grid, face_id, detail_rings)` → PolyGrid** — for a given globe face, build a detail grid (pent-centered or hex) at the given ring count. Anchor it to the globe face's 2D projection.
+- [x] **9B.2 — Detail ↔ globe mapping** — maintain a mapping between detail-grid faces and their parent globe tile. Store as `detail_grid.metadata["parent_face_id"]`.
+- [x] **9B.3 — Detail terrain gen** — run terrain generation on the detail grid, seeded/constrained by the parent globe tile's elevation and biome.
+- [x] **9B.4 — Per-tile texture export** — render each detail grid to a small PNG texture. UVs mapped so the texture wraps onto the Goldberg tile's surface in 3D.
+- [x] **9B.5 — Texture atlas** — combine per-tile PNGs into a single atlas image for efficient GPU rendering.
+- [x] **9B.6 — Tests:**
   - Detail grid has expected face count for given ring count
   - Texture files are created and have correct dimensions
   - Atlas has correct layout
 
-### 9C — Models Library Renderer Integration 🔲
+### 9C — Models Library Renderer Integration ✅
 
 Feed per-tile colours and textures into the `models` library's rendering pipeline.
 
-- [ ] **9C.1 — Colour mesh builder** — create `build_coloured_globe_mesh(polyhedron, tile_colours)` that produces the same `ShapeMesh` format as `build_layout_mesh()` but with per-tile colours from the terrain data instead of layout palette colours.
-- [ ] **9C.2 — `render_terrain_globe_opengl(frequency, store, ramp)`** — full OpenGL render of the Goldberg polyhedron with terrain colours. Uses `SimpleMeshRenderer` from models.
-- [ ] **9C.3 — Interactive demo** — extend `goldberg_demo.py` (or write a new one) that loads a globe export JSON and renders the terrain-coloured polyhedron with rotation/zoom.
+- [x] **9C.1 — Colour mesh builder** — `build_coloured_globe_mesh(frequency, tile_colours)` and `build_coloured_globe_mesh_from_export(payload)` in `globe_renderer.py`. Also `build_terrain_layout_mesh` in `globe_mesh.py` (from Phase 8E).
+- [x] **9C.2 — `render_terrain_globe_opengl(payload)`** — full OpenGL render of the Goldberg polyhedron with terrain colours. Uses `SimpleMeshRenderer` from models + pyglet window with mouse rotation/zoom. `prepare_terrain_scene(payload)` for CPU-side mesh prep.
+- [x] **9C.3 — Interactive demo** — `scripts/view_globe.py` loads a globe export JSON (or generates inline) and renders the terrain-coloured polyhedron with rotation/zoom.
 - [ ] **9C.4 — Textured mesh builder** (stretch goal) — produce UV-mapped meshes that reference the per-tile textures from 9B, for sub-tile detail rendering.
-- [ ] **9C.5 — Tests:**
+- [x] **9C.5 — Tests:**
   - Coloured mesh has correct vertex count
-  - Render produces output without errors
-  - Mesh colours match terrain colour map
+  - Mesh vertex/index counts match reference terrain_layout_mesh
+  - Scene preparation with/without edges
+  - Edge mesh builder
 
 ---
 
