@@ -2037,3 +2037,179 @@ class TestDetailTerrain:
 
         # With boundary blending, the difference should be modest
         assert max_diff < 0.5, f"Seam max_diff={max_diff:.4f} too large"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 10C — Enhanced colour ramps & biome rendering
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestDetailRender:
+    """Tests for detail_render.py — BiomeConfig, colour function, textures."""
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def _make_globe(self, freq: int = 2):
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        for fid in grid.faces:
+            store.set(fid, "elevation", 0.5)
+        return grid, store
+
+    # ── BiomeConfig ─────────────────────────────────────────────────
+
+    def test_biome_defaults(self):
+        from polygrid.detail_render import BiomeConfig
+
+        bc = BiomeConfig()
+        assert bc.base_ramp == "detail_satellite"
+        assert 0.0 <= bc.vegetation_density <= 1.0
+        assert 0.0 <= bc.rock_exposure <= 1.0
+        assert 0.0 < bc.snow_line < 1.0
+        assert 0.0 <= bc.water_level <= 1.0
+
+    def test_biome_frozen(self):
+        from polygrid.detail_render import BiomeConfig
+
+        bc = BiomeConfig()
+        with pytest.raises(AttributeError):
+            bc.moisture = 0.9  # type: ignore[misc]
+
+    # ── detail_elevation_to_colour ──────────────────────────────────
+
+    def test_colour_valid_rgb_range(self):
+        """All elevation values produce valid RGB in [0, 1]."""
+        from polygrid.detail_render import detail_elevation_to_colour, BiomeConfig
+
+        bc = BiomeConfig()
+        for t in [0.0, 0.05, 0.1, 0.15, 0.3, 0.5, 0.7, 0.85, 0.95, 1.0]:
+            r, g, b = detail_elevation_to_colour(
+                t, bc, hillshade_val=0.5, noise_x=t, noise_y=t,
+            )
+            assert 0.0 <= r <= 1.0, f"r={r} at t={t}"
+            assert 0.0 <= g <= 1.0, f"g={g} at t={t}"
+            assert 0.0 <= b <= 1.0, f"b={b} at t={t}"
+
+    def test_colour_water_below_level(self):
+        """Water colour should be bluish (b > g > r) below water_level."""
+        from polygrid.detail_render import detail_elevation_to_colour, BiomeConfig
+
+        bc = BiomeConfig(water_level=0.15)
+        r, g, b = detail_elevation_to_colour(
+            0.05, bc, hillshade_val=0.5,
+        )
+        # Water should be mostly blue
+        assert b > r, f"Water should be bluish: r={r}, b={b}"
+
+    def test_colour_snow_above_line(self):
+        """Colour above snow_line should be bright (high luminance)."""
+        from polygrid.detail_render import detail_elevation_to_colour, BiomeConfig
+
+        bc = BiomeConfig(snow_line=0.80)
+        r, g, b = detail_elevation_to_colour(
+            0.95, bc, hillshade_val=0.7,
+        )
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        assert luminance > 0.6, f"Snow should be bright: lum={luminance:.3f}"
+
+    def test_hillshade_darkens_south(self):
+        """Low hillshade value should produce darker colour than high."""
+        from polygrid.detail_render import detail_elevation_to_colour, BiomeConfig
+
+        bc = BiomeConfig(hillshade_strength=0.8)
+        r_dark, g_dark, b_dark = detail_elevation_to_colour(
+            0.4, bc, hillshade_val=0.0,
+        )
+        r_light, g_light, b_light = detail_elevation_to_colour(
+            0.4, bc, hillshade_val=1.0,
+        )
+        lum_dark = 0.299 * r_dark + 0.587 * g_dark + 0.114 * b_dark
+        lum_light = 0.299 * r_light + 0.587 * g_light + 0.114 * b_light
+        assert lum_dark < lum_light, (
+            f"Dark shade ({lum_dark:.3f}) should be < light ({lum_light:.3f})"
+        )
+
+    def test_vegetation_varies(self):
+        """Vegetation noise at different positions should produce different colours."""
+        from polygrid.detail_render import detail_elevation_to_colour, BiomeConfig
+
+        bc = BiomeConfig(vegetation_density=0.8, moisture=0.8)
+        c1 = detail_elevation_to_colour(
+            0.3, bc, noise_x=0.0, noise_y=0.0, noise_seed=42,
+        )
+        c2 = detail_elevation_to_colour(
+            0.3, bc, noise_x=5.0, noise_y=5.0, noise_seed=42,
+        )
+        # At least one channel should differ
+        assert c1 != c2, "Vegetation noise should vary spatially"
+
+    def test_colour_no_vegetation_no_crash(self):
+        """Zero vegetation_density should not crash."""
+        from polygrid.detail_render import detail_elevation_to_colour, BiomeConfig
+
+        bc = BiomeConfig(vegetation_density=0.0, rock_exposure=0.0)
+        r, g, b = detail_elevation_to_colour(0.5, bc)
+        assert 0.0 <= r <= 1.0
+
+    def test_colour_extreme_elevations(self):
+        """Clamped elevations outside [0,1] should still produce valid RGB."""
+        from polygrid.detail_render import detail_elevation_to_colour, BiomeConfig
+
+        bc = BiomeConfig()
+        for t in [-0.5, -0.1, 1.1, 2.0]:
+            r, g, b = detail_elevation_to_colour(t, bc)
+            assert 0.0 <= r <= 1.0
+            assert 0.0 <= g <= 1.0
+            assert 0.0 <= b <= 1.0
+
+    # ── render_detail_texture_enhanced ──────────────────────────────
+
+    def test_enhanced_texture_creates_file(self, tmp_path):
+        from polygrid.detail_render import render_detail_texture_enhanced, BiomeConfig
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.detail_terrain import generate_detail_terrain_bounded
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, store = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        spec = TileDetailSpec(detail_rings=2)
+        s = generate_detail_terrain_bounded(d, 0.5, {}, spec, seed=42)
+        out = render_detail_texture_enhanced(d, s, tmp_path / "tile.png")
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    def test_enhanced_texture_pent(self, tmp_path):
+        from polygrid.detail_render import render_detail_texture_enhanced
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.detail_terrain import generate_detail_terrain_bounded
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, store = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "pent")
+        d = build_detail_grid(grid, fid, detail_rings=1)
+        spec = TileDetailSpec(detail_rings=1)
+        s = generate_detail_terrain_bounded(d, 0.4, {}, spec, seed=42)
+        out = render_detail_texture_enhanced(d, s, tmp_path / "pent.png")
+        assert out.exists()
+
+    def test_enhanced_texture_custom_biome(self, tmp_path):
+        from polygrid.detail_render import render_detail_texture_enhanced, BiomeConfig
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.detail_terrain import generate_detail_terrain_bounded
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, store = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        spec = TileDetailSpec(detail_rings=2)
+        s = generate_detail_terrain_bounded(d, 0.6, {}, spec, seed=42)
+        bc = BiomeConfig(
+            vegetation_density=0.9, snow_line=0.7, moisture=0.8,
+        )
+        out = render_detail_texture_enhanced(
+            d, s, tmp_path / "custom.png", bc, tile_size=128,
+        )
+        assert out.exists()
+        assert out.stat().st_size > 0

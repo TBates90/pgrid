@@ -193,6 +193,11 @@ from .detail_terrain import (
     generate_detail_terrain_bounded,
     generate_all_detail_terrain,
 )
+from .detail_render import (
+    BiomeConfig,
+    detail_elevation_to_colour,
+    render_detail_texture_enhanced,
+)
 
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
@@ -364,4 +369,8 @@ __all__ = [
     "classify_detail_faces",
     "generate_detail_terrain_bounded",
     "generate_all_detail_terrain",
+    # Detail render (Phase 10C)
+    "BiomeConfig",
+    "detail_elevation_to_colour",
+    "render_detail_texture_enhanced",
 ]
