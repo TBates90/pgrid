@@ -2213,3 +2213,181 @@ class TestDetailRender:
         )
         assert out.exists()
         assert out.stat().st_size > 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 10D — Texture atlas & UV mapping
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestTexturePipeline:
+    """Tests for texture_pipeline.py — atlas, UVs, textured meshes."""
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def _make_collection(self, freq: int = 1, rings: int = 2):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        import random
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+        spec = TileDetailSpec(detail_rings=rings)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+        return grid, store, coll
+
+    # ── build_detail_atlas ──────────────────────────────────────────
+
+    def test_atlas_creates_files(self, tmp_path):
+        from polygrid.texture_pipeline import build_detail_atlas
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        atlas_path, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        assert atlas_path.exists()
+        assert atlas_path.stat().st_size > 0
+        assert len(uv_layout) == len(coll.grids)
+
+    def test_atlas_uv_range(self, tmp_path):
+        """All UVs in [0, 1]."""
+        from polygrid.texture_pipeline import build_detail_atlas
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        for fid, (u_min, v_min, u_max, v_max) in uv_layout.items():
+            assert 0.0 <= u_min <= 1.0, f"{fid}: u_min={u_min}"
+            assert 0.0 <= v_min <= 1.0, f"{fid}: v_min={v_min}"
+            assert 0.0 <= u_max <= 1.0, f"{fid}: u_max={u_max}"
+            assert 0.0 <= v_max <= 1.0, f"{fid}: v_max={v_max}"
+            assert u_max > u_min
+            assert v_max > v_min
+
+    def test_atlas_dimensions(self, tmp_path):
+        from PIL import Image
+        from polygrid.texture_pipeline import build_detail_atlas
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        atlas_path, _ = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64, columns=4,
+        )
+        img = Image.open(atlas_path)
+        n = len(coll.grids)
+        rows = math.ceil(n / 4)
+        assert img.size[0] == 4 * 64
+        assert img.size[1] == rows * 64
+
+    def test_atlas_covers_all_tiles(self, tmp_path):
+        from polygrid.texture_pipeline import build_detail_atlas
+
+        grid, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        assert set(uv_layout.keys()) == set(grid.faces.keys())
+
+    def test_atlas_no_stores_raises(self, tmp_path):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.texture_pipeline import build_detail_atlas
+
+        grid = build_globe_grid(1)
+        spec = TileDetailSpec(detail_rings=1)
+        coll = DetailGridCollection.build(grid, spec)
+        # No terrain generated → stores empty
+        with pytest.raises(ValueError, match="No terrain store"):
+            build_detail_atlas(coll, output_dir=tmp_path / "tiles")
+
+    # ── compute_tile_uvs ────────────────────────────────────────────
+
+    def test_compute_uvs_maps_correctly(self):
+        from polygrid.texture_pipeline import compute_tile_uvs
+
+        tile_uvs = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        slot = (0.25, 0.5, 0.5, 0.75)
+        mapped = compute_tile_uvs(tile_uvs, slot)
+        assert len(mapped) == 4
+        # (0,0) → (0.25, 0.5)
+        assert abs(mapped[0][0] - 0.25) < 1e-9
+        assert abs(mapped[0][1] - 0.5) < 1e-9
+        # (1,1) → (0.5, 0.75)
+        assert abs(mapped[2][0] - 0.5) < 1e-9
+        assert abs(mapped[2][1] - 0.75) < 1e-9
+
+    def test_compute_uvs_within_range(self):
+        from polygrid.texture_pipeline import compute_tile_uvs
+
+        tile_uvs = [(0.2, 0.3), (0.8, 0.7)]
+        slot = (0.0, 0.0, 0.5, 0.5)
+        mapped = compute_tile_uvs(tile_uvs, slot)
+        for u, v in mapped:
+            assert 0.0 <= u <= 0.5
+            assert 0.0 <= v <= 0.5
+
+    # ── build_textured_tile_mesh ────────────────────────────────────
+
+    def test_textured_mesh_stride(self, tmp_path):
+        from polygrid.texture_pipeline import build_detail_atlas, build_textured_tile_mesh
+        from models.objects.goldberg import generate_goldberg_tiles
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        tiles = generate_goldberg_tiles(frequency=1)
+        tile = tiles[0]
+        fid = f"t{tile.index}"
+        if fid in uv_layout:
+            mesh = build_textured_tile_mesh(tile, uv_layout[fid])
+            assert mesh.stride == 32
+            assert len(mesh.attributes) == 3
+
+    def test_textured_mesh_vertex_count(self, tmp_path):
+        from polygrid.texture_pipeline import build_detail_atlas, build_textured_tile_mesh
+        from models.objects.goldberg import generate_goldberg_tiles
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        tiles = generate_goldberg_tiles(frequency=1)
+        tile = tiles[0]
+        fid = f"t{tile.index}"
+        if fid in uv_layout:
+            mesh = build_textured_tile_mesh(tile, uv_layout[fid])
+            n_verts = len(tile.vertices) + 1  # +1 for center
+            expected_floats = n_verts * 8  # 8 floats per vertex
+            assert len(mesh.vertex_data) == expected_floats
+
+    # ── build_textured_globe_meshes ─────────────────────────────────
+
+    def test_globe_meshes_count(self, tmp_path):
+        from polygrid.texture_pipeline import (
+            build_detail_atlas, build_textured_globe_meshes,
+        )
+
+        grid, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        meshes = build_textured_globe_meshes(1, uv_layout)
+        assert len(meshes) == len(grid.faces)
+
+    def test_globe_meshes_all_stride_32(self, tmp_path):
+        from polygrid.texture_pipeline import (
+            build_detail_atlas, build_textured_globe_meshes,
+        )
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        meshes = build_textured_globe_meshes(1, uv_layout)
+        for mesh in meshes:
+            assert mesh.stride == 32

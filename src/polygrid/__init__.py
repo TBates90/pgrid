@@ -199,6 +199,16 @@ from .detail_render import (
     render_detail_texture_enhanced,
 )
 
+try:
+    from .texture_pipeline import (
+        build_detail_atlas,
+        compute_tile_uvs,
+        build_textured_tile_mesh,
+        build_textured_globe_meshes,
+    )
+except ImportError:
+    pass  # models library not installed — texture pipeline unavailable
+
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
     ring_diagnostics,
@@ -373,4 +383,9 @@ __all__ = [
     "BiomeConfig",
     "detail_elevation_to_colour",
     "render_detail_texture_enhanced",
+    # Texture pipeline (Phase 10D)
+    "build_detail_atlas",
+    "compute_tile_uvs",
+    "build_textured_tile_mesh",
+    "build_textured_globe_meshes",
 ]
