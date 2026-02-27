@@ -51,6 +51,36 @@ Other partitioning algorithms are available — `partition_angular`,
 `partition_flood_fill`, and `partition_noise` (organic boundaries).
 See [`docs/MODULE_REFERENCE.md`](docs/MODULE_REFERENCE.md) for details.
 
+### Globe terrain with sub-tile detail (Phase 10)
+
+Generate a Goldberg polyhedron globe with high-resolution detail
+textures:
+
+```bash
+# End-to-end: globe → mountains → detail grids → texture atlas
+python scripts/demo_detail_globe.py -f 3 --detail-rings 4 --preset mountain_range
+
+# Fast renderer (PIL, ~5× faster than matplotlib):
+python scripts/demo_detail_globe.py -f 3 --detail-rings 4 --fast
+
+# Interactive 3D viewer with detail textures (requires pyglet):
+python scripts/demo_detail_globe.py -f 3 --detail-rings 4 --view
+
+# Side-by-side comparison at multiple detail levels:
+python scripts/demo_detail_globe.py --compare
+
+# Flat-colour 3D viewer (original mode):
+python scripts/view_globe.py -f 3 -p alpine_peaks
+
+# Textured 3D viewer:
+python scripts/view_globe.py -f 3 --textured --detail-rings 4
+```
+
+The detail pipeline expands each Goldberg tile into a local sub-grid
+(61 sub-faces at `detail_rings=4`), generates boundary-continuous
+terrain, renders satellite-style textures, and packs them into a
+texture atlas for GPU rendering.
+
 ## Package layout
 
 ```
@@ -67,6 +97,15 @@ src/polygrid/
     transforms.py          # Voronoi dual, partition, overlay model
     regions.py             # Terrain partitioning (Region, RegionMap, algorithms)
     tile_data.py           # Per-face data layer (schema, store, queries)
+    globe.py               # Goldberg polyhedron globe builder
+    globe_mesh.py          # 3D mesh bridge (terrain colours → ShapeMesh)
+    globe_export.py        # Globe JSON export with terrain colours
+    globe_renderer.py      # OpenGL renderer (flat + textured modes)
+    tile_detail.py         # Sub-tile detail grid infrastructure (Phase 10A)
+    detail_terrain.py      # Boundary-aware detail terrain gen (Phase 10B)
+    detail_render.py       # Satellite-style detail textures (Phase 10C)
+    texture_pipeline.py    # Texture atlas + UV mapping (Phase 10D)
+    detail_perf.py         # Parallel gen, fast render, caching (Phase 10F)
     visualize.py           # Multi-panel composite visualisation
     render.py              # Deprecated shim (use visualize)
     diagnostics.py         # Per-ring quality diagnostics
@@ -78,7 +117,7 @@ docs/
     TASKLIST.md            # Comprehensive roadmap
     JSON_CONTRACT.md       # JSON serialisation format
 
-tests/                     # 277 tests across 18 files
+tests/                     # 630+ tests
 scripts/                   # Demo and diagnostic scripts
 ```
 
@@ -118,7 +157,7 @@ The core layer has **zero rendering dependencies**. All algorithm work operates 
 ## Tests
 
 ```bash
-pytest          # 277 tests, ~20s
+pytest          # 630+ tests, ~3 min
 pytest -v       # verbose output
 pytest -k gold  # run only Goldberg tests
 ```

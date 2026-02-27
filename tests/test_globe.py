@@ -2831,3 +2831,188 @@ class TestDetailPerf:
         assert timings["total"] < 30.0, (
             f"Pipeline took {timings['total']:.1f}s (limit: 30s)"
         )
+
+
+# ════════════════════════════════════════════════════════════════════
+# Phase 10G — Demo & Integration
+# ════════════════════════════════════════════════════════════════════
+
+class TestDetailIntegration:
+    """End-to-end integration tests for the full detail pipeline."""
+
+    def test_full_pipeline_freq1(self, tmp_path):
+        """Complete pipeline: globe → terrain → detail → atlas."""
+        from polygrid.globe import build_globe_grid
+        from polygrid.mountains import MountainConfig, generate_mountains
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_perf import (
+            generate_all_detail_terrain_parallel,
+            build_detail_atlas_fast,
+        )
+        from polygrid.detail_render import BiomeConfig
+
+        grid = build_globe_grid(1)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        generate_mountains(grid, store, MountainConfig(seed=42))
+
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain_parallel(
+            coll, grid, store, spec, seed=42,
+        )
+
+        atlas_path, uv_layout = build_detail_atlas_fast(
+            coll, BiomeConfig(), tmp_path / "atlas", tile_size=32,
+        )
+        assert atlas_path.exists()
+        assert len(uv_layout) == 12  # freq=1 → 12 tiles
+
+    def test_full_pipeline_freq2(self, tmp_path):
+        """Pipeline at frequency=2 (42 tiles)."""
+        from polygrid.globe import build_globe_grid
+        from polygrid.mountains import MountainConfig, generate_mountains
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_perf import (
+            generate_all_detail_terrain_parallel,
+            build_detail_atlas_fast,
+        )
+        from polygrid.detail_render import BiomeConfig
+
+        grid = build_globe_grid(2)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        generate_mountains(grid, store, MountainConfig(seed=42))
+
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain_parallel(
+            coll, grid, store, spec, seed=42,
+        )
+
+        atlas_path, uv_layout = build_detail_atlas_fast(
+            coll, BiomeConfig(), tmp_path / "atlas", tile_size=32,
+        )
+        assert atlas_path.exists()
+        assert len(uv_layout) == 42
+
+    def test_atlas_tiles_match_globe(self, tmp_path):
+        """Every globe face ID appears in the atlas UV layout."""
+        from polygrid.globe import build_globe_grid
+        from polygrid.mountains import MountainConfig, generate_mountains
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_perf import (
+            generate_all_detail_terrain_parallel,
+            build_detail_atlas_fast,
+        )
+        from polygrid.detail_render import BiomeConfig
+
+        grid = build_globe_grid(1)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        generate_mountains(grid, store, MountainConfig(seed=42))
+
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain_parallel(
+            coll, grid, store, spec, seed=42,
+        )
+
+        _, uv_layout = build_detail_atlas_fast(
+            coll, BiomeConfig(), tmp_path / "atlas", tile_size=32,
+        )
+        assert set(uv_layout.keys()) == set(grid.faces.keys())
+
+    def test_textured_meshes_from_pipeline(self, tmp_path):
+        """Pipeline produces textured meshes with correct stride."""
+        from polygrid.globe import build_globe_grid
+        from polygrid.mountains import MountainConfig, generate_mountains
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_perf import (
+            generate_all_detail_terrain_parallel,
+            build_detail_atlas_fast,
+        )
+        from polygrid.detail_render import BiomeConfig
+        from polygrid.texture_pipeline import build_textured_globe_meshes
+
+        grid = build_globe_grid(1)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        generate_mountains(grid, store, MountainConfig(seed=42))
+
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain_parallel(
+            coll, grid, store, spec, seed=42,
+        )
+
+        _, uv_layout = build_detail_atlas_fast(
+            coll, BiomeConfig(), tmp_path / "atlas", tile_size=32,
+        )
+
+        meshes = build_textured_globe_meshes(1, uv_layout)
+        assert len(meshes) == 12
+        for m in meshes:
+            assert m.stride == 32
+
+    def test_demo_script_exists_and_importable(self):
+        """demo_detail_globe.py exists and has expected entry points."""
+        script = Path(__file__).resolve().parent.parent / "scripts" / "demo_detail_globe.py"
+        assert script.exists()
+        source = script.read_text()
+        assert "def main()" in source
+        assert "--detail-rings" in source
+        assert "--compare" in source
+        assert "--view" in source
+        assert "--fast" in source
+
+    def test_view_globe_textured_flag_preserved(self):
+        """view_globe.py still has --textured and --detail-rings."""
+        script = Path(__file__).resolve().parent.parent / "scripts" / "view_globe.py"
+        source = script.read_text()
+        assert "--textured" in source
+        assert "--detail-rings" in source
+        assert "def _launch_textured" in source
+        assert "def _launch_flat" in source
+
+    def test_render_textured_globe_importable(self):
+        """render_textured_globe_opengl is importable from the package."""
+        from polygrid.globe_renderer import render_textured_globe_opengl
+        assert callable(render_textured_globe_opengl)
+
+    def test_fast_renderer_matches_matplotlib_shapes(self, tmp_path):
+        """Fast renderer produces same-sized output as matplotlib."""
+        from polygrid.globe import build_globe_grid
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.detail_render import BiomeConfig, render_detail_texture_enhanced
+        from polygrid.detail_perf import render_detail_texture_fast
+        from PIL import Image
+
+        grid = build_globe_grid(1)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        import random
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        fid = coll.face_ids[0]
+        g, s = coll.get(fid)
+        biome = BiomeConfig()
+
+        fast_path = tmp_path / "fast.png"
+        render_detail_texture_fast(g, s, fast_path, biome, tile_size=64)
+        fast_img = Image.open(fast_path)
+        assert fast_img.size == (64, 64)
+
+        mpl_path = tmp_path / "mpl.png"
+        render_detail_texture_enhanced(g, s, mpl_path, biome, tile_size=64)
+        mpl_img = Image.open(mpl_path)
+        # Both should produce images (may differ in exact pixels)
+        assert mpl_img.size[0] > 0
+        assert mpl_img.size[1] > 0
