@@ -1387,3 +1387,292 @@ class TestGlobeRenderer:
         _, _, payload = self._make_payload()
         scene = prepare_terrain_scene(payload, radius=2.5)
         assert scene["radius"] == 2.5
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 10A — Tile detail infrastructure
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestTileDetail:
+    """Tests for tile_detail.py — TileDetailSpec, build_all, collection."""
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def _make_globe(self, freq: int = 2):
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        for fid in grid.faces:
+            store.set(fid, "elevation", 0.5)
+        return grid, store
+
+    # ── TileDetailSpec ──────────────────────────────────────────────
+
+    def test_spec_defaults(self):
+        from polygrid.tile_detail import TileDetailSpec
+
+        spec = TileDetailSpec()
+        assert spec.detail_rings == 4
+        assert spec.noise_frequency == 6.0
+        assert spec.noise_octaves == 5
+        assert spec.amplitude == 0.12
+        assert spec.base_weight == 0.80
+        assert spec.boundary_smoothing == 2
+        assert spec.warp_strength == 0.15
+        assert spec.seed_offset == 0
+
+    def test_spec_frozen(self):
+        from polygrid.tile_detail import TileDetailSpec
+
+        spec = TileDetailSpec()
+        with pytest.raises(AttributeError):
+            spec.detail_rings = 10  # type: ignore[misc]
+
+    def test_spec_custom_values(self):
+        from polygrid.tile_detail import TileDetailSpec
+
+        spec = TileDetailSpec(detail_rings=6, noise_frequency=10.0, amplitude=0.3)
+        assert spec.detail_rings == 6
+        assert spec.noise_frequency == 10.0
+        assert spec.amplitude == 0.3
+
+    # ── build_all_detail_grids ──────────────────────────────────────
+
+    def test_build_all_creates_one_per_face(self):
+        from polygrid.tile_detail import TileDetailSpec, build_all_detail_grids
+
+        grid, _ = self._make_globe(2)
+        spec = TileDetailSpec(detail_rings=2)
+        grids = build_all_detail_grids(grid, spec)
+        assert len(grids) == len(grid.faces)
+        assert set(grids.keys()) == set(grid.faces.keys())
+
+    def test_build_all_hex_face_count(self):
+        from polygrid.tile_detail import TileDetailSpec, build_all_detail_grids
+        from polygrid.detail_grid import detail_face_count
+
+        grid, _ = self._make_globe(2)
+        spec = TileDetailSpec(detail_rings=3)
+        grids = build_all_detail_grids(grid, spec)
+        hex_fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        expected = detail_face_count("hex", 3)
+        assert len(grids[hex_fid].faces) == expected
+
+    def test_build_all_pent_face_count(self):
+        from polygrid.tile_detail import TileDetailSpec, build_all_detail_grids
+        from polygrid.detail_grid import detail_face_count
+
+        grid, _ = self._make_globe(2)
+        spec = TileDetailSpec(detail_rings=2)
+        grids = build_all_detail_grids(grid, spec)
+        pent_fid = next(fid for fid, f in grid.faces.items() if f.face_type == "pent")
+        expected = detail_face_count("pent", 2)
+        assert len(grids[pent_fid].faces) == expected
+
+    def test_build_all_metadata_preserved(self):
+        from polygrid.tile_detail import TileDetailSpec, build_all_detail_grids
+
+        grid, _ = self._make_globe(2)
+        spec = TileDetailSpec(detail_rings=2)
+        grids = build_all_detail_grids(grid, spec)
+        for fid, detail_grid in grids.items():
+            assert detail_grid.metadata["parent_face_id"] == fid
+            assert detail_grid.metadata["detail_rings"] == 2
+
+    # ── DetailGridCollection.build ──────────────────────────────────
+
+    def test_collection_build_default_spec(self):
+        from polygrid.tile_detail import DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        coll = DetailGridCollection.build(grid)
+        assert len(coll.grids) == len(grid.faces)
+        assert coll.spec.detail_rings == 4
+
+    def test_collection_build_custom_spec(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        assert coll.spec.detail_rings == 2
+        assert len(coll.grids) == len(grid.faces)
+
+    # ── Collection properties ───────────────────────────────────────
+
+    def test_collection_globe_grid(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        coll = DetailGridCollection.build(grid, TileDetailSpec(detail_rings=1))
+        assert coll.globe_grid is grid
+
+    def test_collection_face_ids(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        coll = DetailGridCollection.build(grid, TileDetailSpec(detail_rings=1))
+        assert set(coll.face_ids) == set(grid.faces.keys())
+
+    def test_collection_total_face_count(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_grid import detail_face_count
+
+        grid, _ = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        n_pent = sum(1 for f in grid.faces.values() if f.face_type == "pent")
+        n_hex = len(grid.faces) - n_pent
+        expected = (
+            n_pent * detail_face_count("pent", 2)
+            + n_hex * detail_face_count("hex", 2)
+        )
+        assert coll.total_face_count == expected
+
+    def test_collection_get_returns_grid(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        coll = DetailGridCollection.build(grid, TileDetailSpec(detail_rings=1))
+        fid = next(iter(grid.faces))
+        detail_grid, store = coll.get(fid)
+        assert len(detail_grid.faces) > 0
+        assert store is None  # no terrain generated yet
+
+    def test_collection_get_invalid_raises(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        coll = DetailGridCollection.build(grid, TileDetailSpec(detail_rings=1))
+        with pytest.raises(KeyError, match="no_such"):
+            coll.get("no_such")
+
+    def test_collection_detail_face_count_for(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_grid import detail_face_count
+
+        grid, _ = self._make_globe(2)
+        spec = TileDetailSpec(detail_rings=3)
+        coll = DetailGridCollection.build(grid, spec)
+        hex_fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        assert coll.detail_face_count_for(hex_fid) == detail_face_count("hex", 3)
+
+    def test_collection_stores_empty_before_terrain(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        coll = DetailGridCollection.build(grid, TileDetailSpec(detail_rings=1))
+        assert len(coll.stores) == 0
+
+    # ── generate_all_terrain ────────────────────────────────────────
+
+    def test_generate_all_terrain_populates_stores(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2, boundary_smoothing=1)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+        assert len(coll.stores) == len(grid.faces)
+        for fid in grid.faces:
+            _, s = coll.get(fid)
+            assert s is not None
+            for dfid in coll.grids[fid].faces:
+                val = s.get(dfid, "elevation")
+                assert isinstance(val, float)
+
+    def test_generate_terrain_values_near_parent(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        parent_elev = 0.6
+        for fid in grid.faces:
+            store.set(fid, "elevation", parent_elev)
+        spec = TileDetailSpec(detail_rings=2, base_weight=0.9, amplitude=0.05)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+        for fid in grid.faces:
+            _, s = coll.get(fid)
+            vals = [s.get(dfid, "elevation") for dfid in coll.grids[fid].faces]
+            avg = sum(vals) / len(vals)
+            # With base_weight=0.9 and amplitude=0.05, average should be close
+            assert abs(avg - parent_elev * 0.9) < 0.15
+
+    def test_generate_terrain_deterministic(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll1 = DetailGridCollection.build(grid, spec)
+        coll1.generate_all_terrain(store, seed=99)
+        coll2 = DetailGridCollection.build(grid, spec)
+        coll2.generate_all_terrain(store, seed=99)
+        for fid in grid.faces:
+            _, s1 = coll1.get(fid)
+            _, s2 = coll2.get(fid)
+            for dfid in coll1.grids[fid].faces:
+                assert s1.get(dfid, "elevation") == s2.get(dfid, "elevation")
+
+    def test_generate_terrain_different_seeds_differ(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll1 = DetailGridCollection.build(grid, spec)
+        coll1.generate_all_terrain(store, seed=1)
+        coll2 = DetailGridCollection.build(grid, spec)
+        coll2.generate_all_terrain(store, seed=2)
+        diffs = 0
+        for fid in grid.faces:
+            _, s1 = coll1.get(fid)
+            _, s2 = coll2.get(fid)
+            for dfid in coll1.grids[fid].faces:
+                if s1.get(dfid, "elevation") != s2.get(dfid, "elevation"):
+                    diffs += 1
+        assert diffs > 0
+
+    def test_generate_terrain_no_warp(self):
+        """Collection with warp_strength=0 should use plain fbm."""
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2, warp_strength=0.0)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+        assert len(coll.stores) == len(grid.faces)
+
+    def test_generate_terrain_no_smoothing(self):
+        """Collection with boundary_smoothing=0 should skip smooth pass."""
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2, boundary_smoothing=0)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+        assert len(coll.stores) == len(grid.faces)
+
+    # ── summary / repr ──────────────────────────────────────────────
+
+    def test_summary_format(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+        text = coll.summary()
+        assert "DetailGridCollection" in text
+        assert "Pentagon" in text
+        assert "Hexagon" in text
+        assert "Detail rings" in text
+        assert "Terrain stores" in text
+
+    def test_repr(self):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, _ = self._make_globe(1)
+        coll = DetailGridCollection.build(grid, TileDetailSpec(detail_rings=2))
+        r = repr(coll)
+        assert "DetailGridCollection" in r
+        assert "rings=2" in r

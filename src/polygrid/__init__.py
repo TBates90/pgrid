@@ -182,6 +182,11 @@ from .detail_grid import (
     render_detail_texture,
     build_texture_atlas,
 )
+from .tile_detail import (
+    TileDetailSpec,
+    build_all_detail_grids,
+    DetailGridCollection,
+)
 
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
@@ -344,4 +349,8 @@ __all__ = [
     "generate_detail_terrain",
     "render_detail_texture",
     "build_texture_atlas",
+    # Tile detail (Phase 10A)
+    "TileDetailSpec",
+    "build_all_detail_grids",
+    "DetailGridCollection",
 ]
