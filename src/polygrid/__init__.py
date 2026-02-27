@@ -170,6 +170,7 @@ try:
         build_edge_mesh_for_frequency,
         prepare_terrain_scene,
         render_terrain_globe_opengl,
+        render_textured_globe_opengl,
     )
 except ImportError:
     pass  # models library not installed — globe renderer features unavailable
@@ -364,6 +365,7 @@ __all__ = [
     "build_edge_mesh_for_frequency",
     "prepare_terrain_scene",
     "render_terrain_globe_opengl",
+    "render_textured_globe_opengl",
     # Detail grids
     "build_detail_grid",
     "detail_face_count",

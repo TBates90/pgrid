@@ -94,6 +94,14 @@ def main():
         "--height", type=int, default=768,
         help="Window height (default: 768)",
     )
+    parser.add_argument(
+        "--textured", action="store_true",
+        help="Enable detail texture atlas rendering (Phase 10E)",
+    )
+    parser.add_argument(
+        "--detail-rings", type=int, default=4,
+        help="Sub-tile detail ring count (default: 4, used with --textured)",
+    )
     args = parser.parse_args()
 
     if args.json_file:
@@ -111,13 +119,76 @@ def main():
     tile_count = payload["metadata"]["tile_count"]
     print(f"Globe: frequency={freq}, tiles={tile_count}")
 
+    if args.textured:
+        _launch_textured(payload, args)
+    else:
+        _launch_flat(payload, args)
+
+
+def _launch_flat(payload, args):
+    """Launch the flat-colour vertex renderer (original mode)."""
     from polygrid.globe_renderer import render_terrain_globe_opengl
 
+    freq = payload["metadata"]["frequency"]
+    tile_count = payload["metadata"]["tile_count"]
     render_terrain_globe_opengl(
         payload,
         width=args.width,
         height=args.height,
         title=f"Polygrid Globe — freq={freq}, {tile_count} tiles",
+    )
+
+
+def _launch_textured(payload, args):
+    """Generate detail grids, render atlas, launch textured renderer."""
+    from polygrid.globe import build_globe_grid
+    from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+    from polygrid.detail_terrain import generate_all_detail_terrain
+    from polygrid.detail_render import BiomeConfig
+    from polygrid.texture_pipeline import build_detail_atlas
+    from polygrid.globe_renderer import render_textured_globe_opengl
+    from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
+
+    freq = payload["metadata"]["frequency"]
+    tile_count = payload["metadata"]["tile_count"]
+    seed = args.seed
+
+    # Rebuild the globe grid and terrain store from the payload
+    print(f"Building detail grids (rings={args.detail_rings})...")
+    grid = build_globe_grid(freq)
+    schema = TileSchema([FieldDef("elevation", float, 0.0)])
+    store = TileDataStore(grid=grid, schema=schema)
+
+    # Populate store from the payload tile data
+    for tile_info in payload["tiles"]:
+        fid = tile_info["id"]
+        if fid in grid.faces:
+            elev = tile_info.get("elevation", 0.5)
+            store.set(fid, "elevation", elev)
+
+    spec = TileDetailSpec(detail_rings=args.detail_rings)
+    coll = DetailGridCollection.build(grid, spec)
+
+    print("Generating detail terrain...")
+    generate_all_detail_terrain(coll, grid, store, spec, seed=seed)
+
+    print("Rendering detail atlas...")
+    biome = BiomeConfig()
+    output_dir = Path("exports/detail_atlas")
+    atlas_path, uv_layout = build_detail_atlas(
+        coll, biome, output_dir,
+        tile_size=256,
+        noise_seed=seed,
+    )
+    print(f"Atlas saved to {atlas_path} ({len(uv_layout)} tiles)")
+
+    render_textured_globe_opengl(
+        payload,
+        atlas_path,
+        uv_layout,
+        width=args.width,
+        height=args.height,
+        title=f"Polygrid Textured Globe — freq={freq}, {tile_count} tiles",
     )
 
 

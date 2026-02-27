@@ -2391,3 +2391,160 @@ class TestTexturePipeline:
         meshes = build_textured_globe_meshes(1, uv_layout)
         for mesh in meshes:
             assert mesh.stride == 32
+
+
+# ════════════════════════════════════════════════════════════════════
+# Phase 10E — Textured OpenGL Renderer (no-context tests)
+# ════════════════════════════════════════════════════════════════════
+
+class TestTexturedRenderer:
+    """Tests for the textured OpenGL renderer (shader sources, mesh
+    construction, atlas loading helpers).  These do NOT open an
+    OpenGL window — they validate the CPU-side logic only."""
+
+    # ── shader source tests ─────────────────────────────────────────
+
+    def test_textured_vertex_shader_is_string(self):
+        from polygrid.globe_renderer import _TEXTURED_VERTEX_SHADER
+        assert isinstance(_TEXTURED_VERTEX_SHADER, str)
+        assert "gl_Position" in _TEXTURED_VERTEX_SHADER
+        assert "v_uv" in _TEXTURED_VERTEX_SHADER
+
+    def test_textured_fragment_shader_is_string(self):
+        from polygrid.globe_renderer import _TEXTURED_FRAGMENT_SHADER
+        assert isinstance(_TEXTURED_FRAGMENT_SHADER, str)
+        assert "u_atlas" in _TEXTURED_FRAGMENT_SHADER
+        assert "u_use_texture" in _TEXTURED_FRAGMENT_SHADER
+
+    def test_textured_vertex_shader_has_uv_passthrough(self):
+        from polygrid.globe_renderer import _TEXTURED_VERTEX_SHADER
+        assert "in vec2 uv" in _TEXTURED_VERTEX_SHADER
+        assert "out vec2 v_uv" in _TEXTURED_VERTEX_SHADER
+
+    def test_textured_fragment_shader_fallback(self):
+        """Fragment shader has a fallback to vertex colour when
+        u_use_texture == 0."""
+        from polygrid.globe_renderer import _TEXTURED_FRAGMENT_SHADER
+        assert "v_color" in _TEXTURED_FRAGMENT_SHADER
+
+    def test_textured_shaders_version_330(self):
+        from polygrid.globe_renderer import (
+            _TEXTURED_VERTEX_SHADER, _TEXTURED_FRAGMENT_SHADER,
+        )
+        assert "#version 330" in _TEXTURED_VERTEX_SHADER
+        assert "#version 330" in _TEXTURED_FRAGMENT_SHADER
+
+    # ── textured mesh stride ────────────────────────────────────────
+
+    def test_textured_mesh_has_uv_attribute(self, tmp_path):
+        from polygrid.texture_pipeline import (
+            build_detail_atlas, build_textured_tile_mesh,
+        )
+        from models.objects.goldberg import generate_goldberg_tiles
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        tiles = generate_goldberg_tiles(frequency=1)
+        tile = tiles[0]
+        fid = f"t{tile.index}"
+        if fid in uv_layout:
+            mesh = build_textured_tile_mesh(tile, uv_layout[fid])
+            attr_names = [a.name for a in mesh.attributes]
+            assert "uv" in attr_names
+            assert "position" in attr_names
+            assert "color" in attr_names
+
+    def test_textured_mesh_uvs_within_atlas_slot(self, tmp_path):
+        """UV coordinates in the mesh should fall within the atlas
+        slot bounds (approximately — center is the average)."""
+        from polygrid.texture_pipeline import (
+            build_detail_atlas, build_textured_tile_mesh,
+        )
+        from models.objects.goldberg import generate_goldberg_tiles
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        _, uv_layout = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        tiles = generate_goldberg_tiles(frequency=1)
+        tile = tiles[0]
+        fid = f"t{tile.index}"
+        if fid not in uv_layout:
+            pytest.skip("tile not in uv_layout")
+        mesh = build_textured_tile_mesh(tile, uv_layout[fid])
+        u_min, v_min, u_max, v_max = uv_layout[fid]
+        # Extract UVs from vertex data (stride = 8 floats, uv at offset 6)
+        n_verts = len(mesh.vertex_data) // 8
+        for i in range(n_verts):
+            u = mesh.vertex_data[i * 8 + 6]
+            v = mesh.vertex_data[i * 8 + 7]
+            assert u_min - 0.01 <= u <= u_max + 0.01, f"u={u}"
+            assert v_min - 0.01 <= v <= v_max + 0.01, f"v={v}"
+
+    # ── atlas texture loading (PIL side) ────────────────────────────
+
+    def test_atlas_image_loadable(self, tmp_path):
+        """The atlas PNG produced by build_detail_atlas can be loaded
+        and flipped (as the renderer does)."""
+        from PIL import Image
+        from polygrid.texture_pipeline import build_detail_atlas
+
+        _, _, coll = self._make_collection(freq=1, rings=1)
+        atlas_path, _ = build_detail_atlas(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        img = Image.open(str(atlas_path)).convert("RGBA").transpose(
+            Image.FLIP_TOP_BOTTOM,
+        )
+        assert img.size[0] > 0
+        assert img.size[1] > 0
+        raw = img.tobytes()
+        assert len(raw) == img.size[0] * img.size[1] * 4
+
+    # ── render_textured_globe_opengl signature check ────────────────
+
+    def test_render_textured_globe_opengl_importable(self):
+        from polygrid.globe_renderer import render_textured_globe_opengl
+        import inspect
+        sig = inspect.signature(render_textured_globe_opengl)
+        params = list(sig.parameters.keys())
+        assert "payload" in params
+        assert "atlas_path" in params
+        assert "uv_layout" in params
+
+    # ── view_globe --textured flag ──────────────────────────────────
+
+    def test_view_globe_has_textured_flag(self):
+        """view_globe.py exposes _launch_textured and _launch_flat."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "view_globe",
+            str(Path(__file__).resolve().parent.parent / "scripts" / "view_globe.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        # Don't execute — just check that the functions exist in source
+        source = Path(spec.origin).read_text()
+        assert "def _launch_textured" in source
+        assert "def _launch_flat" in source
+        assert "--textured" in source
+        assert "--detail-rings" in source
+
+    # ── helpers (shared with TestTexturePipeline) ───────────────────
+
+    def _make_collection(self, freq: int = 1, rings: int = 2):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        import random
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+        spec = TileDetailSpec(detail_rings=rings)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+        return grid, store, coll
