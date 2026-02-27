@@ -13,6 +13,7 @@ from polygrid.noise import fbm_3d, ridged_noise_3d, _init_noise3
 from polygrid.heightmap import sample_noise_field_3d
 from polygrid.geometry import face_center_3d
 from polygrid.tile_data import FieldDef, TileSchema, TileDataStore
+from polygrid.algorithms import get_face_adjacency
 
 # ── Gate globe-specific tests behind models availability ────────────
 try:
@@ -1676,3 +1677,363 @@ class TestTileDetail:
         r = repr(coll)
         assert "DetailGridCollection" in r
         assert "rings=2" in r
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 10B — Boundary-aware detail terrain
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestDetailTerrain:
+    """Tests for detail_terrain.py — boundary classification, seam continuity."""
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def _make_globe(self, freq: int = 2):
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        for fid in grid.faces:
+            store.set(fid, "elevation", 0.5)
+        return grid, store
+
+    def _make_varied_globe(self, freq: int = 2):
+        """Globe with elevation varying by tile."""
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        import random
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+        return grid, store
+
+    # ── compute_boundary_elevations ─────────────────────────────────
+
+    def test_boundary_elevations_all_faces(self):
+        from polygrid.detail_terrain import compute_boundary_elevations
+
+        grid, store = self._make_globe(2)
+        result = compute_boundary_elevations(grid, store)
+        assert set(result.keys()) == set(grid.faces.keys())
+
+    def test_boundary_elevations_symmetric(self):
+        """boundary_target(A→B) == boundary_target(B→A)."""
+        from polygrid.detail_terrain import compute_boundary_elevations
+
+        grid, store = self._make_varied_globe(2)
+        result = compute_boundary_elevations(grid, store)
+        adj = get_face_adjacency(grid)
+        for fid in grid.faces:
+            for nid in adj.get(fid, []):
+                assert abs(result[fid][nid] - result[nid][fid]) < 1e-12
+
+    def test_boundary_elevations_average(self):
+        """Target = (own + neighbour) / 2."""
+        from polygrid.detail_terrain import compute_boundary_elevations
+
+        grid, store = self._make_varied_globe(1)
+        result = compute_boundary_elevations(grid, store)
+        adj = get_face_adjacency(grid)
+        for fid in grid.faces:
+            own = store.get(fid, "elevation")
+            for nid in adj.get(fid, []):
+                n_elev = store.get(nid, "elevation")
+                expected = (own + n_elev) / 2.0
+                assert abs(result[fid][nid] - expected) < 1e-12
+
+    def test_boundary_elevations_uniform(self):
+        """Uniform elevation → all boundary targets equal to that elevation."""
+        from polygrid.detail_terrain import compute_boundary_elevations
+
+        grid, store = self._make_globe(1)
+        result = compute_boundary_elevations(grid, store)
+        for fid, nmap in result.items():
+            for nid, val in nmap.items():
+                assert abs(val - 0.5) < 1e-12
+
+    # ── classify_detail_faces ───────────────────────────────────────
+
+    def test_classify_all_faces_classified(self):
+        from polygrid.detail_terrain import classify_detail_faces
+        from polygrid.detail_grid import build_detail_grid
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=3)
+        cls = classify_detail_faces(d, boundary_depth=1)
+        assert set(cls.keys()) == set(d.faces.keys())
+        for val in cls.values():
+            assert val in ("interior", "boundary", "corner")
+
+    def test_classify_has_interior(self):
+        from polygrid.detail_terrain import classify_detail_faces
+        from polygrid.detail_grid import build_detail_grid
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=3)
+        cls = classify_detail_faces(d, boundary_depth=1)
+        counts = {v: 0 for v in ("interior", "boundary", "corner")}
+        for v in cls.values():
+            counts[v] += 1
+        assert counts["interior"] > 0, "Should have interior faces"
+        assert counts["boundary"] > 0, "Should have boundary faces"
+
+    def test_classify_deeper_boundary(self):
+        """More boundary depth → fewer interior faces."""
+        from polygrid.detail_terrain import classify_detail_faces
+        from polygrid.detail_grid import build_detail_grid
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=4)
+        cls1 = classify_detail_faces(d, boundary_depth=1)
+        cls2 = classify_detail_faces(d, boundary_depth=2)
+        n_interior1 = sum(1 for v in cls1.values() if v == "interior")
+        n_interior2 = sum(1 for v in cls2.values() if v == "interior")
+        assert n_interior2 <= n_interior1
+
+    def test_classify_pent_grid(self):
+        from polygrid.detail_terrain import classify_detail_faces
+        from polygrid.detail_grid import build_detail_grid
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "pent")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        cls = classify_detail_faces(d, boundary_depth=1)
+        assert set(cls.keys()) == set(d.faces.keys())
+
+    # ── generate_detail_terrain_bounded ─────────────────────────────
+
+    def test_bounded_all_faces_have_elevation(self):
+        from polygrid.detail_terrain import generate_detail_terrain_bounded
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, store = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=3)
+        spec = TileDetailSpec(detail_rings=3, boundary_smoothing=1)
+        s = generate_detail_terrain_bounded(
+            d, 0.5, {"n1": 0.4, "n2": 0.6}, spec, seed=42,
+        )
+        for dfid in d.faces:
+            val = s.get(dfid, "elevation")
+            assert isinstance(val, float)
+            assert math.isfinite(val)
+
+    def test_bounded_no_nan(self):
+        from polygrid.detail_terrain import generate_detail_terrain_bounded
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, store = self._make_varied_globe(2)
+        adj = get_face_adjacency(grid)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        neighbor_elevs = {
+            nid: (store.get(fid, "elevation") + store.get(nid, "elevation")) / 2
+            for nid in adj.get(fid, [])
+        }
+        d = build_detail_grid(grid, fid, detail_rings=3)
+        spec = TileDetailSpec(detail_rings=3)
+        s = generate_detail_terrain_bounded(
+            d, store.get(fid, "elevation"), neighbor_elevs, spec,
+        )
+        for dfid in d.faces:
+            assert math.isfinite(s.get(dfid, "elevation"))
+
+    def test_bounded_interior_near_parent(self):
+        """Interior faces should cluster around the parent elevation."""
+        from polygrid.detail_terrain import (
+            generate_detail_terrain_bounded,
+            classify_detail_faces,
+        )
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=4)
+        parent_elev = 0.6
+        spec = TileDetailSpec(
+            detail_rings=4, base_weight=0.95, amplitude=0.02,
+            boundary_smoothing=1,
+        )
+        s = generate_detail_terrain_bounded(
+            d, parent_elev, {"n1": 0.3}, spec, seed=42,
+        )
+        cls = classify_detail_faces(d, boundary_depth=1)
+        interior_vals = [
+            s.get(dfid, "elevation")
+            for dfid, c in cls.items() if c == "interior"
+        ]
+        if interior_vals:
+            avg = sum(interior_vals) / len(interior_vals)
+            assert abs(avg - parent_elev * spec.base_weight) < 0.15
+
+    def test_bounded_boundary_between_parent_and_neighbor(self):
+        """Boundary faces should trend toward the boundary target."""
+        from polygrid.detail_terrain import (
+            generate_detail_terrain_bounded,
+            classify_detail_faces,
+        )
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=4)
+        parent_elev = 0.8
+        neighbor_elevs = {"n1": 0.2, "n2": 0.2, "n3": 0.2}  # low neighbours
+        boundary_target = 0.2
+        spec = TileDetailSpec(
+            detail_rings=4, base_weight=0.95, amplitude=0.01,
+            boundary_smoothing=2,
+        )
+        s = generate_detail_terrain_bounded(
+            d, parent_elev, neighbor_elevs, spec, seed=42,
+        )
+        cls = classify_detail_faces(d, boundary_depth=2)
+        boundary_vals = [
+            s.get(dfid, "elevation")
+            for dfid, c in cls.items() if c == "boundary"
+        ]
+        interior_vals = [
+            s.get(dfid, "elevation")
+            for dfid, c in cls.items() if c == "interior"
+        ]
+        if boundary_vals and interior_vals:
+            b_avg = sum(boundary_vals) / len(boundary_vals)
+            i_avg = sum(interior_vals) / len(interior_vals)
+            # Boundary average should be closer to boundary target than interior
+            assert abs(b_avg - boundary_target * spec.base_weight) < abs(
+                i_avg - boundary_target * spec.base_weight
+            )
+
+    def test_bounded_deterministic(self):
+        from polygrid.detail_terrain import generate_detail_terrain_bounded
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=3)
+        spec = TileDetailSpec(detail_rings=3)
+        s1 = generate_detail_terrain_bounded(d, 0.5, {"n1": 0.4}, spec, seed=99)
+        s2 = generate_detail_terrain_bounded(d, 0.5, {"n1": 0.4}, spec, seed=99)
+        for dfid in d.faces:
+            assert s1.get(dfid, "elevation") == s2.get(dfid, "elevation")
+
+    def test_bounded_no_warp(self):
+        from polygrid.detail_terrain import generate_detail_terrain_bounded
+        from polygrid.detail_grid import build_detail_grid
+        from polygrid.tile_detail import TileDetailSpec
+
+        grid, _ = self._make_globe(2)
+        fid = next(fid for fid, f in grid.faces.items() if f.face_type == "hex")
+        d = build_detail_grid(grid, fid, detail_rings=2)
+        spec = TileDetailSpec(detail_rings=2, warp_strength=0.0)
+        s = generate_detail_terrain_bounded(d, 0.5, {}, spec, seed=42)
+        for dfid in d.faces:
+            assert math.isfinite(s.get(dfid, "elevation"))
+
+    # ── generate_all_detail_terrain ─────────────────────────────────
+
+    def test_generate_all_populates_stores(self):
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+        assert len(coll.stores) == len(grid.faces)
+
+    def test_generate_all_no_nan(self):
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_varied_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+        for fid in grid.faces:
+            _, s = coll.get(fid)
+            for dfid in coll.grids[fid].faces:
+                assert math.isfinite(s.get(dfid, "elevation"))
+
+    def test_generate_all_deterministic(self):
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2)
+        coll1 = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll1, grid, store, spec, seed=42)
+        coll2 = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll2, grid, store, spec, seed=42)
+        for fid in grid.faces:
+            _, s1 = coll1.get(fid)
+            _, s2 = coll2.get(fid)
+            for dfid in coll1.grids[fid].faces:
+                assert s1.get(dfid, "elevation") == s2.get(dfid, "elevation")
+
+    def test_generate_all_uses_collection_spec(self):
+        """If no spec override, uses collection's spec."""
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_globe(1)
+        spec = TileDetailSpec(detail_rings=2, amplitude=0.01)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, seed=42)
+        assert len(coll.stores) == len(grid.faces)
+
+    def test_seam_continuity(self):
+        """Adjacent tiles' boundary faces should have similar elevations.
+
+        This is the key seam test: with boundary blending, max diff
+        between boundary-face averages of neighbours should be small.
+        """
+        from polygrid.detail_terrain import (
+            generate_all_detail_terrain,
+            classify_detail_faces,
+        )
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid, store = self._make_varied_globe(1)
+        spec = TileDetailSpec(
+            detail_rings=3, base_weight=0.9, amplitude=0.02,
+            boundary_smoothing=2,
+        )
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        adj = get_face_adjacency(grid)
+        max_diff = 0.0
+        for fid in grid.faces:
+            _, s = coll.get(fid)
+            cls = classify_detail_faces(coll.grids[fid], boundary_depth=2)
+            b_vals = [
+                s.get(dfid, "elevation")
+                for dfid, c in cls.items() if c in ("boundary", "corner")
+            ]
+            if not b_vals:
+                continue
+            b_avg = sum(b_vals) / len(b_vals)
+
+            for nid in adj.get(fid, []):
+                _, ns = coll.get(nid)
+                n_cls = classify_detail_faces(coll.grids[nid], boundary_depth=2)
+                nb_vals = [
+                    ns.get(dfid, "elevation")
+                    for dfid, c in n_cls.items() if c in ("boundary", "corner")
+                ]
+                if not nb_vals:
+                    continue
+                nb_avg = sum(nb_vals) / len(nb_vals)
+                max_diff = max(max_diff, abs(b_avg - nb_avg))
+
+        # With boundary blending, the difference should be modest
+        assert max_diff < 0.5, f"Seam max_diff={max_diff:.4f} too large"

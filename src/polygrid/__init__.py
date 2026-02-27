@@ -187,6 +187,12 @@ from .tile_detail import (
     build_all_detail_grids,
     DetailGridCollection,
 )
+from .detail_terrain import (
+    compute_boundary_elevations,
+    classify_detail_faces,
+    generate_detail_terrain_bounded,
+    generate_all_detail_terrain,
+)
 
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
@@ -353,4 +359,9 @@ __all__ = [
     "TileDetailSpec",
     "build_all_detail_grids",
     "DetailGridCollection",
+    # Detail terrain (Phase 10B)
+    "compute_boundary_elevations",
+    "classify_detail_faces",
+    "generate_detail_terrain_bounded",
+    "generate_all_detail_terrain",
 ]
