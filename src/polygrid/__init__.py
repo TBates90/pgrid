@@ -210,6 +210,16 @@ try:
 except ImportError:
     pass  # models library not installed — texture pipeline unavailable
 
+# ── Performance (Phase 10F) ─────────────────────────────────────────
+from .detail_perf import (
+    generate_all_detail_terrain_parallel,
+    render_detail_texture_fast,
+    build_detail_atlas_fast,
+    DetailCache,
+    generate_all_detail_terrain_cached,
+    benchmark_pipeline,
+)
+
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
     ring_diagnostics,
@@ -390,4 +400,11 @@ __all__ = [
     "compute_tile_uvs",
     "build_textured_tile_mesh",
     "build_textured_globe_meshes",
+    # Performance (Phase 10F)
+    "generate_all_detail_terrain_parallel",
+    "render_detail_texture_fast",
+    "build_detail_atlas_fast",
+    "DetailCache",
+    "generate_all_detail_terrain_cached",
+    "benchmark_pipeline",
 ]

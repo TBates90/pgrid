@@ -2548,3 +2548,286 @@ class TestTexturedRenderer:
         coll = DetailGridCollection.build(grid, spec)
         generate_all_detail_terrain(coll, grid, store, spec, seed=42)
         return grid, store, coll
+
+
+# ════════════════════════════════════════════════════════════════════
+# Phase 10F — Performance & Scale
+# ════════════════════════════════════════════════════════════════════
+
+class TestDetailPerf:
+    """Tests for detail_perf.py — parallel gen, fast render, cache."""
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def _make_globe(self, freq: int = 1, rings: int = 2):
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+
+        grid = build_globe_grid(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        import random
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+        spec = TileDetailSpec(detail_rings=rings)
+        coll = DetailGridCollection.build(grid, spec)
+        return grid, store, spec, coll
+
+    # ── 10F.1 — Parallel terrain generation ─────────────────────────
+
+    def test_parallel_produces_same_face_ids(self):
+        from polygrid.detail_perf import generate_all_detail_terrain_parallel
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll_serial = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain(coll_serial, grid, store, spec, seed=42)
+
+        _, _, _, coll_parallel = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain_parallel(
+            coll_parallel, grid, store, spec, seed=42, max_workers=2,
+        )
+
+        for fid in coll_serial.face_ids:
+            _, s_serial = coll_serial.get(fid)
+            _, s_parallel = coll_parallel.get(fid)
+            assert s_serial is not None
+            assert s_parallel is not None
+
+    def test_parallel_produces_identical_results(self):
+        from polygrid.detail_perf import generate_all_detail_terrain_parallel
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll_serial = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain(coll_serial, grid, store, spec, seed=42)
+
+        _, _, _, coll_parallel = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain_parallel(
+            coll_parallel, grid, store, spec, seed=42, max_workers=2,
+        )
+
+        for fid in coll_serial.face_ids:
+            g_s, s_s = coll_serial.get(fid)
+            g_p, s_p = coll_parallel.get(fid)
+            for sub_fid in g_s.faces:
+                val_s = s_s.get(sub_fid, "elevation")
+                val_p = s_p.get(sub_fid, "elevation")
+                assert abs(val_s - val_p) < 1e-12, (
+                    f"{fid}/{sub_fid}: serial={val_s} vs parallel={val_p}"
+                )
+
+    def test_parallel_all_stores_populated(self):
+        from polygrid.detail_perf import generate_all_detail_terrain_parallel
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain_parallel(
+            coll, grid, store, spec, seed=42,
+        )
+        for fid in coll.face_ids:
+            _, s = coll.get(fid)
+            assert s is not None, f"Store missing for {fid}"
+
+    # ── 10F.2 — Fast PIL renderer ──────────────────────────────────
+
+    def test_fast_render_creates_file(self, tmp_path):
+        from polygrid.detail_perf import render_detail_texture_fast
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        fid = coll.face_ids[0]
+        g, s = coll.get(fid)
+        out = tmp_path / "tile.png"
+        result = render_detail_texture_fast(g, s, out, tile_size=64)
+        assert result.exists()
+        assert result.stat().st_size > 0
+
+    def test_fast_render_correct_dimensions(self, tmp_path):
+        from PIL import Image
+        from polygrid.detail_perf import render_detail_texture_fast
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        fid = coll.face_ids[0]
+        g, s = coll.get(fid)
+        out = tmp_path / "tile.png"
+        render_detail_texture_fast(g, s, out, tile_size=128)
+        img = Image.open(out)
+        assert img.size == (128, 128)
+
+    def test_fast_render_non_black(self, tmp_path):
+        """Output should not be entirely black."""
+        from PIL import Image
+        from polygrid.detail_perf import render_detail_texture_fast
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=2)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        fid = coll.face_ids[0]
+        g, s = coll.get(fid)
+        out = tmp_path / "tile.png"
+        render_detail_texture_fast(g, s, out, tile_size=64)
+        img = Image.open(out)
+        pixels = list(img.getdata())
+        non_black = sum(1 for r, g, b in pixels if r + g + b > 0)
+        assert non_black > 0, "Image is entirely black"
+
+    # ── 10F.2b — Fast atlas builder ─────────────────────────────────
+
+    def test_fast_atlas_creates_files(self, tmp_path):
+        from polygrid.detail_perf import build_detail_atlas_fast
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=1)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        atlas_path, uv_layout = build_detail_atlas_fast(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        assert atlas_path.exists()
+        assert len(uv_layout) == len(coll.grids)
+
+    def test_fast_atlas_uv_range(self, tmp_path):
+        from polygrid.detail_perf import build_detail_atlas_fast
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=1)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        _, uv_layout = build_detail_atlas_fast(
+            coll, output_dir=tmp_path / "tiles", tile_size=64,
+        )
+        for fid, (u_min, v_min, u_max, v_max) in uv_layout.items():
+            assert 0.0 <= u_min < u_max <= 1.0
+            assert 0.0 <= v_min < v_max <= 1.0
+
+    # ── 10F.4 — Cache ──────────────────────────────────────────────
+
+    def test_cache_put_and_get(self, tmp_path):
+        from polygrid.detail_perf import DetailCache
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=1)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        cache = DetailCache(cache_dir=tmp_path / "cache")
+        fid = coll.face_ids[0]
+        g, s = coll.get(fid)
+        parent_elev = store.get(fid, "elevation")
+
+        assert not cache.has(fid, spec, parent_elev, 42)
+        cache.put(fid, spec, parent_elev, 42, s, g)
+        assert cache.has(fid, spec, parent_elev, 42)
+
+        loaded = cache.get(fid, spec, parent_elev, 42, g)
+        assert loaded is not None
+        for sub_fid in g.faces:
+            assert abs(
+                s.get(sub_fid, "elevation") - loaded.get(sub_fid, "elevation")
+            ) < 1e-12
+
+    def test_cache_miss_returns_none(self, tmp_path):
+        from polygrid.detail_perf import DetailCache
+
+        cache = DetailCache(cache_dir=tmp_path / "cache")
+        grid, store, spec, coll = self._make_globe(freq=1, rings=1)
+        fid = coll.face_ids[0]
+        g, _ = coll.get(fid)
+        result = cache.get(fid, spec, 0.5, 999, g)
+        assert result is None
+
+    def test_cache_clear(self, tmp_path):
+        from polygrid.detail_perf import DetailCache
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=1)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        cache = DetailCache(cache_dir=tmp_path / "cache")
+        fid = coll.face_ids[0]
+        g, s = coll.get(fid)
+        parent_elev = store.get(fid, "elevation")
+        cache.put(fid, spec, parent_elev, 42, s, g)
+        assert cache.size >= 1
+        removed = cache.clear()
+        assert removed >= 1
+        assert cache.size == 0
+
+    def test_cached_generation_produces_results(self, tmp_path):
+        from polygrid.detail_perf import (
+            DetailCache, generate_all_detail_terrain_cached,
+        )
+
+        grid, store, spec, coll = self._make_globe(freq=1, rings=1)
+        cache = DetailCache(cache_dir=tmp_path / "cache")
+
+        # First run — all misses
+        hits = generate_all_detail_terrain_cached(
+            coll, grid, store, spec, seed=42, cache=cache,
+        )
+        assert hits == 0
+        for fid in coll.face_ids:
+            _, s = coll.get(fid)
+            assert s is not None
+
+        # Second run — all hits (fresh collection)
+        _, _, _, coll2 = self._make_globe(freq=1, rings=1)
+        hits2 = generate_all_detail_terrain_cached(
+            coll2, grid, store, spec, seed=42, cache=cache,
+        )
+        assert hits2 == len(coll2.face_ids)
+
+    def test_cached_matches_fresh(self, tmp_path):
+        """Cached results should be identical to freshly generated."""
+        from polygrid.detail_perf import (
+            DetailCache, generate_all_detail_terrain_cached,
+        )
+        from polygrid.detail_terrain import generate_all_detail_terrain
+
+        grid, store, spec, coll_fresh = self._make_globe(freq=1, rings=1)
+        generate_all_detail_terrain(coll_fresh, grid, store, spec, seed=42)
+
+        _, _, _, coll_cached = self._make_globe(freq=1, rings=1)
+        cache = DetailCache(cache_dir=tmp_path / "cache")
+        generate_all_detail_terrain_cached(
+            coll_cached, grid, store, spec, seed=42, cache=cache,
+        )
+
+        for fid in coll_fresh.face_ids:
+            g_f, s_f = coll_fresh.get(fid)
+            g_c, s_c = coll_cached.get(fid)
+            for sub_fid in g_f.faces:
+                val_f = s_f.get(sub_fid, "elevation")
+                val_c = s_c.get(sub_fid, "elevation")
+                assert abs(val_f - val_c) < 1e-12
+
+    # ── 10F.5 — Benchmark ──────────────────────────────────────────
+
+    def test_benchmark_returns_timings(self):
+        from polygrid.detail_perf import benchmark_pipeline
+
+        timings = benchmark_pipeline(
+            frequency=1, detail_rings=2, seed=42,
+            use_parallel=True, use_fast_render=True, tile_size=32,
+        )
+        assert "grid_build" in timings
+        assert "terrain_gen" in timings
+        assert "texture_render" in timings
+        assert "total" in timings
+        assert timings["total"] > 0
+        assert timings["tile_count"] == 12
+
+    def test_benchmark_completes_within_timeout(self):
+        """freq=1 detail_rings=2 should complete in < 30 seconds."""
+        from polygrid.detail_perf import benchmark_pipeline
+
+        timings = benchmark_pipeline(
+            frequency=1, detail_rings=2, seed=42,
+            use_parallel=True, use_fast_render=True, tile_size=32,
+        )
+        assert timings["total"] < 30.0, (
+            f"Pipeline took {timings['total']:.1f}s (limit: 30s)"
+        )
