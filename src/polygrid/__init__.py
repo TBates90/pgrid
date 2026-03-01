@@ -182,6 +182,19 @@ try:
         subdivide_tile_mesh,
         build_batched_globe_mesh,
         render_globe_v2,
+        compute_uv_polygon_inset,
+        clamp_uv_to_polygon,
+        blend_biome_configs,
+        compute_neighbour_average_colours,
+        harmonise_tile_colours,
+        encode_normal_to_rgb,
+        decode_rgb_to_normal,
+        build_normal_map_atlas,
+        get_pbr_shader_sources,
+        get_v2_shader_sources,
+        classify_water_tiles,
+        compute_water_depth,
+        DEFAULT_WATER_LEVEL,
     )
 except ImportError:
     pass  # models library not installed — v2 renderer features unavailable
@@ -444,6 +457,19 @@ __all__ = [
     "subdivide_tile_mesh",
     "build_batched_globe_mesh",
     "render_globe_v2",
+    # UV clamping (Phase 13C)
+    "compute_uv_polygon_inset",
+    "clamp_uv_to_polygon",
+    # Colour harmonisation (Phase 13D)
+    "blend_biome_configs",
+    "compute_neighbour_average_colours",
+    "harmonise_tile_colours",
+    # Normal-mapped lighting (Phase 13E)
+    "encode_normal_to_rgb",
+    "decode_rgb_to_normal",
+    "build_normal_map_atlas",
+    "get_pbr_shader_sources",
+    "get_v2_shader_sources",
     # Detail grids
     "build_detail_grid",
     "detail_face_count",

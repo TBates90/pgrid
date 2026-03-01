@@ -884,7 +884,7 @@ The fundamental fix requires **ensuring no UV sample ever sees a black pixel**, 
 
 ---
 
-## Phase 13 — Cohesive Globe Rendering (Planned)
+## Phase 13 — Cohesive Globe Rendering 🔶
 
 **Goal:** Achieve a production-quality globe where tile boundaries are invisible, the surface is smooth and continuous, lighting is realistic, and rendering is efficient. This phase replaces the broken flood-fill approach with a comprehensive solution.
 
@@ -905,64 +905,67 @@ Layer 3: Shader & Lighting   — realistic PBR-lite rendering
 
 ---
 
-### 13A — Full-coverage tile textures ◻️
+### 13A — Full-coverage tile textures ✅
 
 **Problem:** `render_detail_texture_enhanced()` renders sub-face polygons on a black `facecolor="black"` background. The hex/pent polygon doesn't fill the square tile slot.
 
 **Fix:** Render tile textures so the *entire* square image is filled with terrain colour.
 
-- [ ] **13A.1 — Background colour fill** — In `detail_render.py`, change `facecolor="black"` to the tile's average terrain colour. This ensures corners outside the polygon are terrain-coloured instead of black.
-- [ ] **13A.2 — PIL renderer fix** — Same fix in `detail_perf.py`: replace `Image.new("RGB", ..., (0,0,0))` with the tile's average colour.
-- [ ] **13A.3 — Polygon edge extension** — Extend the outermost sub-face polygons by 2-3 pixels beyond the tile boundary so they overlap slightly into the border region, ensuring full coverage.
-- [ ] **13A.4 — Aggressive flood-fill** — Replace the fixed-iteration flood-fill with a full diffusion fill: repeat until *all* black pixels below a threshold are filled. Use a proper distance-weighted propagation (nearest-coloured-pixel sampling) instead of iterative averaging.
-- [ ] **13A.5 — Tests** — full-coverage assertions: after rendering, no pixel in the tile slot should be below a minimum brightness threshold. Verify corner pixels are terrain-coloured.
+- [x] **13A.1 — Background colour fill** — In `detail_render.py`, change `facecolor="black"` to the tile's average terrain colour. This ensures corners outside the polygon are terrain-coloured instead of black.
+- [x] **13A.2 — PIL renderer fix** — Same fix in `detail_perf.py`: replace `Image.new("RGB", ..., (0,0,0))` with the tile's average colour.
+- [x] **13A.3 — Polygon edge extension** — Extend the outermost sub-face polygons by 2-3 pixels beyond the tile boundary so they overlap slightly into the border region, ensuring full coverage.
+- [x] **13A.4 — Aggressive flood-fill** — Replace the fixed-iteration flood-fill with a full diffusion fill: repeat until *all* black pixels below a threshold are filled. Use a proper distance-weighted propagation (nearest-coloured-pixel sampling) instead of iterative averaging.
+- [x] **13A.5 — Tests** — full-coverage assertions: after rendering, no pixel in the tile slot should be below a minimum brightness threshold. Verify corner pixels are terrain-coloured.
 
-### 13B — Atlas gutter system ◻️
+### 13B — Atlas gutter system ✅
 
 **Problem:** Adjacent tile slots in the atlas share pixel boundaries. Bilinear/trilinear sampling bleeds pixels across slot boundaries, creating seams even when tiles are individually correct.
 
 **Fix:** Add a gutter (padding) around each atlas slot filled with neighbouring tile colours.
 
-- [ ] **13B.1 — Gutter parameter** — Add `gutter_px: int = 4` parameter to `build_detail_atlas()` and `build_detail_atlas_fast()`. Each tile slot expands by `gutter_px` on all sides in the atlas image.
-- [ ] **13B.2 — Gutter fill strategy** — Fill gutter pixels by mirroring/clamping the tile edge pixels. For a 4px gutter, the 4 outermost pixel columns/rows of each tile are duplicated into the gutter.
-- [ ] **13B.3 — UV layout adjustment** — Update `compute_tile_uvs()` to account for the gutter: atlas UVs map to the inner (non-gutter) region. UV coordinates must be inset by `gutter_px / atlas_size`.
-- [ ] **13B.4 — Tests** — verify gutter pixels match tile edge pixels; verify UVs after inset still map correctly.
+- [x] **13B.1 — Gutter parameter** — Add `gutter_px: int = 4` parameter to `build_detail_atlas()` and `build_detail_atlas_fast()`. Each tile slot expands by `gutter_px` on all sides in the atlas image.
+- [x] **13B.2 — Gutter fill strategy** — Fill gutter pixels by mirroring/clamping the tile edge pixels. For a 4px gutter, the 4 outermost pixel columns/rows of each tile are duplicated into the gutter.
+- [x] **13B.3 — UV layout adjustment** — Update `compute_tile_uvs()` to account for the gutter: atlas UVs map to the inner (non-gutter) region. UV coordinates must be inset by `gutter_px / atlas_size`.
+- [x] **13B.4 — Tests** — verify gutter pixels match tile edge pixels; verify UVs after inset still map correctly.
 
-### 13C — UV inset clamping ◻️
+### 13C — UV inset clamping ✅
 
 **Problem:** The GoldbergTile UV vertices (e.g. pentagon: `(0.191,0) .. (1.0, 0.618) .. (0.0, 0.618)`) define a polygon inscribed in [0,1]². The triangle fan from center to these vertices generates UV coordinates that stay inside the polygon. But barycentric subdivision (12B) can generate UV coordinates that interpolate towards the *center UV* (average of edge UVs), which is correct — the problem is that the *triangle edges* between adjacent tiles' triangle fans cover the *gap* between the two tile polygons, and that gap maps to the black border region.
 
 **Fix:** Clamp all UV coordinates to stay strictly within the polygon interior, with a configurable inset.
 
-- [ ] **13C.1 — UV polygon inset** — Compute the tile's UV polygon (from `uv_vertices`), then inset it by 1-2 texels. All generated UV coordinates are clamped to this inset polygon using point-in-polygon + nearest-edge projection.
-- [ ] **13C.2 — Vertex-level UV clamping** — In `subdivide_tile_mesh()`, after barycentric UV interpolation, clamp each UV to the tile's atlas sub-region with a texel-sized margin. This prevents any UV from sampling outside the rendered polygon area.
-- [ ] **13C.3 — Tests** — verify all UV coordinates in the batched mesh are within the inset atlas sub-regions; no UV falls in the gutter zone or atlas gap.
+- [x] **13C.1 — UV polygon inset** — `compute_uv_polygon_inset()` shrinks a tile's UV polygon toward its centroid by a configurable number of atlas pixels. Helper functions: `clamp_uv_to_polygon()`, `_point_in_convex_polygon()` (winding test), `_nearest_point_on_segment()`, `_nearest_point_on_polygon_edge()`.
+- [x] **13C.2 — Vertex-level UV clamping** — `subdivide_tile_mesh()` accepts optional `uv_clamp_polygon` parameter; after barycentric UV interpolation each UV is clamped. `build_batched_globe_mesh()` accepts `uv_inset_px` + `atlas_size` and computes the inset polygon per tile automatically.
+- [x] **13C.3 — Tests** — 25 new tests: point-in-polygon containment, nearest-point-on-segment, polygon-edge projection, inset shrinkage/centroid/scaling, clamp interior-unchanged + exterior-clamped, subdivision with/without clamping (topology, positions, backward compat), batched mesh with inset (output shapes, topology, positions, validation, zero-inset identity). 914 total tests passing.
 
-### 13D — Cross-tile colour harmonisation ◻️
+### 13D — Cross-tile colour harmonisation ✅
 
 **Problem:** Adjacent tiles can have dramatically different biomes/colours. The ocean-to-grassland transition in the screenshot is a single-pixel step.
 
 **Fix:** Smooth colour transitions at tile boundaries.
 
-- [ ] **13D.1 — Boundary colour matching** — For each pair of adjacent tiles, compute the average colour along their shared boundary in both tile textures. Blend a gradient from each tile's interior colour to the boundary average over the outer 2-3 sub-face rings.
-- [ ] **13D.2 — Biome transition blending** — In `assign_all_biomes()`, detect tiles adjacent to a different biome. Create blended `BiomeConfig` instances for boundary tiles by interpolating biome parameters (moisture, vegetation_density, snow_line, etc.) with neighbour biomes.
-- [ ] **13D.3 — Cross-tile texture blending (shader)** — Add a shader-based cross-tile blend. Store a per-vertex "blend factor" attribute that is 0 at tile center and 1 at tile edges. In the fragment shader, blend between the tile's texture and an ambient/averaged colour at high blend factors. This softens transitions.
-- [ ] **13D.4 — Tests** — verify boundary colour difference between adjacent tiles is below a threshold after harmonisation; verify biome blending creates intermediate configs.
+- [x] **13D.1 — Boundary colour matching** — `compute_neighbour_average_colours()` computes the mean colour of each tile's neighbours from the adjacency graph (`GoldbergTile.neighbor_indices`). `harmonise_tile_colours()` blends each tile toward its neighbour average by a configurable `strength` (0–1), producing a smoothed colour map.
+- [x] **13D.2 — Biome transition blending** — `blend_biome_configs(a, b, t)` linearly interpolates every numeric field of two `BiomeConfig` instances (vegetation_density, rock_exposure, snow_line, water_level, moisture, hillshade_strength, azimuth, altitude). Weight is clamped to [0,1].
+- [x] **13D.3 — Per-vertex edge colour gradient** — `subdivide_tile_mesh()` accepts optional `edge_color` parameter; vertex colours blend from `color` at tile centre (b0=1) to `edge_color` at tile boundary (b0=0) using the barycentric centre weight. `build_batched_globe_mesh()` accepts `edge_blend` float (0–1); when >0 it computes per-tile edge colours from `compute_neighbour_average_colours()` and passes them through automatically.
+- [x] **13D.4 — Tests** — 26 new tests: BiomeConfig blending (zero/half/full/clamp/base_ramp), neighbour average colours (single/pair/triangle/missing), harmonise colours (zero/full/half strength, immutability, distance reduction), edge colour in subdivision (uniform without, centre keeps colour, boundary blends, gradient variation, same-as-centre uniform, topology preserved, positions/UVs preserved), batched mesh edge blend (zero identity, output valid, topology unchanged, colours changed, no-colour-map no-effect). 940 total tests passing.
 
-### 13E — Normal-mapped lighting ◻️
+### 13E — Normal-mapped lighting ✅
 
 **Problem:** Current lighting is flat (just `dot(N,L)` with the sphere normal). The globe looks plastic. Terrain detail (hills, valleys) is invisible in the lighting.
 
 **Fix:** Use the Phase 11E normal maps in the shader.
 
-- [ ] **13E.1 — Normal map atlas** — Build a second atlas texture containing per-sub-face normal vectors encoded as RGB. Each tile slot stores the `compute_normal_map()` output as an image.
-- [ ] **13E.2 — Tangent-space normals** — The GoldbergTile provides `tangent` and `bitangent` vectors. Pass these as vertex attributes to the shader. In the fragment shader, sample the normal map, transform from tangent space to world space, and use for lighting.
-- [ ] **13E.3 — PBR-lite shader** — Upgrade the fragment shader to:
-  - Diffuse: `max(0, dot(N, L))` with a warm key light and cool fill light
-  - Specular: Blinn-Phong with low roughness (for water) / high roughness (for terrain)
-  - Ambient: hemisphere ambient (sky colour from above, ground colour from below)
-  - Fresnel: subtle rim lighting at glancing angles (makes the sphere silhouette glow)
-- [ ] **13E.4 — Tests** — verify normal map atlas matches `compute_all_normal_maps()` output; verify shader compiles with new attributes.
+- [x] **13E.1 — Normal map atlas** — `build_normal_map_atlas()` builds a second atlas with per-sub-face normals encoded as RGB using `encode_normal_to_rgb()` / `decode_rgb_to_normal()`. Each tile slot rendered via `_render_normal_tile()` with gutter fill via `_fill_normal_gutter()`. Returns `(PIL.Image, uv_layout)`.
+- [x] **13E.2 — Tangent-space normals** — `subdivide_tile_mesh()` accepts optional `tangent` and `bitangent` params. When provided, vertex format expands from 8 to 14 floats: pos(3)+col(3)+uv(2)+T(3)+B(3). Tangent/bitangent are Gram-Schmidt re-orthogonalised against the sphere normal at each vertex. `build_batched_globe_mesh()` gains `normal_mapped=True` flag that passes each GoldbergTile's `.tangent` / `.bitangent` through.
+- [x] **13E.3 — PBR-lite shader** — New `_PBR_VERTEX_SHADER` and `_PBR_FRAGMENT_SHADER` (GLSL 330 core) with:
+  - Diffuse: warm key light (`KEY_COLOR`) + cool fill light (`FILL_COLOR`) from separate directions
+  - Specular: Blinn-Phong with roughness auto-derived from water heuristic (blue channel)
+  - Ambient: hemisphere ambient (sky colour above, ground colour below)
+  - Fresnel: Schlick rim lighting at glancing angles
+  - Normal mapping: samples `u_normal_map` atlas, transforms via TBN matrix
+  - Tone mapping: Reinhard to prevent over-bright
+  - Legacy v2 shaders preserved as fallback. `get_pbr_shader_sources()` and `get_v2_shader_sources()` convenience accessors.
+- [x] **13E.4 — Tests** — 34 new tests across 5 classes: encode/decode round-trip (7 tests), subdivide with tangent (6 tests), batched mesh normal_mapped (6 tests), normal map atlas (5 tests), PBR shader source validation (10 tests). 974 total tests passing.
 
 ### 13F — Adaptive mesh resolution ◻️
 
@@ -986,20 +989,20 @@ Layer 3: Shader & Lighting   — realistic PBR-lite rendering
 - [ ] **13G.3 — Background gradient** — Replace the flat dark background with a subtle radial gradient (dark blue center to black edges) to suggest space.
 - [ ] **13G.4 — Tests** — verify atmosphere geometry doesn't obscure the globe; verify bloom doesn't wash out colours.
 
-### 13H — Water rendering ◻️
+### 13H — Water rendering ✅
 
 **Problem:** Ocean tiles are flat blue with no visual distinction from land.
 
 **Fix:** Differentiated water rendering.
 
-- [ ] **13H.1 — Water detection** — In the batched mesh builder, identify tiles/sub-faces below the water level. Tag water vertices with a `is_water` flag (or use a separate water mesh).
-- [ ] **13H.2 — Water shader** — In the fragment shader, water fragments get:
-  - Flattened to a uniform sea level (no terrain detail)
-  - Higher specular (shiny reflective surface)
-  - Animated subtle wave normal perturbation (time-based sin/cos offset to normal)
-  - Deeper blue with depth-based colour (shallow = turquoise, deep = navy)
-- [ ] **13H.3 — Coastline emphasis** — Render a subtle bright line at the water-land boundary. Detect in the shader by checking if the blend factor crosses the water threshold.
-- [ ] **13H.4 — Tests** — verify water tile detection matches biome assignment; verify water UVs are flattened; verify shader compiles.
+- [x] **13H.1 — Water detection** — `classify_water_tiles()` identifies tiles by blue-channel dominance vs `water_level` threshold (default 0.12, matching `BiomeConfig`). `compute_water_depth()` returns normalised [0,1] depth proxy. Per-vertex `water_flag` float added to vertex stride (Optional[float]: None=no column, 0.0=land, 1.0=water). Stride: 8→9 (basic) or 14→15 (normal-mapped).
+- [x] **13H.2 — Water shader** — PBR fragment shader upgraded:
+  - Water uses low roughness (0.15) for shiny reflective surface
+  - Depth-based colour: shallow turquoise → deep navy via `WATER_SHALLOW`/`WATER_DEEP` constants
+  - Animated wave normal perturbation via `u_time` uniform (sin/cos offset, `WAVE_SPEED`/`WAVE_SCALE`/`WAVE_AMPLITUDE`)
+  - Per-vertex water flag (`v_water`) falls back to blue-channel heuristic for backward compat
+- [x] **13H.3 — Coastline emphasis** — `dFdx`/`dFdy` screen-space derivatives of `v_water` detect water-land boundary; `coast_factor` blends `COAST_COLOR` (bright foam) at transitions.
+- [x] **13H.4 — Tests** — 43 new tests across 5 classes: `TestClassifyWaterTiles` (10), `TestComputeWaterDepth` (5), `TestSubdivideWithWaterFlag` (9), `TestBatchedMeshWithWater` (9), `TestPBRShaderWaterFeatures` (10). 1017 total tests, 0 failures.
 
 ---
 
@@ -1007,14 +1010,14 @@ Layer 3: Shader & Lighting   — realistic PBR-lite rendering
 
 | Step | Focus | Impact | Effort | Priority |
 |------|-------|--------|--------|----------|
-| **13A** | Full-coverage textures | **Critical** — eliminates 90% of visible seams | Medium | 🔴 P0 |
-| **13B** | Atlas gutters | **High** — prevents sampling across tile boundaries | Low | 🔴 P0 |
-| **13C** | UV inset clamping | **High** — backstop for any remaining UV bleed | Low | 🟠 P1 |
-| **13D** | Colour harmonisation | **Medium** — softens biome transitions | Medium | 🟠 P1 |
-| **13E** | Normal-mapped lighting | **Medium** — adds terrain depth & realism | Medium | 🟡 P2 |
+| **13A** | Full-coverage textures | **Critical** — eliminates 90% of visible seams | Medium | ✅ Done |
+| **13B** | Atlas gutters | **High** — prevents sampling across tile boundaries | Low | ✅ Done |
+| **13C** | UV inset clamping | **High** — backstop for any remaining UV bleed | Low | ✅ Done |
+| **13D** | Colour harmonisation | **Medium** — softens biome transitions | Medium | ✅ Done |
+| **13E** | Normal-mapped lighting | **Medium** — adds terrain depth & realism | Medium | ✅ Done |
 | **13F** | Adaptive LOD | **Low** — performance (visible only at high freq) | High | 🟡 P2 |
 | **13G** | Atmosphere | **Low** — aesthetic polish | Low | 🟢 P3 |
-| **13H** | Water rendering | **Low** — aesthetic polish | Medium | 🟢 P3 |
+| **13H** | Water rendering | **Low** — aesthetic polish | Medium | ✅ Done |
 
 **Recommended implementation order:** 13A → 13B → 13C → 13D → 13E → 13H → 13G → 13F
 
@@ -1043,12 +1046,13 @@ Adjacent GoldbergTile instances share exactly 2 vertices (verified: inter-vertex
 - [x] **Move `notes.md`** — `src/polygrid/notes.md` is an early planning doc. Move to `docs/` or remove if superseded.
 - [x] **Remove `experiments/`** — `src/polygrid/experiments/` contains ad-hoc experimental code. Clean up or move to `scripts/`.
 - [ ] **CI pipeline** — set up GitHub Actions for `pytest` + linting on push.
+- [x] **Test performance** — added `lru_cache`-based caching in `tests/conftest.py` for `build_globe_grid()` and monkeypatched `DetailGridCollection.build()` to cache the expensive grids dict. Each test gets a fresh mutable wrapper with empty `_stores`. Full suite (974 tests) runs in ~5 minutes instead of 50+.
 - [ ] **Design patterns** — as terrain algorithms grow, consider:
   - *Strategy pattern* for swappable terrain generators per biome
   - *Pipeline/chain pattern* for algorithm sequencing
   - *Observer pattern* if tile data changes need to trigger recalculation
   - *Repository pattern* for tile data persistence
-- [ ] **Performance** — profile for large ring counts (rings ≥ 5). The optimiser and stitching are the bottlenecks. Consider caching, lazy evaluation.
+- [x] **Performance** — profile for large ring counts (rings ≥ 5). The optimiser and stitching are the bottlenecks. Test-time caching (see above) mitigates the optimiser cost. Consider lazy evaluation for production paths.
 
 ---
 
