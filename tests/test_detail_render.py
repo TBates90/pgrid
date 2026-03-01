@@ -38,12 +38,14 @@ needs_models = pytest.mark.skipif(_skip, reason="models library not installed")
 
 def _make_detail_grid_with_terrain():
     """Build one detail grid with terrain for testing rendering."""
-    from polygrid.globe import build_globe_grid
+    from conftest import cached_build_globe
     from polygrid.mountains import MountainConfig, generate_mountains
     from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
     from polygrid.detail_terrain import generate_all_detail_terrain
 
-    grid = build_globe_grid(3)
+    grid = cached_build_globe(3)
+    if grid is None:
+        pytest.skip("models library not installed")
     schema = TileSchema([FieldDef("elevation", float, 0.0)])
     store = TileDataStore(grid=grid, schema=schema)
     generate_mountains(grid, store, MountainConfig(seed=42))

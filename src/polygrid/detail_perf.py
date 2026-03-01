@@ -184,8 +184,44 @@ def render_detail_texture_fast(
         azimuth=biome.azimuth, altitude=biome.altitude,
     )
 
+    # First pass: compute all face colours to get the average for
+    # the background.  This ensures pixels outside the polygon are
+    # terrain-coloured instead of black, eliminating seams in the
+    # 3D atlas texture.
+    face_colours = {}
+    for fid, face in detail_grid.faces.items():
+        has_verts = True
+        for vid in face.vertex_ids:
+            v = detail_grid.vertices.get(vid)
+            if v is None or not v.has_position():
+                has_verts = False
+                break
+        if has_verts and len(face.vertex_ids) >= 3:
+            elev = store.get(fid, elevation_field)
+            c = face_center(detail_grid.vertices, face)
+            cx, cy = c if c else (0.0, 0.0)
+            r, g, b = detail_elevation_to_colour(
+                elev, biome,
+                hillshade_val=hs.get(fid, 0.5),
+                noise_x=cx, noise_y=cy,
+                noise_seed=noise_seed,
+            )
+            face_colours[fid] = (r, g, b)
+
+    if face_colours:
+        avg_r = sum(c[0] for c in face_colours.values()) / len(face_colours)
+        avg_g = sum(c[1] for c in face_colours.values()) / len(face_colours)
+        avg_b = sum(c[2] for c in face_colours.values()) / len(face_colours)
+        bg = (
+            max(0, min(255, int(avg_r * 255))),
+            max(0, min(255, int(avg_g * 255))),
+            max(0, min(255, int(avg_b * 255))),
+        )
+    else:
+        bg = (0, 0, 0)
+
     # Rasterise
-    img = Image.new("RGB", (tile_size, tile_size), (0, 0, 0))
+    img = Image.new("RGB", (tile_size, tile_size), bg)
     draw = ImageDraw.Draw(img)
 
     for fid, face in detail_grid.faces.items():
@@ -196,16 +232,8 @@ def render_detail_texture_fast(
                 break
             verts.append(_to_pixel(v.x, v.y))
         else:
-            if len(verts) >= 3:
-                elev = store.get(fid, elevation_field)
-                c = face_center(detail_grid.vertices, face)
-                cx, cy = c if c else (0.0, 0.0)
-                r, g, b = detail_elevation_to_colour(
-                    elev, biome,
-                    hillshade_val=hs.get(fid, 0.5),
-                    noise_x=cx, noise_y=cy,
-                    noise_seed=noise_seed,
-                )
+            if len(verts) >= 3 and fid in face_colours:
+                r, g, b = face_colours[fid]
                 colour = (
                     max(0, min(255, int(r * 255))),
                     max(0, min(255, int(g * 255))),
@@ -229,6 +257,7 @@ def build_detail_atlas_fast(
     tile_size: int = 256,
     columns: int = 0,
     noise_seed: int = 0,
+    gutter: int = 4,
 ) -> Tuple[Path, Dict[str, Tuple[float, float, float, float]]]:
     """Build a detail atlas using the fast PIL renderer.
 
@@ -242,6 +271,7 @@ def build_detail_atlas_fast(
         ``(atlas_path, uv_layout)``
     """
     from PIL import Image
+    from .texture_pipeline import _fill_gutter
 
     if biome is None:
         biome = BiomeConfig()
@@ -271,33 +301,39 @@ def build_detail_atlas_fast(
         )
         tile_paths[fid] = path
 
-    # Compute atlas layout
+    # Compute atlas layout — each slot is tile_size + 2*gutter
     if columns <= 0:
         columns = max(1, math.isqrt(n))
         if columns * columns < n:
             columns += 1
     rows = math.ceil(n / columns)
 
-    atlas_w = columns * tile_size
-    atlas_h = rows * tile_size
-    atlas = Image.new("RGB", (atlas_w, atlas_h), (0, 0, 0))
+    slot_size = tile_size + 2 * gutter
+    atlas_w = columns * slot_size
+    atlas_h = rows * slot_size
+    atlas = Image.new("RGB", (atlas_w, atlas_h), (128, 128, 128))
 
     uv_layout: Dict[str, Tuple[float, float, float, float]] = {}
 
     for idx, fid in enumerate(face_ids):
         col = idx % columns
         row = idx // columns
-        px_x = col * tile_size
-        px_y = row * tile_size
+        slot_x = col * slot_size
+        slot_y = row * slot_size
 
-        tile_img = Image.open(tile_paths[fid])
+        tile_img = Image.open(tile_paths[fid]).convert("RGB")
         tile_img = tile_img.resize((tile_size, tile_size), Image.LANCZOS)
-        atlas.paste(tile_img, (px_x, px_y))
+        atlas.paste(tile_img, (slot_x + gutter, slot_y + gutter))
 
-        u_min = px_x / atlas_w
-        u_max = (px_x + tile_size) / atlas_w
-        v_min = 1.0 - (px_y + tile_size) / atlas_h
-        v_max = 1.0 - px_y / atlas_h
+        if gutter > 0:
+            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+
+        inner_x = slot_x + gutter
+        inner_y = slot_y + gutter
+        u_min = inner_x / atlas_w
+        u_max = (inner_x + tile_size) / atlas_w
+        v_min = 1.0 - (inner_y + tile_size) / atlas_h
+        v_max = 1.0 - inner_y / atlas_h
         uv_layout[fid] = (u_min, v_min, u_max, v_max)
 
     atlas_path = output_dir / "detail_atlas.png"

@@ -46,10 +46,12 @@ needs_pil = pytest.mark.skipif(not _has_pil, reason="Pillow not installed")
 
 
 def _make_globe_with_elevation(frequency=3, seed=42):
-    from polygrid.globe import build_globe_grid
+    from conftest import cached_build_globe
     from polygrid.mountains import MountainConfig, generate_mountains
 
-    grid = build_globe_grid(frequency)
+    grid = cached_build_globe(frequency)
+    if grid is None:
+        pytest.skip("models library not installed")
     schema = TileSchema([FieldDef("elevation", float, 0.0)])
     store = TileDataStore(grid=grid, schema=schema)
     generate_mountains(grid, store, MountainConfig(seed=seed))

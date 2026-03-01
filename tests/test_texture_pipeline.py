@@ -38,10 +38,12 @@ needs_pil = pytest.mark.skipif(not _has_pil, reason="Pillow not installed")
 
 
 def _make_collection_with_terrain(frequency=3, detail_rings=2, seed=42):
-    from polygrid.globe import build_globe_grid
+    from conftest import cached_build_globe
     from polygrid.mountains import MountainConfig, generate_mountains
 
-    grid = build_globe_grid(frequency)
+    grid = cached_build_globe(frequency)
+    if grid is None:
+        pytest.skip("models library not installed")
     schema = TileSchema([FieldDef("elevation", float, 0.0)])
     store = TileDataStore(grid=grid, schema=schema)
     generate_mountains(grid, store, MountainConfig(seed=seed))
@@ -145,16 +147,18 @@ class TestBuildDetailAtlas:
 
         _, _, coll = _make_collection_with_terrain(3, detail_rings=2)
         tile_size = 32
+        gutter = 4  # default gutter
         atlas_path, _ = build_detail_atlas(
             coll, output_dir=tmp_path, tile_size=tile_size,
         )
         img = Image.open(atlas_path)
         w, h = img.size
-        # Atlas should be a multiple of tile_size in both dimensions
-        assert w % tile_size == 0
-        assert h % tile_size == 0
+        # Atlas should be a multiple of slot_size (tile_size + 2*gutter)
+        slot_size = tile_size + 2 * gutter
+        assert w % slot_size == 0
+        assert h % slot_size == 0
         # Should have enough slots for all tiles
-        slots = (w // tile_size) * (h // tile_size)
+        slots = (w // slot_size) * (h // slot_size)
         assert slots >= len(coll.face_ids)
 
     def test_individual_tiles_created(self, tmp_path):

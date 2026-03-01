@@ -408,6 +408,14 @@ def render_detail_texture_enhanced(
         plt.close(fig)
         return output_path
 
+    # Compute the average tile colour for the background.
+    # This ensures pixels outside the polygon are terrain-coloured
+    # instead of black, eliminating seams in the 3D atlas texture.
+    avg_r = sum(c[0] for c in colours) / len(colours)
+    avg_g = sum(c[1] for c in colours) / len(colours)
+    avg_b = sum(c[2] for c in colours) / len(colours)
+    bg_colour = (avg_r, avg_g, avg_b)
+
     # Render
     dpi = 100
     fig_size = tile_size / dpi
@@ -422,7 +430,7 @@ def render_detail_texture_enhanced(
 
     fig.savefig(
         str(output_path), dpi=dpi, bbox_inches="tight", pad_inches=0,
-        facecolor="black",
+        facecolor=bg_colour,
     )
     plt.close(fig)
 

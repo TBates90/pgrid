@@ -17,8 +17,13 @@ from polygrid.algorithms import get_face_adjacency
 
 # ── Gate globe-specific tests behind models availability ────────────
 try:
-    from polygrid.globe import build_globe_grid, GlobeGrid, _HAS_MODELS
+    from polygrid.globe import build_globe_grid as _build_globe_grid_uncached, GlobeGrid, _HAS_MODELS
     _skip_globe = not _HAS_MODELS
+    # Wrap with cache — building a Goldberg polyhedron is ~15-20s.
+    # Tests only read the grid, so sharing a cached instance is safe.
+    from conftest import cached_build_globe
+    def build_globe_grid(frequency=3, *, radius=1.0):
+        return cached_build_globe(frequency, radius)
 except ImportError:
     _skip_globe = True
 
@@ -2281,8 +2286,10 @@ class TestTexturePipeline:
         img = Image.open(atlas_path)
         n = len(coll.grids)
         rows = math.ceil(n / 4)
-        assert img.size[0] == 4 * 64
-        assert img.size[1] == rows * 64
+        gutter = 4  # default
+        slot = 64 + 2 * gutter
+        assert img.size[0] == 4 * slot
+        assert img.size[1] == rows * slot
 
     def test_atlas_covers_all_tiles(self, tmp_path):
         from polygrid.texture_pipeline import build_detail_atlas

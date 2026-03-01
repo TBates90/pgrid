@@ -37,10 +37,12 @@ needs_models = pytest.mark.skipif(_skip, reason="models library not installed")
 
 
 def _make_globe_with_elevation(frequency: int = 3, seed: int = 42):
-    from polygrid.globe import build_globe_grid
+    from conftest import cached_build_globe
     from polygrid.mountains import MountainConfig, generate_mountains
 
-    grid = build_globe_grid(frequency)
+    grid = cached_build_globe(frequency)
+    if grid is None:
+        pytest.skip("models library not installed")
     schema = TileSchema([FieldDef("elevation", float, 0.0)])
     store = TileDataStore(grid=grid, schema=schema)
     config = MountainConfig(seed=seed)

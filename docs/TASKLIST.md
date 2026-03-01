@@ -625,6 +625,413 @@ The target image's level of detail corresponds roughly to freq=5 with detail_rin
 
 ---
 
+## Phase 11 — Cohesive Globe Terrain �
+
+**Goal:** Replace the current per-tile-in-isolation terrain generation with a system that produces terrain features that span across Goldberg tile boundaries — mountain ranges that flow across multiple tiles, river systems that cross tile edges, and vegetation gradients that are globally coherent. The current Phase 10 system generates each tile's sub-faces independently with per-tile noise seeds, which produces a "patchwork quilt" artefact: every tile has its own terrain character with visible seam boundaries even after boundary smoothing.
+
+### Problem analysis
+
+The root cause is architectural. Currently:
+
+1. **Noise is local.** Each detail grid is sampled with a per-tile seed (`tile_seed = seed + hash(face_id)`). The noise field has no spatial relationship between adjacent tiles — tile A's interior noise and tile B's interior noise are unrelated functions.
+
+2. **Boundary smoothing is a patch, not a solution.** `generate_detail_terrain_bounded` averages parent/neighbour elevations at the boundary band and smooths. This prevents hard seam *lines*, but it can't make a ridge that crosses from tile A into tile B because the interior noise on each side was generated independently.
+
+3. **Globe-level terrain is too coarse.** `generate_mountains` writes one elevation value per Goldberg tile (92 values at freq=3). The detail layer adds high-frequency variation on top, but the large-scale shape (ridges, valleys) is locked to the coarse grid.
+
+### Approach: 3D-Coherent Noise + Region Patches
+
+The key insight: **sample a single, globe-wide noise field** at every sub-face position, using the sub-face's real 3D coordinates (derived from its parent tile's transform). This makes the noise field continuous across the entire sphere regardless of tile boundaries.
+
+There are three layers to this approach:
+
+**Layer 1 — Globe-coherent noise via 3D coordinates ("easy win")**
+Instead of per-tile noise with local (x, y) coordinates and per-tile seeds, transform each sub-face centroid into globe 3D space and sample a single `fbm_3d(x, y, z)` field. The existing `noise.py` already has `fbm_3d` and `ridged_noise_3d`. The existing `heightmap.py` already has `sample_noise_field_3d`. This alone eliminates the patchwork problem because the noise is spatially continuous on the sphere.
+
+**Layer 2 — Region patches for feature-scale terrain ("medium complexity")**
+Group adjacent globe tiles into *terrain patches* (using the existing region/partition system on the globe grid). Within each patch, apply a coherent terrain recipe — e.g. a mountain range that spans 5–8 tiles, or an ocean basin that spans 10 tiles. Each patch uses the same noise parameters so features flow naturally across tile boundaries within the patch.
+
+**Layer 3 — Full-resolution algorithms on stitched sub-grids ("stretch")**
+For the highest quality, stitch together the detail grids of adjacent tiles into a combined PolyGrid (using the existing `CompositeGrid` / `stitch_grids` machinery), run terrain algorithms (mountains, rivers) on the combined grid, then split the results back to per-tile stores for texture rendering. This is the most complex but gives the most realistic results — rivers that flow across tiles, ridge lines that span a region.
+
+### 11A — 3D-Coherent Noise Sampling (`detail_terrain_3d.py`) ✅
+
+The critical first step: make sub-face noise globally continuous by using 3D sphere coordinates instead of local 2D grid coordinates.
+
+- [x] **11A.1 — `compute_subface_3d_position(globe_grid, face_id, detail_grid, sub_face_id)` → `(x, y, z)`** — given a sub-face in a detail grid, compute its approximate 3D position on the globe sphere. Uses the parent tile's `center_3d`, `normal_3d`, and transform to project the sub-face's local 2D position onto the sphere surface (tangent-plane projection + normalisation to sphere radius).
+
+- [x] **11A.2 — `precompute_3d_positions(globe_grid, face_id, detail_grid)` → `Dict[str, Tuple[float, float, float]]`** — batch version: compute 3D positions for all sub-faces in a detail grid. Cache-friendly.
+
+- [x] **11A.3 — `generate_detail_terrain_3d(detail_grid, positions_3d, spec, *, seed)` → `TileDataStore`** — replacement for `generate_detail_terrain_bounded` that:
+  1. Samples `fbm_3d(x, y, z)` at each sub-face's 3D position (globally coherent — same seed for all tiles)
+  2. Layers `ridged_noise_3d` for mountain ridges that span tile boundaries
+  3. Blends with parent elevation for macro-scale shape
+  4. No per-tile seed — the spatial position IS the seed
+  - Params: `Terrain3DSpec` with `ridge_weight`, `fbm_weight`, `base_weight`
+
+- [x] **11A.4 — `generate_all_detail_terrain_3d(collection, globe_grid, globe_store, spec)` → None** — batch entry point: precompute all 3D positions, then generate terrain for every tile using the global noise field. Drop-in replacement for `generate_all_detail_terrain`.
+
+- [x] **11A.5 — Tests:** 29 tests in `tests/test_detail_terrain_3d.py`
+  - Adjacent tiles' boundary sub-faces have similar elevation (tighter threshold than current)
+  - Same sub-face position produces same elevation regardless of which tile "owns" it
+  - No patchwork artefact: elevation variance across tile boundaries ≈ elevation variance within tiles
+  - Determinism: same inputs → identical output
+  - Performance: not significantly slower than current approach
+
+### 11B — Terrain Patches via Globe Regions (`terrain_patches.py`) ✅
+
+Group globe tiles into terrain patches (continents, mountain ranges, ocean basins) and apply patch-wide terrain recipes. This gives the globe-level terrain more structure than plain noise.
+
+- [x] **11B.1 — `TerrainPatch` dataclass** — a named group of globe face IDs with a terrain recipe:
+  - `name` (str) — e.g. `"mountain_range_1"`, `"ocean_basin_1"`
+  - `face_ids` (List[str]) — globe tile IDs in this patch
+  - `terrain_type` (str) — `"mountain"`, `"ocean"`, `"plains"`, `"hills"`, `"desert"`
+  - `params` (dict) — noise parameters specific to this patch (frequency, octaves, ridge weight, etc.)
+  - `elevation_range` (Tuple[float, float]) — target min/max elevation for this patch
+
+- [x] **11B.2 — `generate_terrain_patches(globe_grid, *, n_patches, seed)` → `List[TerrainPatch]`** — auto-generate terrain patches:
+  1. Use `partition_noise(globe_grid, seeds)` to create organic regions
+  2. Assign terrain types based on region size and position (large = ocean/plains, small + clustered = mountains)
+  3. Assign noise parameters per terrain type (mountains get high ridge weight + frequency, oceans get low amplitude)
+  4. Return patch list
+
+- [x] **11B.3 — `apply_terrain_patches(collection, globe_grid, globe_store, patches, spec)` → None** — for each patch:
+  1. Collect all sub-faces from all tiles in the patch
+  2. Precompute their 3D positions
+  3. Sample terrain using patch-specific noise parameters + the global 3D noise field
+  4. Apply patch-specific elevation range normalisation
+  5. Smooth boundaries between patches (cross-patch boundary faces get blended)
+
+- [x] **11B.4 — Preset terrain distributions:**
+  - `"earthlike"` — ~30% ocean, ~20% plains, ~15% hills, ~25% forest/vegetation, ~10% mountains
+  - `"mountainous"` — ~60% mountains/hills, ~20% highland plains, ~20% valleys
+  - `"archipelago"` — ~70% ocean, ~30% scattered island clusters
+  - `"pangaea"` — one large continent, rest ocean
+
+- [x] **11B.5 — Tests:**
+  - Patches cover all globe tiles (no gaps)
+  - Mountain patches produce higher elevation than ocean patches
+  - Cross-patch boundaries are smooth (no hard terrain-type transitions)
+  - Different presets produce measurably different terrain distributions
+
+### 11C — Stitched Sub-Grid Terrain (`region_stitch.py`) ✅
+
+For the highest quality: stitch together detail grids of adjacent tiles into a combined PolyGrid, run existing terrain algorithms on the combined grid, then split results back.
+
+- [x] **11C.1 — `stitch_detail_grids(collection, face_ids)` → `(PolyGrid, FaceMapping)`** — merge the detail grids for a set of adjacent globe tiles into a single PolyGrid:
+  1. Transform each detail grid's vertices from local space to 3-D globe positions (tangent-plane transform)
+  2. Project to shared 2-D via gnomonic projection at group centroid
+  3. Merge coincident boundary vertices (within tolerance)
+  4. Return combined grid + mapping `{combined_face_id: (original_tile_id, original_sub_face_id)}`
+
+- [x] **11C.2 — `generate_terrain_on_stitched(combined_grid, face_mapping, globe_grid, globe_store, spec)` → `TileDataStore`** — run terrain generation on the stitched grid:
+  1. 2-D noise sampling (fbm + ridged) on gnomonic-projected coordinates
+  2. Smoothing crosses former tile boundaries seamlessly
+  3. The combined grid can be large (a patch of 8 tiles × 61 sub-faces = ~500 faces) — still manageable
+
+- [x] **11C.3 — `split_terrain_to_tiles(combined_store, mapping, collection)` → None** — distribute the combined grid's elevation data back into per-tile stores using the face-id mapping. Each tile's store gets exactly the sub-faces that belong to it.
+
+- [x] **11C.4 — `generate_stitched_patch_terrain(collection, globe_grid, globe_store, face_ids, spec)` → `TileDataStore`** — end-to-end for one terrain patch:
+  1. Stitch detail grids for the patch's tiles
+  2. Generate terrain on combined grid
+  3. Split results back to tile stores
+
+- [x] **11C.5 — Tests (19 passing):**
+  - Combined grid has correct face count matching source tiles
+  - Face mapping is complete and bidirectional
+  - Gnomonic coordinates are valid and reasonable
+  - Split-back values exactly match combined grid
+  - Deterministic: same inputs → identical output
+  - Cross-tile elevation is continuous
+  - End-to-end convenience function works
+
+### 11D — Enhanced Mountain & River Generation (`globe_terrain.py`) ✅
+
+Tune the existing terrain algorithms for globe-scale realism.
+
+- [x] **11D.1 — `MountainConfig3D` presets** — globe-optimised mountain presets:
+  - `GLOBE_MOUNTAIN_RANGE` — long ridges spanning tiles (freq=6.0)
+  - `GLOBE_VOLCANIC_CHAIN` — isolated peaks along curved paths (freq=12.0)
+  - `GLOBE_CONTINENTAL_DIVIDE` — single dominant ridge (freq=3.0)
+
+- [x] **11D.2 — Globe-scale river generation** — `generate_rivers_on_stitched()` runs on combined grids so rivers flow across tile boundaries. Includes depression filling, flow accumulation, Strahler ordering, and valley carving.
+
+- [x] **11D.3 — Erosion simulation** — `erode_terrain()` with `ErosionConfig`:
+  1. Drop virtual "water particles" at random high-elevation sub-faces
+  2. Flow downhill (steepest descent), depositing sediment and eroding
+  3. Creates realistic valley shapes, alluvial fans, and drainage patterns
+  4. Operates on stitched sub-grids for cross-tile continuity
+
+- [x] **11D.4 — Tests (17 passing):**
+  - Mountain ridges span multiple tiles
+  - Rivers cross tile boundaries (verified in 6/6 tiles)
+  - Erosion reduces peak elevation
+  - Deterministic: same inputs → same output
+  - Flat terrain: no erosion, no rivers
+
+### 11E — Rendering Enhancements ✅
+
+Update the rendering pipeline for the improved terrain.
+
+- [x] **11E.1 — Seamless texture rendering** — `render_seamless_texture()` renders tiles with auto biome selection and fallback for missing stores. Delegates to `render_detail_texture_enhanced()`.
+
+- [x] **11E.2 — Elevation-dependent biome assignment** — `assign_biome()` auto-classifies tiles: ocean (mean<0.15), snow (>0.70), mountain (>0.55), desert (flat+low), vegetation (default). Five presets: `OCEAN_BIOME`, `VEGETATION_BIOME`, `MOUNTAIN_BIOME`, `DESERT_BIOME`, `SNOW_BIOME`.
+
+- [x] **11E.3 — Normal-map generation** — `compute_normal_map()` derives per-face unit normals from neighbour elevation gradients with configurable vertical exaggeration. `compute_all_normal_maps()` for batch processing.
+
+- [x] **11E.4 — Tests:** 32 tests in `tests/test_render_enhanced.py` — all passing.
+  - Biome presets valid and complete
+  - Elevation-threshold biome assignment (ocean, snow, mountain, desert, vegetation)
+  - Boundary conditions and empty-grid fallback
+  - Batch assignment across full collection
+  - Flat-terrain normals point up; gradient normals tilt; scale increases tilt
+  - Unit-length validation across all normals
+  - Deterministic assignments and normals
+  - Texture file output, biome override, no-store fallback, seed variation
+
+### 11F — Demo & Comparison ✅
+
+- [x] **11F.1 — `scripts/demo_cohesive_globe.py`** — updated end-to-end demo running the full Phase 11 pipeline:
+  - `python scripts/demo_cohesive_globe.py -f 3 --detail-rings 4 --preset earthlike`
+  - Pipeline: globe → terrain patches (11B) → 3D-coherent noise (11A) → stitched region terrain (11C) → mountains + rivers + erosion (11D) → auto biome assignment + seamless textures + normal maps (11E) → comparison panel
+  - Supports `--preset` (earthlike/mountainous/archipelago/pangaea), `--bench` for performance, `--view` for 3D
+
+- [x] **11F.2 — Before/after gallery** — comparison panel exported as `comparison.png` with Phase 10 vs Phase 11 side-by-side. Biome-assigned tiles rendered separately. Normal-map sample saved as JSON.
+
+- [x] **11F.3 — Performance comparison** — `--bench` flag runs 3× timed iterations of Phase 10 and Phase 11 pipelines with mean ± stdev. Inline timing for each pipeline stage.
+
+### Summary — Phase 11 Implementation Order
+
+| Step | Module | Depends on | Delivers | Complexity |
+|------|--------|-----------|----------|------------|
+| 11A | `detail_terrain_3d.py` | noise.py (3D), globe.py | Globally-coherent noise field | Low-Medium |
+| 11B | `terrain_patches.py` | 11A + regions.py | Structured terrain distribution | Medium |
+| 11C | `region_stitch.py` | 11B + composite.py | Stitched sub-grid terrain gen | High |
+| 11D | mountains/rivers extensions | 11A–C | Globe-scale terrain features | Medium |
+| 11E | rendering enhancements | 11A–D + detail_render | Seamless textures, biomes, normals | Medium |
+| 11F | demos + docs | 11A–E | End-to-end demos, comparison | Low |
+
+### Design notes — Why not merge ALL sub-faces into one giant PolyGrid?
+
+It's tempting to merge all 92×61 = ~5,600 sub-faces (at freq=3, detail_rings=4) into a single PolyGrid and run terrain algorithms once. This would give perfect continuity but has serious drawbacks:
+
+1. **Stitching complexity.** The existing `stitch_grids` works on macro-edges between grids with compatible boundary vertex counts. Detail grids from adjacent Goldberg tiles don't share a macro-edge structure — they're different grid topologies (some are pent-centred, some are hex) with different boundary shapes. Stitching 92 arbitrary-shaped grids together is a substantial engineering effort.
+
+2. **Scale.** At freq=5 with detail_rings=6 we'd have ~32,000 sub-faces in one grid. Algorithms like `generate_rivers` (which runs BFS/DFS on every face) would become slow. The current per-tile approach parallelises naturally.
+
+3. **Memory.** A single combined TileDataStore with 32k faces and multiple fields becomes a memory concern.
+
+The **region-patch approach (11B–C)** is the sweet spot: stitch together groups of 5–15 adjacent tiles at a time, run terrain on each group, then split back. This keeps each combined grid at ~300–900 faces (manageable), enables cross-tile features, and parallelises at the patch level.
+
+---
+
+## Phase 12 — Rendering Quality ✅
+
+**Goal:** Fix the three root causes of "gappy" 3D globe rendering:
+(1) black texture borders bleeding, (2) flat faceted tiles, (3) per-tile draw call overhead.
+
+### 12A — Texture Flood Fill ✅
+
+- [x] **12A.1 — `flood_fill_tile_texture()`** — iterative dilation: black pixels adjacent to coloured pixels are replaced with the average of their coloured neighbours. Repeated for *N* iterations to fill the full border region around each tile's textured polygon.
+- [x] **12A.2 — `flood_fill_atlas()`** — convenience wrapper that applies the same flood-fill to an entire atlas image.
+- [x] **12A.3 — Tests** — 7 tests: reduces black pixels, preserves coloured centre, overwrites in place, edge pixels get colour, atlas alias, zero iterations, all-coloured.
+
+### 12B — Sphere Subdivision ✅
+
+- [x] **12B.1 — `subdivide_tile_mesh()`** — each tile's triangle fan (center → v[i] → v[i+1]) is subdivided into a grid of `subdivisions²` smaller triangles using barycentric interpolation, then each vertex is projected onto the sphere surface (`normalize(pos) * radius`). This eliminates flat faceting.
+- [x] **12B.2 — Vertex deduplication** — shared boundary vertices between adjacent sub-triangles within a tile are merged by position (rounded to 7 decimal places).
+- [x] **12B.3 — Tests** — 14 tests: correct shapes, tri count at s=1/2/3, hex and pent, vertices on sphere, custom radius, UV range, colour propagation, no degenerate triangles, index bounds, deduplication.
+
+### 12C — Batched Globe Mesh ✅
+
+- [x] **12C.1 — `build_batched_globe_mesh()`** — iterates all Goldberg tiles, calls `subdivide_tile_mesh()` for each, concatenates all vertex and index arrays with offset indexing into a single VBO + IBO.
+- [x] **12C.2 — Tests** — 9 tests: output shapes, nonzero, all on sphere, valid indices, more tris with higher subdiv, colour map, empty layout, f=3 tile count (540 tris at s=1), custom radius.
+
+### 12D — Interactive Renderer v2 ✅
+
+- [x] **12D.1 — `render_globe_v2()`** — pyglet 3D viewer using:
+  - Flood-filled atlas (black border removal)
+  - Subdivided + sphere-projected mesh (smooth curvature)
+  - Single VBO + IBO + `glDrawElements` draw call (92 tiles → 1 call)
+  - MSAA (4× multisampling, graceful fallback)
+  - Mipmap-filtered atlas texture
+  - Hemisphere lighting (directional + ambient)
+  - Mouse drag rotation, scroll zoom
+- [x] **12D.2 — Demo integration** — `demo_cohesive_globe.py --view` now launches v2 renderer.
+- [x] **12D.3 — GLSL shaders** — v2 vertex/fragment shaders with per-vertex position/colour/UV, model/MVP uniforms, atlas sampling, hemisphere lighting.
+
+### Summary — Phase 12
+
+| Fix | Module | Problem solved | Impact |
+|-----|--------|---------------|--------|
+| 12A | `globe_renderer_v2.py` | Black texture borders → visible seams | Eliminates black gaps |
+| 12B | `globe_renderer_v2.py` | Flat triangle fans → faceted look | Smooth sphere curvature |
+| 12C | `globe_renderer_v2.py` | 92 draw calls → overhead | Single draw call |
+| 12D | `globe_renderer_v2.py` | Combined viewer | Production-quality viewer |
+
+**Tests:** 33 total (7 flood-fill + 14 subdivision + 3 helpers + 9 batched mesh)
+
+### 12 — Retrospective
+
+Phase 12 addressed sphere subdivision (smooth curvature) and batched draw calls (performance), but the **black seam problem remains visually dominant**. Root cause analysis:
+
+- Each tile's detail texture is a hex/pent polygon rendered on a black background. The polygon occupies ~56% of the square tile slot; the remaining ~44% is black.
+- The GoldbergTile UV vertices span [0,1]² but form a hex/pent inscribed in that square. Triangle fan subdivision maps UV coordinates into the atlas, and any UV sample that falls outside the polygon outline samples black.
+- The flood-fill dilation (12A) only extends a few pixels from the polygon border — too little to cover the large black corners.
+- Result: every tile boundary shows a thick black seam where adjacent tiles' UV triangles overlap the black corner regions.
+
+The fundamental fix requires **ensuring no UV sample ever sees a black pixel**, which means either (a) filling the *entire* tile slot with colour, (b) clamping/remapping UVs to stay inside the polygon, or (c) rendering the texture differently so there are no black corners at all.
+
+---
+
+## Phase 13 — Cohesive Globe Rendering (Planned)
+
+**Goal:** Achieve a production-quality globe where tile boundaries are invisible, the surface is smooth and continuous, lighting is realistic, and rendering is efficient. This phase replaces the broken flood-fill approach with a comprehensive solution.
+
+### Problem analysis (from screenshot review)
+
+1. **Black seams (dominant)** — 44% of each atlas tile slot is black. UV interpolation across tile triangle fans samples these black regions at every tile boundary. Flood-fill only covers a thin border ring.
+2. **Colour discontinuity** — adjacent tiles have abrupt colour/biome transitions because each tile's texture is rendered independently with per-tile noise seeds and biome assignment.
+3. **Texture aliasing** — 256×256 tile textures with 61 sub-faces each are coarse. When sampled at oblique angles (near globe edges), aliasing makes seams more visible.
+4. **Lighting flatness** — current hemisphere lighting (`dot(N,L)*0.6+0.4`) is simplistic. No ambient occlusion, no normal mapping, no specular.
+
+### Architecture: Three-layer solution
+
+```
+Layer 1: Texture Pipeline    — eliminate black pixels entirely
+Layer 2: Mesh & UV Pipeline  — seamless UV mapping across tile boundaries
+Layer 3: Shader & Lighting   — realistic PBR-lite rendering
+```
+
+---
+
+### 13A — Full-coverage tile textures ◻️
+
+**Problem:** `render_detail_texture_enhanced()` renders sub-face polygons on a black `facecolor="black"` background. The hex/pent polygon doesn't fill the square tile slot.
+
+**Fix:** Render tile textures so the *entire* square image is filled with terrain colour.
+
+- [ ] **13A.1 — Background colour fill** — In `detail_render.py`, change `facecolor="black"` to the tile's average terrain colour. This ensures corners outside the polygon are terrain-coloured instead of black.
+- [ ] **13A.2 — PIL renderer fix** — Same fix in `detail_perf.py`: replace `Image.new("RGB", ..., (0,0,0))` with the tile's average colour.
+- [ ] **13A.3 — Polygon edge extension** — Extend the outermost sub-face polygons by 2-3 pixels beyond the tile boundary so they overlap slightly into the border region, ensuring full coverage.
+- [ ] **13A.4 — Aggressive flood-fill** — Replace the fixed-iteration flood-fill with a full diffusion fill: repeat until *all* black pixels below a threshold are filled. Use a proper distance-weighted propagation (nearest-coloured-pixel sampling) instead of iterative averaging.
+- [ ] **13A.5 — Tests** — full-coverage assertions: after rendering, no pixel in the tile slot should be below a minimum brightness threshold. Verify corner pixels are terrain-coloured.
+
+### 13B — Atlas gutter system ◻️
+
+**Problem:** Adjacent tile slots in the atlas share pixel boundaries. Bilinear/trilinear sampling bleeds pixels across slot boundaries, creating seams even when tiles are individually correct.
+
+**Fix:** Add a gutter (padding) around each atlas slot filled with neighbouring tile colours.
+
+- [ ] **13B.1 — Gutter parameter** — Add `gutter_px: int = 4` parameter to `build_detail_atlas()` and `build_detail_atlas_fast()`. Each tile slot expands by `gutter_px` on all sides in the atlas image.
+- [ ] **13B.2 — Gutter fill strategy** — Fill gutter pixels by mirroring/clamping the tile edge pixels. For a 4px gutter, the 4 outermost pixel columns/rows of each tile are duplicated into the gutter.
+- [ ] **13B.3 — UV layout adjustment** — Update `compute_tile_uvs()` to account for the gutter: atlas UVs map to the inner (non-gutter) region. UV coordinates must be inset by `gutter_px / atlas_size`.
+- [ ] **13B.4 — Tests** — verify gutter pixels match tile edge pixels; verify UVs after inset still map correctly.
+
+### 13C — UV inset clamping ◻️
+
+**Problem:** The GoldbergTile UV vertices (e.g. pentagon: `(0.191,0) .. (1.0, 0.618) .. (0.0, 0.618)`) define a polygon inscribed in [0,1]². The triangle fan from center to these vertices generates UV coordinates that stay inside the polygon. But barycentric subdivision (12B) can generate UV coordinates that interpolate towards the *center UV* (average of edge UVs), which is correct — the problem is that the *triangle edges* between adjacent tiles' triangle fans cover the *gap* between the two tile polygons, and that gap maps to the black border region.
+
+**Fix:** Clamp all UV coordinates to stay strictly within the polygon interior, with a configurable inset.
+
+- [ ] **13C.1 — UV polygon inset** — Compute the tile's UV polygon (from `uv_vertices`), then inset it by 1-2 texels. All generated UV coordinates are clamped to this inset polygon using point-in-polygon + nearest-edge projection.
+- [ ] **13C.2 — Vertex-level UV clamping** — In `subdivide_tile_mesh()`, after barycentric UV interpolation, clamp each UV to the tile's atlas sub-region with a texel-sized margin. This prevents any UV from sampling outside the rendered polygon area.
+- [ ] **13C.3 — Tests** — verify all UV coordinates in the batched mesh are within the inset atlas sub-regions; no UV falls in the gutter zone or atlas gap.
+
+### 13D — Cross-tile colour harmonisation ◻️
+
+**Problem:** Adjacent tiles can have dramatically different biomes/colours. The ocean-to-grassland transition in the screenshot is a single-pixel step.
+
+**Fix:** Smooth colour transitions at tile boundaries.
+
+- [ ] **13D.1 — Boundary colour matching** — For each pair of adjacent tiles, compute the average colour along their shared boundary in both tile textures. Blend a gradient from each tile's interior colour to the boundary average over the outer 2-3 sub-face rings.
+- [ ] **13D.2 — Biome transition blending** — In `assign_all_biomes()`, detect tiles adjacent to a different biome. Create blended `BiomeConfig` instances for boundary tiles by interpolating biome parameters (moisture, vegetation_density, snow_line, etc.) with neighbour biomes.
+- [ ] **13D.3 — Cross-tile texture blending (shader)** — Add a shader-based cross-tile blend. Store a per-vertex "blend factor" attribute that is 0 at tile center and 1 at tile edges. In the fragment shader, blend between the tile's texture and an ambient/averaged colour at high blend factors. This softens transitions.
+- [ ] **13D.4 — Tests** — verify boundary colour difference between adjacent tiles is below a threshold after harmonisation; verify biome blending creates intermediate configs.
+
+### 13E — Normal-mapped lighting ◻️
+
+**Problem:** Current lighting is flat (just `dot(N,L)` with the sphere normal). The globe looks plastic. Terrain detail (hills, valleys) is invisible in the lighting.
+
+**Fix:** Use the Phase 11E normal maps in the shader.
+
+- [ ] **13E.1 — Normal map atlas** — Build a second atlas texture containing per-sub-face normal vectors encoded as RGB. Each tile slot stores the `compute_normal_map()` output as an image.
+- [ ] **13E.2 — Tangent-space normals** — The GoldbergTile provides `tangent` and `bitangent` vectors. Pass these as vertex attributes to the shader. In the fragment shader, sample the normal map, transform from tangent space to world space, and use for lighting.
+- [ ] **13E.3 — PBR-lite shader** — Upgrade the fragment shader to:
+  - Diffuse: `max(0, dot(N, L))` with a warm key light and cool fill light
+  - Specular: Blinn-Phong with low roughness (for water) / high roughness (for terrain)
+  - Ambient: hemisphere ambient (sky colour from above, ground colour from below)
+  - Fresnel: subtle rim lighting at glancing angles (makes the sphere silhouette glow)
+- [ ] **13E.4 — Tests** — verify normal map atlas matches `compute_all_normal_maps()` output; verify shader compiles with new attributes.
+
+### 13F — Adaptive mesh resolution ◻️
+
+**Problem:** Uniform subdivision (s=3 → 4,860 tris) is wasteful. Tiles near the camera need more detail; tiles on the far side of the globe need almost none.
+
+**Fix:** View-dependent level of detail.
+
+- [ ] **13F.1 — Multi-resolution mesh** — Pre-build meshes at multiple subdivision levels (s=1,2,3,5). At render time, select the appropriate mesh for each tile based on its screen-space size.
+- [ ] **13F.2 — Stitching at LOD boundaries** — Adjacent tiles at different LOD levels must share boundary vertices to prevent cracks. Constrain the higher-LOD tile's boundary vertices to match the lower-LOD neighbour.
+- [ ] **13F.3 — GPU frustum culling** — Don't submit back-facing tiles (dot(tile_normal, view_dir) < threshold) to the draw call. This halves the triangle count.
+- [ ] **13F.4 — Tests** — verify LOD selection produces correct subdivision levels; verify no cracks between LOD levels; verify frustum culling doesn't remove visible tiles.
+
+### 13G — Atmosphere & post-processing ◻️
+
+**Problem:** The globe floats in black space with no atmospheric context.
+
+**Fix:** Add atmospheric scattering and post-processing effects.
+
+- [ ] **13G.1 — Atmosphere shell** — Render a slightly-larger transparent sphere around the globe with a blue-to-transparent gradient. Simulates atmospheric haze at the limb.
+- [ ] **13G.2 — Glow/bloom** — Apply a simple Gaussian blur post-process to bright pixels (specular highlights on water). This adds a subtle glow.
+- [ ] **13G.3 — Background gradient** — Replace the flat dark background with a subtle radial gradient (dark blue center to black edges) to suggest space.
+- [ ] **13G.4 — Tests** — verify atmosphere geometry doesn't obscure the globe; verify bloom doesn't wash out colours.
+
+### 13H — Water rendering ◻️
+
+**Problem:** Ocean tiles are flat blue with no visual distinction from land.
+
+**Fix:** Differentiated water rendering.
+
+- [ ] **13H.1 — Water detection** — In the batched mesh builder, identify tiles/sub-faces below the water level. Tag water vertices with a `is_water` flag (or use a separate water mesh).
+- [ ] **13H.2 — Water shader** — In the fragment shader, water fragments get:
+  - Flattened to a uniform sea level (no terrain detail)
+  - Higher specular (shiny reflective surface)
+  - Animated subtle wave normal perturbation (time-based sin/cos offset to normal)
+  - Deeper blue with depth-based colour (shallow = turquoise, deep = navy)
+- [ ] **13H.3 — Coastline emphasis** — Render a subtle bright line at the water-land boundary. Detect in the shader by checking if the blend factor crosses the water threshold.
+- [ ] **13H.4 — Tests** — verify water tile detection matches biome assignment; verify water UVs are flattened; verify shader compiles.
+
+---
+
+### Summary — Phase 13 Implementation Priority
+
+| Step | Focus | Impact | Effort | Priority |
+|------|-------|--------|--------|----------|
+| **13A** | Full-coverage textures | **Critical** — eliminates 90% of visible seams | Medium | 🔴 P0 |
+| **13B** | Atlas gutters | **High** — prevents sampling across tile boundaries | Low | 🔴 P0 |
+| **13C** | UV inset clamping | **High** — backstop for any remaining UV bleed | Low | 🟠 P1 |
+| **13D** | Colour harmonisation | **Medium** — softens biome transitions | Medium | 🟠 P1 |
+| **13E** | Normal-mapped lighting | **Medium** — adds terrain depth & realism | Medium | 🟡 P2 |
+| **13F** | Adaptive LOD | **Low** — performance (visible only at high freq) | High | 🟡 P2 |
+| **13G** | Atmosphere | **Low** — aesthetic polish | Low | 🟢 P3 |
+| **13H** | Water rendering | **Low** — aesthetic polish | Medium | 🟢 P3 |
+
+**Recommended implementation order:** 13A → 13B → 13C → 13D → 13E → 13H → 13G → 13F
+
+**13A + 13B together should eliminate the black seams entirely.** 13C is a safety net. 13D makes the globe look cohesive rather than tiled. 13E adds physical realism. 13F-H are polish.
+
+### Design notes — Why the flood-fill approach (12A) failed
+
+The flood-fill dilation with 8 iterations only extends the coloured region by ~8 pixels in each direction. For a 256×256 tile slot where the hex polygon has corners 50-80 pixels from the slot edges, this covers less than 20% of the black region. Increasing iterations to 50+ would work but is slow and produces smeared colours.
+
+The proper fix (13A) changes the renderer itself: by setting `facecolor` to the tile's average colour instead of black, the *entire* image becomes terrain-coloured. The hex polygon then adds detail *on top* of this base colour. No flood-fill needed. Combined with atlas gutters (13B), bilinear sampling across slot boundaries sees terrain colour from both sides.
+
+### Design notes — Shared vertices between adjacent Goldberg tiles
+
+Adjacent GoldbergTile instances share exactly 2 vertices (verified: inter-vertex distance < 1e-6). This means the *3D mesh* is watertight — there are no geometric gaps. The seams are purely a *texture sampling* problem. The 3D positions are correct; only the UV mapping needs to be fixed.
+
+---
+
 ## Ongoing — Code Quality & Refactoring
 
 - [x] **Ensure gitignore covers relevant files** — added `exports/`, `.venv/`, `.coverage`, `htmlcov/` to `.gitignore`; removed tracked `__pycache__/` and `exports/` from git.
@@ -654,3 +1061,7 @@ The target image's level of detail corresponds roughly to freq=5 with detail_rin
 | 7 (Terrain Gen) | `noise` / `opensimplex`, possibly `Pillow` for texture generation |
 | 8 (Globe) | `models>=0.1.1` (optional, under `globe` extra) |
 | 9 (Export) | `Pillow` for PNG texture output |
+| 10 (Sub-Tile Detail) | None (uses Phase 8/9 infra) |
+| 11 (Cohesive Terrain) | None (uses Phase 10 + existing noise/composite infra) |
+| 12 (Rendering Quality) | None (uses Phase 10/11 infra + pyglet) |
+| 13 (Cohesive Rendering) | None (extends Phase 12 renderer + texture pipeline) |

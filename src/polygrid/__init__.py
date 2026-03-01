@@ -175,6 +175,17 @@ try:
 except ImportError:
     pass  # models library not installed — globe renderer features unavailable
 
+try:
+    from .globe_renderer_v2 import (
+        flood_fill_tile_texture,
+        flood_fill_atlas,
+        subdivide_tile_mesh,
+        build_batched_globe_mesh,
+        render_globe_v2,
+    )
+except ImportError:
+    pass  # models library not installed — v2 renderer features unavailable
+
 # ── Detail grids ────────────────────────────────────────────────────
 from .detail_grid import (
     build_detail_grid,
@@ -194,10 +205,61 @@ from .detail_terrain import (
     generate_detail_terrain_bounded,
     generate_all_detail_terrain,
 )
+from .detail_terrain_3d import (
+    Terrain3DSpec,
+    compute_subface_3d_position,
+    precompute_3d_positions,
+    precompute_all_3d_positions,
+    generate_detail_terrain_3d,
+    generate_all_detail_terrain_3d,
+)
+from .terrain_patches import (
+    TerrainPatch,
+    TerrainDistribution,
+    TERRAIN_PRESETS,
+    EARTHLIKE,
+    MOUNTAINOUS,
+    ARCHIPELAGO,
+    PANGAEA,
+    generate_terrain_patches,
+    apply_terrain_patches,
+    generate_patched_terrain,
+)
+from .region_stitch import (
+    FaceMapping,
+    stitch_detail_grids,
+    generate_terrain_on_stitched,
+    split_terrain_to_tiles,
+    generate_stitched_patch_terrain,
+)
+from .globe_terrain import (
+    MountainConfig3D,
+    GLOBE_MOUNTAIN_RANGE,
+    GLOBE_VOLCANIC_CHAIN,
+    GLOBE_CONTINENTAL_DIVIDE,
+    MOUNTAIN_3D_PRESETS,
+    generate_mountains_3d,
+    generate_rivers_on_stitched,
+    ErosionConfig,
+    erode_terrain,
+)
 from .detail_render import (
     BiomeConfig,
     detail_elevation_to_colour,
     render_detail_texture_enhanced,
+)
+from .render_enhanced import (
+    OCEAN_BIOME,
+    VEGETATION_BIOME,
+    MOUNTAIN_BIOME,
+    DESERT_BIOME,
+    SNOW_BIOME,
+    BIOME_PRESETS,
+    assign_biome,
+    assign_all_biomes,
+    compute_normal_map,
+    compute_all_normal_maps,
+    render_seamless_texture,
 )
 
 try:
@@ -376,6 +438,12 @@ __all__ = [
     "prepare_terrain_scene",
     "render_terrain_globe_opengl",
     "render_textured_globe_opengl",
+    # Globe renderer v2 (Phase 12)
+    "flood_fill_tile_texture",
+    "flood_fill_atlas",
+    "subdivide_tile_mesh",
+    "build_batched_globe_mesh",
+    "render_globe_v2",
     # Detail grids
     "build_detail_grid",
     "detail_face_count",
@@ -395,6 +463,40 @@ __all__ = [
     "BiomeConfig",
     "detail_elevation_to_colour",
     "render_detail_texture_enhanced",
+    # Detail terrain 3D (Phase 11A)
+    "Terrain3DSpec",
+    "compute_subface_3d_position",
+    "precompute_3d_positions",
+    "precompute_all_3d_positions",
+    "generate_detail_terrain_3d",
+    "generate_all_detail_terrain_3d",
+    # Terrain patches (Phase 11B)
+    "TerrainPatch",
+    "TerrainDistribution",
+    "TERRAIN_PRESETS",
+    "EARTHLIKE",
+    "MOUNTAINOUS",
+    "ARCHIPELAGO",
+    "PANGAEA",
+    "generate_terrain_patches",
+    "apply_terrain_patches",
+    "generate_patched_terrain",
+    # Region stitch (Phase 11C)
+    "FaceMapping",
+    "stitch_detail_grids",
+    "generate_terrain_on_stitched",
+    "split_terrain_to_tiles",
+    "generate_stitched_patch_terrain",
+    # Globe terrain enhancements (Phase 11D)
+    "MountainConfig3D",
+    "GLOBE_MOUNTAIN_RANGE",
+    "GLOBE_VOLCANIC_CHAIN",
+    "GLOBE_CONTINENTAL_DIVIDE",
+    "MOUNTAIN_3D_PRESETS",
+    "generate_mountains_3d",
+    "generate_rivers_on_stitched",
+    "ErosionConfig",
+    "erode_terrain",
     # Texture pipeline (Phase 10D)
     "build_detail_atlas",
     "compute_tile_uvs",
@@ -407,4 +509,16 @@ __all__ = [
     "DetailCache",
     "generate_all_detail_terrain_cached",
     "benchmark_pipeline",
+    # Render enhanced (Phase 11E)
+    "OCEAN_BIOME",
+    "VEGETATION_BIOME",
+    "MOUNTAIN_BIOME",
+    "DESERT_BIOME",
+    "SNOW_BIOME",
+    "BIOME_PRESETS",
+    "assign_biome",
+    "assign_all_biomes",
+    "compute_normal_map",
+    "compute_all_normal_maps",
+    "render_seamless_texture",
 ]
