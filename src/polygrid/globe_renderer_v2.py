@@ -18,8 +18,9 @@ Public API
 - :func:`flood_fill_tile_texture` — remove black borders from a tile PNG
 - :func:`flood_fill_atlas` — apply flood-fill to a whole atlas
 - :func:`classify_water_tiles` — identify water tiles by colour heuristic
+- :func:`build_atmosphere_shell` — atmosphere sphere mesh (Phase 13G)
+- :func:`build_background_quad` — fullscreen gradient background quad
 """
-
 from __future__ import annotations
 
 import ctypes
@@ -1109,6 +1110,342 @@ def build_batched_globe_mesh(
     index_data = np.concatenate(all_index_chunks, axis=0)
 
     return vertex_data, index_data
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 13G — Atmosphere & post-processing
+# ═══════════════════════════════════════════════════════════════════
+
+ATMOSPHERE_SCALE = 1.025  # shell is 2.5% larger than the globe
+ATMOSPHERE_COLOR = (0.4, 0.6, 1.0)  # pale blue haze
+BLOOM_THRESHOLD = 0.8  # luminance cutoff for bloom extraction
+BLOOM_INTENSITY = 0.3  # blend strength of bloom overlay
+
+# Background gradient colours
+BG_CENTER_COLOR = (0.02, 0.03, 0.08)  # dark blue at center
+BG_EDGE_COLOR = (0.0, 0.0, 0.0)       # black at edges
+
+
+def build_atmosphere_shell(
+    radius: float = 1.0,
+    *,
+    scale: float = ATMOSPHERE_SCALE,
+    lat_segments: int = 32,
+    lon_segments: int = 64,
+    color: Tuple[float, float, float] = ATMOSPHERE_COLOR,
+    falloff: float = 3.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build a transparent atmosphere shell around the globe.
+
+    Creates an icosphere-like UV sphere slightly larger than the globe.
+    Each vertex stores a Fresnel-like alpha value: transparent when
+    facing the camera (center of globe), opaque at the limb (edges).
+
+    The alpha at each vertex is pre-computed as
+    ``(1 - abs(dot(normal, view_up)))^falloff``, approximating
+    limb brightening.  The actual view-dependent Fresnel is applied
+    in the atmosphere fragment shader; the vertex alpha is a static
+    hint for sorting and a reasonable fallback.
+
+    Parameters
+    ----------
+    radius : float
+        Globe radius.
+    scale : float
+        Multiplier for the atmosphere shell radius (default 1.025).
+    lat_segments, lon_segments : int
+        Tessellation resolution.
+    color : (r, g, b)
+        Base atmosphere tint.
+    falloff : float
+        Fresnel falloff exponent.  Higher = thinner haze.
+
+    Returns
+    -------
+    (vertex_data, index_data)
+        vertex_data : np.ndarray, shape (N, 7) — pos(3) + rgba(4)
+        index_data : np.ndarray, shape (M, 3) — triangle indices (uint32)
+    """
+    atmo_r = radius * scale
+    verts = []
+    for lat in range(lat_segments + 1):
+        theta = math.pi * lat / lat_segments  # 0 at north pole → π at south
+        sin_t = math.sin(theta)
+        cos_t = math.cos(theta)
+        for lon in range(lon_segments + 1):
+            phi = 2.0 * math.pi * lon / lon_segments
+            x = atmo_r * sin_t * math.cos(phi)
+            y = atmo_r * cos_t
+            z = atmo_r * sin_t * math.sin(phi)
+            # Normal = normalised position
+            nx, ny, nz = x / atmo_r, y / atmo_r, z / atmo_r
+            # Fresnel hint: how much this vertex faces "outward"
+            # Use |ny| as a proxy for facing the viewer (camera at +z)
+            # The real shader will recompute per-fragment, but this
+            # gives a reasonable per-vertex alpha.
+            facing = abs(nz)  # 1 when facing camera, 0 at limb
+            alpha = (1.0 - facing) ** falloff
+            alpha = max(0.0, min(1.0, alpha))
+            verts.append((x, y, z, color[0], color[1], color[2], alpha))
+
+    vertex_data = np.array(verts, dtype=np.float32)
+
+    # Build triangle indices
+    tris = []
+    for lat in range(lat_segments):
+        for lon in range(lon_segments):
+            a = lat * (lon_segments + 1) + lon
+            b = a + lon_segments + 1
+            c = a + 1
+            d = b + 1
+            tris.append((a, b, c))
+            tris.append((c, b, d))
+
+    index_data = np.array(tris, dtype=np.uint32)
+    return vertex_data, index_data
+
+
+def build_background_quad() -> np.ndarray:
+    """Build a fullscreen quad for the radial gradient background.
+
+    Returns a vertex array with 4 vertices in clip space (no MVP needed),
+    each with position(2) + uv(2).  The fragment shader uses the UV
+    distance from centre to compute a radial gradient.
+
+    Returns
+    -------
+    np.ndarray, shape (4, 4) — (x, y, u, v) for each corner.
+        Draw with ``GL_TRIANGLE_STRIP``.  No index buffer needed.
+    """
+    # Clip-space positions spanning the full viewport; UVs [0,1]²
+    return np.array([
+        [-1.0, -1.0, 0.0, 0.0],
+        [ 1.0, -1.0, 1.0, 0.0],
+        [-1.0,  1.0, 0.0, 1.0],
+        [ 1.0,  1.0, 1.0, 1.0],
+    ], dtype=np.float32)
+
+
+def compute_bloom_threshold(
+    r: float, g: float, b: float,
+    threshold: float = BLOOM_THRESHOLD,
+) -> float:
+    """Compute the luminance-based bloom contribution for a pixel.
+
+    Returns a value in ``[0, 1]`` indicating how much bloom glow
+    the pixel should emit.  Used by the bloom extraction pass.
+
+    Parameters
+    ----------
+    r, g, b : float
+        Linear HDR colour channels.
+    threshold : float
+        Luminance cutoff below which no bloom is emitted.
+
+    Returns
+    -------
+    float
+        Bloom intensity factor.
+    """
+    # Perceptual luminance (Rec. 709)
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    if lum < threshold:
+        return 0.0
+    # Soft knee: ramp from 0 at threshold to 1
+    return min(1.0, (lum - threshold) / max(1.0 - threshold, 0.001))
+
+
+# ── Atmosphere shaders ──────────────────────────────────────────────
+
+_ATMO_VERTEX_SHADER = """\
+#version 330 core
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec4 color_alpha;
+
+uniform mat4 u_mvp;
+uniform mat4 u_model;
+
+out vec3 v_world_pos;
+out vec4 v_color;
+
+void main() {
+    vec4 world4 = u_model * vec4(position, 1.0);
+    v_world_pos = world4.xyz;
+    v_color = color_alpha;
+    gl_Position = u_mvp * world4;
+}
+"""
+
+_ATMO_FRAGMENT_SHADER = """\
+#version 330 core
+in vec3 v_world_pos;
+in vec4 v_color;
+
+uniform vec3 u_eye_pos;
+
+// Atmosphere parameters
+const float ATMO_FALLOFF = 3.0;
+const float ATMO_DENSITY = 0.6;
+
+out vec4 frag_color;
+
+void main() {
+    // View-dependent Fresnel for atmospheric scattering
+    vec3 N = normalize(v_world_pos);
+    vec3 V = normalize(u_eye_pos - v_world_pos);
+    float NdotV = max(0.0, dot(N, V));
+
+    // Limb brightening: strongest at grazing angles
+    float fresnel = pow(1.0 - NdotV, ATMO_FALLOFF);
+    float alpha = fresnel * ATMO_DENSITY;
+
+    frag_color = vec4(v_color.rgb, alpha);
+}
+"""
+
+# ── Background gradient shaders ─────────────────────────────────────
+
+_BG_VERTEX_SHADER = """\
+#version 330 core
+layout(location = 0) in vec2 position;
+layout(location = 1) in vec2 uv;
+
+out vec2 v_uv;
+
+void main() {
+    v_uv = uv;
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"""
+
+_BG_FRAGMENT_SHADER = """\
+#version 330 core
+in vec2 v_uv;
+
+uniform vec3 u_center_color;
+uniform vec3 u_edge_color;
+
+out vec4 frag_color;
+
+void main() {
+    // Radial distance from center (0 at center, 1 at corners)
+    vec2 centered = v_uv * 2.0 - 1.0;
+    float dist = length(centered);
+    dist = smoothstep(0.0, 1.4, dist);  // 1.4 ≈ sqrt(2) for corners
+
+    vec3 color = mix(u_center_color, u_edge_color, dist);
+    frag_color = vec4(color, 1.0);
+}
+"""
+
+# ── Bloom post-processing shaders ───────────────────────────────────
+
+_BLOOM_EXTRACT_SHADER = """\
+#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D u_scene;
+uniform float     u_threshold;
+
+out vec4 frag_color;
+
+void main() {
+    vec3 color = texture(u_scene, v_uv).rgb;
+    float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float contribution = max(0.0, lum - u_threshold)
+                       / max(1.0 - u_threshold, 0.001);
+    contribution = min(1.0, contribution);
+    frag_color = vec4(color * contribution, 1.0);
+}
+"""
+
+_BLOOM_BLUR_SHADER = """\
+#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D u_source;
+uniform vec2      u_direction;  // (1/w, 0) or (0, 1/h) for H/V pass
+
+// 5-tap Gaussian weights
+const float weights[5] = float[](0.227027, 0.1945946, 0.1216216,
+                                   0.054054, 0.016216);
+
+out vec4 frag_color;
+
+void main() {
+    vec3 result = texture(u_source, v_uv).rgb * weights[0];
+    for (int i = 1; i < 5; i++) {
+        vec2 offset = u_direction * float(i);
+        result += texture(u_source, v_uv + offset).rgb * weights[i];
+        result += texture(u_source, v_uv - offset).rgb * weights[i];
+    }
+    frag_color = vec4(result, 1.0);
+}
+"""
+
+_BLOOM_COMPOSITE_SHADER = """\
+#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D u_scene;
+uniform sampler2D u_bloom;
+uniform float     u_bloom_intensity;
+
+out vec4 frag_color;
+
+void main() {
+    vec3 scene = texture(u_scene, v_uv).rgb;
+    vec3 bloom = texture(u_bloom, v_uv).rgb;
+    vec3 color = scene + bloom * u_bloom_intensity;
+    // Reinhard tone-map the combined result
+    color = color / (color + vec3(1.0));
+    frag_color = vec4(color, 1.0);
+}
+"""
+
+
+def get_atmosphere_shader_sources() -> Tuple[str, str]:
+    """Return the atmosphere vertex and fragment shader source strings.
+
+    The atmosphere shell uses alpha blending with view-dependent
+    Fresnel to simulate limb haze.
+
+    Returns
+    -------
+    (vertex_source, fragment_source)
+    """
+    return _ATMO_VERTEX_SHADER, _ATMO_FRAGMENT_SHADER
+
+
+def get_background_shader_sources() -> Tuple[str, str]:
+    """Return the background gradient vertex and fragment shaders.
+
+    The background quad renders a radial gradient from dark blue
+    (center) to black (edges) to simulate deep space.
+
+    Returns
+    -------
+    (vertex_source, fragment_source)
+    """
+    return _BG_VERTEX_SHADER, _BG_FRAGMENT_SHADER
+
+
+def get_bloom_shader_sources() -> Tuple[str, str, str]:
+    """Return the three bloom post-processing shader sources.
+
+    Bloom is a three-pass effect:
+    1. **Extract** — isolate bright pixels above the luminance threshold
+    2. **Blur** — apply a separable Gaussian blur (two passes: H + V)
+    3. **Composite** — add the blurred bloom back onto the scene
+
+    All three shaders use the same fullscreen-quad vertex shader
+    (see :func:`get_background_shader_sources` for the vertex stage).
+
+    Returns
+    -------
+    (extract_source, blur_source, composite_source)
+    """
+    return _BLOOM_EXTRACT_SHADER, _BLOOM_BLUR_SHADER, _BLOOM_COMPOSITE_SHADER
 
 
 # ═══════════════════════════════════════════════════════════════════

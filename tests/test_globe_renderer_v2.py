@@ -39,6 +39,18 @@ from polygrid.globe_renderer_v2 import (
     classify_water_tiles,
     compute_water_depth,
     DEFAULT_WATER_LEVEL,
+    build_atmosphere_shell,
+    build_background_quad,
+    compute_bloom_threshold,
+    get_atmosphere_shader_sources,
+    get_background_shader_sources,
+    get_bloom_shader_sources,
+    ATMOSPHERE_SCALE,
+    ATMOSPHERE_COLOR,
+    BLOOM_THRESHOLD,
+    BLOOM_INTENSITY,
+    BG_CENTER_COLOR,
+    BG_EDGE_COLOR,
 )
 
 
@@ -2101,3 +2113,297 @@ class TestPBRShaderWaterFeatures:
         assert "FRESNEL_POWER" in fs
         assert "u_normal_map" in fs
         assert "Reinhard" in fs or "color + vec3(1.0)" in fs
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 13G — Atmosphere & post-processing tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestBuildAtmosphereShell:
+    """Tests for the atmosphere shell mesh builder."""
+
+    def test_output_shapes(self):
+        """Vertex and index arrays should have expected dimensions."""
+        vdata, idata = build_atmosphere_shell(radius=1.0)
+        assert vdata.ndim == 2
+        assert vdata.shape[1] == 7  # pos(3) + rgba(4)
+        assert idata.ndim == 2
+        assert idata.shape[1] == 3  # triangles
+
+    def test_nonzero_mesh(self):
+        """Should produce a non-empty mesh."""
+        vdata, idata = build_atmosphere_shell(radius=1.0)
+        assert len(vdata) > 0
+        assert len(idata) > 0
+
+    def test_vertices_on_atmosphere_radius(self):
+        """All vertices should lie on the atmosphere shell radius."""
+        radius = 1.0
+        vdata, _ = build_atmosphere_shell(radius=radius, scale=1.025)
+        norms = np.linalg.norm(vdata[:, :3], axis=1)
+        np.testing.assert_allclose(norms, radius * 1.025, atol=1e-5)
+
+    def test_custom_radius(self):
+        """Custom radius should be respected."""
+        radius = 2.0
+        vdata, _ = build_atmosphere_shell(radius=radius)
+        norms = np.linalg.norm(vdata[:, :3], axis=1)
+        np.testing.assert_allclose(norms, radius * ATMOSPHERE_SCALE, atol=1e-5)
+
+    def test_alpha_range(self):
+        """Alpha values should be in [0, 1]."""
+        vdata, _ = build_atmosphere_shell(radius=1.0)
+        alphas = vdata[:, 6]
+        assert np.all(alphas >= 0.0)
+        assert np.all(alphas <= 1.0)
+
+    def test_indices_valid(self):
+        """All triangle indices should be within vertex array bounds."""
+        vdata, idata = build_atmosphere_shell(radius=1.0)
+        assert idata.max() < len(vdata)
+        assert idata.min() >= 0
+
+    def test_color_channels(self):
+        """Vertex colours should match the atmosphere tint."""
+        color = (0.5, 0.6, 0.7)
+        vdata, _ = build_atmosphere_shell(radius=1.0, color=color)
+        # All vertices should have the same RGB
+        np.testing.assert_allclose(vdata[:, 3], color[0], atol=1e-6)
+        np.testing.assert_allclose(vdata[:, 4], color[1], atol=1e-6)
+        np.testing.assert_allclose(vdata[:, 5], color[2], atol=1e-6)
+
+    def test_higher_segments_more_vertices(self):
+        """Higher tessellation should produce more vertices."""
+        v_low, _ = build_atmosphere_shell(
+            radius=1.0, lat_segments=8, lon_segments=16,
+        )
+        v_high, _ = build_atmosphere_shell(
+            radius=1.0, lat_segments=32, lon_segments=64,
+        )
+        assert len(v_high) > len(v_low)
+
+    def test_larger_than_globe(self):
+        """Shell radius should be strictly larger than the globe."""
+        radius = 1.0
+        vdata, _ = build_atmosphere_shell(radius=radius)
+        min_dist = np.linalg.norm(vdata[:, :3], axis=1).min()
+        assert min_dist > radius
+
+    def test_default_scale_constant(self):
+        """Default scale should match the module constant."""
+        assert ATMOSPHERE_SCALE == 1.025
+
+
+class TestBuildBackgroundQuad:
+    """Tests for the fullscreen background quad."""
+
+    def test_quad_shape(self):
+        """Quad should have 4 vertices × 4 floats (x, y, u, v)."""
+        quad = build_background_quad()
+        assert quad.shape == (4, 4)
+
+    def test_clip_space_positions(self):
+        """Positions should span [-1, 1] in both axes."""
+        quad = build_background_quad()
+        xs = quad[:, 0]
+        ys = quad[:, 1]
+        assert xs.min() == pytest.approx(-1.0)
+        assert xs.max() == pytest.approx(1.0)
+        assert ys.min() == pytest.approx(-1.0)
+        assert ys.max() == pytest.approx(1.0)
+
+    def test_uv_range(self):
+        """UVs should span [0, 1]."""
+        quad = build_background_quad()
+        us = quad[:, 2]
+        vs = quad[:, 3]
+        assert us.min() == pytest.approx(0.0)
+        assert us.max() == pytest.approx(1.0)
+        assert vs.min() == pytest.approx(0.0)
+        assert vs.max() == pytest.approx(1.0)
+
+    def test_dtype(self):
+        """Should be float32."""
+        quad = build_background_quad()
+        assert quad.dtype == np.float32
+
+
+class TestComputeBloomThreshold:
+    """Tests for the bloom luminance threshold function."""
+
+    def test_dark_pixel_no_bloom(self):
+        """Dark pixels should produce zero bloom."""
+        assert compute_bloom_threshold(0.1, 0.1, 0.1) == 0.0
+
+    def test_bright_pixel_has_bloom(self):
+        """Very bright pixels should produce positive bloom."""
+        result = compute_bloom_threshold(1.0, 1.0, 1.0)
+        assert result > 0.0
+
+    def test_at_threshold_zero(self):
+        """Pixel exactly at threshold should produce zero bloom."""
+        # BLOOM_THRESHOLD = 0.8; a grey pixel at lum=0.8
+        # lum = 0.2126*0.8 + 0.7152*0.8 + 0.0722*0.8 = 0.8
+        result = compute_bloom_threshold(0.8, 0.8, 0.8)
+        assert result == pytest.approx(0.0, abs=1e-6)
+
+    def test_above_threshold_positive(self):
+        """Pixel above threshold should produce positive bloom."""
+        result = compute_bloom_threshold(0.9, 0.9, 0.9)
+        assert result > 0.0
+
+    def test_range_zero_to_one(self):
+        """Bloom should always be in [0, 1]."""
+        for r, g, b in [
+            (0.0, 0.0, 0.0),
+            (0.5, 0.5, 0.5),
+            (1.0, 1.0, 1.0),
+            (2.0, 2.0, 2.0),  # HDR overbrights
+        ]:
+            v = compute_bloom_threshold(r, g, b)
+            assert 0.0 <= v <= 1.0
+
+    def test_custom_threshold(self):
+        """Custom threshold should be respected."""
+        # lum of (0.5, 0.5, 0.5) = 0.5; threshold 0.3 → bloom
+        result = compute_bloom_threshold(0.5, 0.5, 0.5, threshold=0.3)
+        assert result > 0.0
+        # threshold 0.8 → no bloom
+        result = compute_bloom_threshold(0.5, 0.5, 0.5, threshold=0.8)
+        assert result == 0.0
+
+    def test_specular_highlight_blooms(self):
+        """White specular highlight (from water) should definitely bloom."""
+        result = compute_bloom_threshold(1.0, 0.95, 0.85)
+        assert result > 0.5
+
+    def test_default_threshold_constant(self):
+        """Default threshold should match the module constant."""
+        assert BLOOM_THRESHOLD == 0.8
+
+
+class TestAtmosphereShaderSources:
+    """Tests for the atmosphere shader source strings."""
+
+    def test_vertex_shader_has_position(self):
+        """Atmosphere vertex shader should accept position."""
+        vs, _ = get_atmosphere_shader_sources()
+        assert "position" in vs
+
+    def test_vertex_shader_has_color_alpha(self):
+        """Atmosphere vertex shader should accept colour+alpha."""
+        vs, _ = get_atmosphere_shader_sources()
+        assert "color_alpha" in vs
+
+    def test_fragment_shader_has_fresnel(self):
+        """Atmosphere fragment shader should compute Fresnel."""
+        _, fs = get_atmosphere_shader_sources()
+        assert "ATMO_FALLOFF" in fs
+        assert "fresnel" in fs
+
+    def test_fragment_shader_has_eye_pos(self):
+        """Fragment shader should use u_eye_pos for view direction."""
+        _, fs = get_atmosphere_shader_sources()
+        assert "u_eye_pos" in fs
+
+    def test_fragment_shader_outputs_alpha(self):
+        """Fragment should output translucent colour."""
+        _, fs = get_atmosphere_shader_sources()
+        assert "alpha" in fs
+
+    def test_both_glsl_330(self):
+        """Both shaders should be GLSL 330 core."""
+        vs, fs = get_atmosphere_shader_sources()
+        assert "#version 330 core" in vs
+        assert "#version 330 core" in fs
+
+
+class TestBackgroundShaderSources:
+    """Tests for the background gradient shader source strings."""
+
+    def test_vertex_shader_clip_space(self):
+        """Background vertex shader should output clip-space position."""
+        vs, _ = get_background_shader_sources()
+        assert "gl_Position" in vs
+
+    def test_fragment_shader_has_radial_gradient(self):
+        """Fragment shader should compute radial distance."""
+        _, fs = get_background_shader_sources()
+        assert "u_center_color" in fs
+        assert "u_edge_color" in fs
+        assert "smoothstep" in fs
+
+    def test_both_glsl_330(self):
+        """Both shaders should be GLSL 330 core."""
+        vs, fs = get_background_shader_sources()
+        assert "#version 330 core" in vs
+        assert "#version 330 core" in fs
+
+
+class TestBloomShaderSources:
+    """Tests for the bloom post-processing shader sources."""
+
+    def test_extract_has_threshold(self):
+        """Extract shader should use a luminance threshold."""
+        extract, _, _ = get_bloom_shader_sources()
+        assert "u_threshold" in extract
+        assert "lum" in extract
+
+    def test_blur_has_gaussian_weights(self):
+        """Blur shader should have Gaussian weights."""
+        _, blur, _ = get_bloom_shader_sources()
+        assert "weights" in blur
+        assert "u_direction" in blur
+
+    def test_composite_has_bloom_intensity(self):
+        """Composite shader should blend bloom with scene."""
+        _, _, composite = get_bloom_shader_sources()
+        assert "u_bloom_intensity" in composite
+        assert "u_scene" in composite
+        assert "u_bloom" in composite
+
+    def test_composite_has_tone_mapping(self):
+        """Composite shader should include tone mapping."""
+        _, _, composite = get_bloom_shader_sources()
+        assert "color + vec3(1.0)" in composite or "Reinhard" in composite
+
+    def test_all_glsl_330(self):
+        """All bloom shaders should be GLSL 330 core."""
+        extract, blur, composite = get_bloom_shader_sources()
+        assert "#version 330 core" in extract
+        assert "#version 330 core" in blur
+        assert "#version 330 core" in composite
+
+    def test_extract_samples_scene_texture(self):
+        """Extract pass should sample the scene texture."""
+        extract, _, _ = get_bloom_shader_sources()
+        assert "u_scene" in extract
+        assert "texture" in extract
+
+
+class TestAtmosphereConstants:
+    """Tests for the atmosphere/post-processing module constants."""
+
+    def test_atmosphere_color_is_blueish(self):
+        """Atmosphere colour should have dominant blue component."""
+        r, g, b = ATMOSPHERE_COLOR
+        assert b > r
+        assert b > g * 0.8  # blue >= green-ish
+
+    def test_bg_center_darker_than_edge(self):
+        """Background center should be visible (not pure black)."""
+        cr, cg, cb = BG_CENTER_COLOR
+        er, eg, eb = BG_EDGE_COLOR
+        # Center should have some blue tint
+        assert cb > 0.0
+        # Edge should be black
+        assert er == 0.0 and eg == 0.0 and eb == 0.0
+
+    def test_bloom_intensity_range(self):
+        """Bloom intensity should be in a reasonable range."""
+        assert 0.0 < BLOOM_INTENSITY < 1.0
+
+    def test_bloom_threshold_range(self):
+        """Bloom threshold should be in [0, 1]."""
+        assert 0.0 < BLOOM_THRESHOLD < 1.0

@@ -978,16 +978,16 @@ Layer 3: Shader & Lighting   — realistic PBR-lite rendering
 - [ ] **13F.3 — GPU frustum culling** — Don't submit back-facing tiles (dot(tile_normal, view_dir) < threshold) to the draw call. This halves the triangle count.
 - [ ] **13F.4 — Tests** — verify LOD selection produces correct subdivision levels; verify no cracks between LOD levels; verify frustum culling doesn't remove visible tiles.
 
-### 13G — Atmosphere & post-processing ◻️
+### 13G — Atmosphere & post-processing ✅
 
 **Problem:** The globe floats in black space with no atmospheric context.
 
 **Fix:** Add atmospheric scattering and post-processing effects.
 
-- [ ] **13G.1 — Atmosphere shell** — Render a slightly-larger transparent sphere around the globe with a blue-to-transparent gradient. Simulates atmospheric haze at the limb.
-- [ ] **13G.2 — Glow/bloom** — Apply a simple Gaussian blur post-process to bright pixels (specular highlights on water). This adds a subtle glow.
-- [ ] **13G.3 — Background gradient** — Replace the flat dark background with a subtle radial gradient (dark blue center to black edges) to suggest space.
-- [ ] **13G.4 — Tests** — verify atmosphere geometry doesn't obscure the globe; verify bloom doesn't wash out colours.
+- [x] **13G.1 — Atmosphere shell** — `build_atmosphere_shell()` builds a UV sphere at `radius * ATMOSPHERE_SCALE` (1.025×) with per-vertex RGBA (7-float stride). Fresnel-based alpha: transparent at front, opaque at limb via `falloff` exponent. `_ATMO_VERTEX_SHADER` / `_ATMO_FRAGMENT_SHADER` use view-dependent `pow(1-dot(N,V), ATMO_FALLOFF)` for edge glow.
+- [x] **13G.2 — Glow/bloom** — 3-pass bloom pipeline: `_BLOOM_EXTRACT_SHADER` (Rec.709 luminance threshold), `_BLOOM_BLUR_SHADER` (separable 5-tap Gaussian, `u_direction` for H/V pass), `_BLOOM_COMPOSITE_SHADER` (additive blend + Reinhard tone mapping). `compute_bloom_threshold()` gives CPU-side luminance check. Constants: `BLOOM_THRESHOLD=0.8`, `BLOOM_INTENSITY=0.3`.
+- [x] **13G.3 — Background gradient** — `build_background_quad()` returns clip-space fullscreen quad (4×4 float32). `_BG_VERTEX_SHADER` / `_BG_FRAGMENT_SHADER` compute radial gradient with `smoothstep` from `BG_CENTER_COLOR` (dark blue) to `BG_EDGE_COLOR` (black).
+- [x] **13G.4 — Tests** — 41 new tests across 7 classes: `TestBuildAtmosphereShell` (10), `TestBuildBackgroundQuad` (4), `TestComputeBloomThreshold` (8), `TestAtmosphereShaderSources` (6), `TestBackgroundShaderSources` (3), `TestBloomShaderSources` (6), `TestAtmosphereConstants` (4). 1058 total tests, 0 failures.
 
 ### 13H — Water rendering ✅
 
@@ -1016,7 +1016,7 @@ Layer 3: Shader & Lighting   — realistic PBR-lite rendering
 | **13D** | Colour harmonisation | **Medium** — softens biome transitions | Medium | ✅ Done |
 | **13E** | Normal-mapped lighting | **Medium** — adds terrain depth & realism | Medium | ✅ Done |
 | **13F** | Adaptive LOD | **Low** — performance (visible only at high freq) | High | 🟡 P2 |
-| **13G** | Atmosphere | **Low** — aesthetic polish | Low | 🟢 P3 |
+| **13G** | Atmosphere | **Low** — aesthetic polish | Low | ✅ Done |
 | **13H** | Water rendering | **Low** — aesthetic polish | Medium | ✅ Done |
 
 **Recommended implementation order:** 13A → 13B → 13C → 13D → 13E → 13H → 13G → 13F

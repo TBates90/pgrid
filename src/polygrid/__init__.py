@@ -195,6 +195,18 @@ try:
         classify_water_tiles,
         compute_water_depth,
         DEFAULT_WATER_LEVEL,
+        build_atmosphere_shell,
+        build_background_quad,
+        compute_bloom_threshold,
+        get_atmosphere_shader_sources,
+        get_background_shader_sources,
+        get_bloom_shader_sources,
+        ATMOSPHERE_SCALE,
+        ATMOSPHERE_COLOR,
+        BLOOM_THRESHOLD,
+        BLOOM_INTENSITY,
+        BG_CENTER_COLOR,
+        BG_EDGE_COLOR,
     )
 except ImportError:
     pass  # models library not installed — v2 renderer features unavailable
