@@ -207,6 +207,14 @@ try:
         BLOOM_INTENSITY,
         BG_CENTER_COLOR,
         BG_EDGE_COLOR,
+        select_lod_level,
+        estimate_tile_screen_fraction,
+        is_tile_backfacing,
+        stitch_lod_boundary,
+        build_lod_batched_globe_mesh,
+        LOD_LEVELS,
+        LOD_THRESHOLDS,
+        BACKFACE_THRESHOLD,
     )
 except ImportError:
     pass  # models library not installed — v2 renderer features unavailable

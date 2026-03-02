@@ -20,6 +20,11 @@ Public API
 - :func:`classify_water_tiles` — identify water tiles by colour heuristic
 - :func:`build_atmosphere_shell` — atmosphere sphere mesh (Phase 13G)
 - :func:`build_background_quad` — fullscreen gradient background quad
+- :func:`build_lod_batched_globe_mesh` — adaptive-LOD globe mesh (Phase 13F)
+- :func:`select_lod_level` — choose subdivision level by screen fraction
+- :func:`estimate_tile_screen_fraction` — angular-size LOD heuristic
+- :func:`is_tile_backfacing` — frustum/backface culling test
+- :func:`stitch_lod_boundary` — snap high-LOD boundary to low-LOD vertices
 """
 from __future__ import annotations
 
@@ -1110,6 +1115,385 @@ def build_batched_globe_mesh(
     index_data = np.concatenate(all_index_chunks, axis=0)
 
     return vertex_data, index_data
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 13F — Adaptive mesh resolution (LOD)
+# ═══════════════════════════════════════════════════════════════════
+
+#: Standard LOD subdivision levels — coarsest to finest.
+LOD_LEVELS: Tuple[int, ...] = (1, 2, 3, 5)
+
+#: Default screen-space area thresholds (in normalised viewport fraction)
+#: for switching between LOD levels.  ``LOD_THRESHOLDS[i]`` is the
+#: *minimum* screen fraction at which ``LOD_LEVELS[i]`` is selected.
+#: Tiles smaller than the lowest threshold get the coarsest LOD.
+#: Must have ``len(LOD_THRESHOLDS) == len(LOD_LEVELS)``.
+LOD_THRESHOLDS: Tuple[float, ...] = (0.0, 0.005, 0.02, 0.06)
+
+#: Backface culling threshold — tiles whose ``dot(normal, view_dir)``
+#: is below this value are culled.  Slightly negative to avoid popping
+#: at the limb.
+BACKFACE_THRESHOLD: float = -0.1
+
+
+def select_lod_level(
+    screen_fraction: float,
+    *,
+    lod_levels: Tuple[int, ...] = LOD_LEVELS,
+    lod_thresholds: Tuple[float, ...] = LOD_THRESHOLDS,
+) -> int:
+    """Choose the subdivision level for a tile based on screen-space size.
+
+    Parameters
+    ----------
+    screen_fraction : float
+        Estimated fraction of the viewport occupied by the tile (0–1).
+    lod_levels : tuple of int
+        Available subdivision levels, coarsest first.
+    lod_thresholds : tuple of float
+        Minimum screen fraction for each LOD level.
+
+    Returns
+    -------
+    int
+        The subdivision level to use for this tile.
+    """
+    if len(lod_levels) != len(lod_thresholds):
+        raise ValueError(
+            f"lod_levels ({len(lod_levels)}) and lod_thresholds "
+            f"({len(lod_thresholds)}) must have the same length"
+        )
+    selected = lod_levels[0]
+    for level, threshold in zip(lod_levels, lod_thresholds):
+        if screen_fraction >= threshold:
+            selected = level
+    return selected
+
+
+def estimate_tile_screen_fraction(
+    tile_center: Tuple[float, float, float],
+    tile_edge_length: float,
+    eye_position: Tuple[float, float, float],
+    fov_y: float = math.radians(45),
+) -> float:
+    """Estimate what fraction of the viewport a tile covers.
+
+    Uses the angular size of the tile as seen from the camera.
+
+    Parameters
+    ----------
+    tile_center : (x, y, z)
+        World-space position of the tile centre.
+    tile_edge_length : float
+        Average edge length of the tile (world units).
+    eye_position : (x, y, z)
+        Camera position in world space.
+    fov_y : float
+        Vertical field of view in radians.
+
+    Returns
+    -------
+    float
+        Estimated fraction of viewport height the tile subtends (0–1).
+    """
+    tc = np.array(tile_center, dtype=np.float64)
+    ep = np.array(eye_position, dtype=np.float64)
+    dist = np.linalg.norm(tc - ep)
+    if dist < 1e-12:
+        return 1.0  # camera inside tile — max LOD
+    angular_size = 2.0 * math.atan2(tile_edge_length * 0.5, dist)
+    fraction = angular_size / fov_y
+    return min(1.0, max(0.0, fraction))
+
+
+def is_tile_backfacing(
+    tile_center: Tuple[float, float, float],
+    tile_normal: Tuple[float, float, float],
+    eye_position: Tuple[float, float, float],
+    threshold: float = BACKFACE_THRESHOLD,
+) -> bool:
+    """Determine whether a tile faces away from the camera.
+
+    Parameters
+    ----------
+    tile_center : (x, y, z)
+    tile_normal : (x, y, z)
+        Outward-pointing normal of the tile face.
+    eye_position : (x, y, z)
+    threshold : float
+        Dot-product threshold.  Tiles with
+        ``dot(normal, view_dir) < threshold`` are backfacing.
+        A small negative value avoids popping at the limb.
+
+    Returns
+    -------
+    bool
+        True if the tile should be culled (not rendered).
+    """
+    tc = np.array(tile_center, dtype=np.float64)
+    tn = np.array(tile_normal, dtype=np.float64)
+    ep = np.array(eye_position, dtype=np.float64)
+    view_dir = ep - tc
+    length = np.linalg.norm(view_dir)
+    if length < 1e-12:
+        return False  # camera at tile — don't cull
+    view_dir /= length
+    n_len = np.linalg.norm(tn)
+    if n_len < 1e-12:
+        return False
+    tn /= n_len
+    return float(np.dot(tn, view_dir)) < threshold
+
+
+def stitch_lod_boundary(
+    high_verts: np.ndarray,
+    low_verts: np.ndarray,
+    shared_edge_start: Tuple[float, float, float],
+    shared_edge_end: Tuple[float, float, float],
+    tolerance: float = 1e-5,
+) -> np.ndarray:
+    """Snap higher-LOD boundary vertices to lower-LOD edge positions.
+
+    When two adjacent tiles use different LOD levels, the higher-LOD
+    tile has more vertices along the shared boundary than the lower-LOD
+    tile.  This creates T-junctions that manifest as cracks.
+
+    This function finds vertices in *high_verts* that lie on the edge
+    from *shared_edge_start* to *shared_edge_end* (within *tolerance*)
+    and snaps them to the nearest position that also exists in
+    *low_verts* on that same edge.
+
+    Parameters
+    ----------
+    high_verts : np.ndarray, shape (N, C)
+        Vertex data from the higher-LOD tile.  Columns 0–2 are XYZ.
+        **Modified in-place and returned.**
+    low_verts : np.ndarray, shape (M, C)
+        Vertex data from the lower-LOD tile.  Read-only.
+    shared_edge_start, shared_edge_end : (x, y, z)
+        Endpoints of the shared boundary edge.
+    tolerance : float
+        Maximum distance from the edge line for a vertex to be
+        considered "on the boundary".
+
+    Returns
+    -------
+    np.ndarray
+        The *high_verts* array (same object, modified in-place).
+    """
+    p0 = np.array(shared_edge_start, dtype=np.float64)
+    p1 = np.array(shared_edge_end, dtype=np.float64)
+    edge_vec = p1 - p0
+    edge_len = np.linalg.norm(edge_vec)
+    if edge_len < 1e-12:
+        return high_verts
+
+    edge_dir = edge_vec / edge_len
+
+    # Find low-LOD vertices that lie on this edge
+    low_on_edge = []
+    for i in range(len(low_verts)):
+        v = low_verts[i, :3].astype(np.float64)
+        t = np.dot(v - p0, edge_dir)
+        if t < -tolerance or t > edge_len + tolerance:
+            continue
+        projected = p0 + t * edge_dir
+        dist = np.linalg.norm(v - projected)
+        if dist < tolerance:
+            low_on_edge.append((t, v))
+
+    if not low_on_edge:
+        return high_verts
+
+    # Sort low-LOD edge vertices by parameter t
+    low_on_edge.sort(key=lambda pair: pair[0])
+    low_ts = np.array([pair[0] for pair in low_on_edge])
+    low_positions = [pair[1] for pair in low_on_edge]
+
+    # Snap high-LOD edge vertices to nearest low-LOD positions
+    for i in range(len(high_verts)):
+        v = high_verts[i, :3].astype(np.float64)
+        t = np.dot(v - p0, edge_dir)
+        if t < -tolerance or t > edge_len + tolerance:
+            continue
+        projected = p0 + t * edge_dir
+        dist = np.linalg.norm(v - projected)
+        if dist >= tolerance:
+            continue
+        # This vertex is on the shared edge — snap to nearest low-LOD pos
+        idx = int(np.argmin(np.abs(low_ts - t)))
+        high_verts[i, :3] = low_positions[idx].astype(np.float32)
+
+    return high_verts
+
+
+def build_lod_batched_globe_mesh(
+    frequency: int,
+    uv_layout: Dict[str, Tuple[float, float, float, float]],
+    tile_colour_map: Optional[Dict[int, Tuple[float, float, float]]] = None,
+    *,
+    radius: float = 1.0,
+    eye_position: Tuple[float, float, float] = (0.0, 0.0, 3.0),
+    fov_y: float = math.radians(45),
+    lod_levels: Tuple[int, ...] = LOD_LEVELS,
+    lod_thresholds: Tuple[float, ...] = LOD_THRESHOLDS,
+    backface_cull: bool = True,
+    backface_threshold: float = BACKFACE_THRESHOLD,
+    uv_inset_px: float = 0.0,
+    atlas_size: Optional[int] = None,
+    edge_blend: float = 0.0,
+    normal_mapped: bool = False,
+    water_tiles: Optional[Dict[int, bool]] = None,
+) -> Tuple[np.ndarray, np.ndarray, Dict[int, int]]:
+    """Build a batched globe mesh with per-tile adaptive LOD.
+
+    Like :func:`build_batched_globe_mesh`, but each tile gets an
+    individually-chosen subdivision level based on its screen-space
+    size, and back-facing tiles are optionally culled.
+
+    Parameters
+    ----------
+    frequency, uv_layout, tile_colour_map, radius
+        Same as :func:`build_batched_globe_mesh`.
+    eye_position : (x, y, z)
+        Camera world-space position for LOD and culling decisions.
+    fov_y : float
+        Vertical field of view in radians.
+    lod_levels : tuple of int
+        Available subdivision levels (sorted coarsest → finest).
+    lod_thresholds : tuple of float
+        Screen fraction thresholds for each LOD level.
+    backface_cull : bool
+        Whether to skip back-facing tiles.
+    backface_threshold : float
+        Dot-product threshold for backface test.
+    uv_inset_px, atlas_size, edge_blend, normal_mapped, water_tiles
+        Same as :func:`build_batched_globe_mesh`.
+
+    Returns
+    -------
+    (vertex_data, index_data, tile_lod_map)
+        vertex_data, index_data — same format as build_batched_globe_mesh.
+        tile_lod_map — ``{tile_index: subdivision_level}`` for each
+        rendered tile (excludes culled tiles).
+    """
+    if not _HAS_MODELS:
+        raise ImportError("models library required")
+
+    if uv_inset_px > 0 and atlas_size is None:
+        raise ValueError("atlas_size is required when uv_inset_px > 0")
+
+    from .texture_pipeline import compute_tile_uvs
+
+    tiles = generate_goldberg_tiles(frequency=frequency, radius=radius)
+
+    # Determine whether any tile is flagged as water
+    has_any_water = water_tiles is not None and any(water_tiles.values())
+
+    # Pre-compute neighbour-average edge colours for harmonisation
+    edge_blend = max(0.0, min(1.0, edge_blend))
+    nb_avg: Optional[Dict[int, Tuple[float, float, float]]] = None
+    if edge_blend > 0.0 and tile_colour_map:
+        nb_avg = compute_neighbour_average_colours(tile_colour_map, tiles)
+
+    all_vertex_chunks: List[Tuple[int, np.ndarray]] = []  # (tile_idx, vdata)
+    all_index_chunks: List[np.ndarray] = []
+    tile_lod_map: Dict[int, int] = {}
+    vertex_offset = 0
+
+    for tile in tiles:
+        # Backface culling
+        if backface_cull and is_tile_backfacing(
+            tuple(tile.center), tuple(tile.normal),
+            eye_position, backface_threshold,
+        ):
+            continue
+
+        # LOD selection
+        screen_frac = estimate_tile_screen_fraction(
+            tuple(tile.center), tile.edge_length,
+            eye_position, fov_y,
+        )
+        subdiv = select_lod_level(
+            screen_frac,
+            lod_levels=lod_levels,
+            lod_thresholds=lod_thresholds,
+        )
+        tile_lod_map[tile.index] = subdiv
+
+        fid = f"t{tile.index}"
+        slot = uv_layout.get(fid)
+        if slot is None:
+            continue
+
+        color = (1.0, 1.0, 1.0)
+        if tile_colour_map:
+            color = tile_colour_map.get(tile.index, color)
+
+        # Compute edge colour for boundary harmonisation
+        tile_edge_color: Optional[Tuple[float, float, float]] = None
+        if nb_avg is not None and edge_blend > 0.0:
+            avg = nb_avg.get(tile.index, color)
+            s_own = 1.0 - edge_blend
+            tile_edge_color = (
+                s_own * color[0] + edge_blend * avg[0],
+                s_own * color[1] + edge_blend * avg[1],
+                s_own * color[2] + edge_blend * avg[2],
+            )
+
+        # Compute atlas-mapped UVs
+        mapped_uvs = compute_tile_uvs(list(tile.uv_vertices), slot)
+        center_u = sum(uv[0] for uv in mapped_uvs) / len(mapped_uvs)
+        center_v = sum(uv[1] for uv in mapped_uvs) / len(mapped_uvs)
+
+        # Compute optional UV inset polygon for clamping
+        clamp_poly: Optional[List[Tuple[float, float]]] = None
+        if uv_inset_px > 0 and atlas_size is not None:
+            clamp_poly = compute_uv_polygon_inset(
+                mapped_uvs, inset_px=uv_inset_px, atlas_size=atlas_size,
+            )
+
+        # Per-tile water flag
+        wf: Optional[float] = None
+        if has_any_water and water_tiles is not None:
+            wf = 1.0 if water_tiles.get(tile.index, False) else 0.0
+
+        vdata, idata = subdivide_tile_mesh(
+            center=tuple(tile.center),
+            vertices=[tuple(v) for v in tile.vertices],
+            center_uv=(center_u, center_v),
+            vertex_uvs=mapped_uvs,
+            color=color,
+            radius=radius,
+            subdivisions=subdiv,
+            uv_clamp_polygon=clamp_poly,
+            edge_color=tile_edge_color,
+            tangent=tuple(tile.tangent) if normal_mapped else None,
+            bitangent=tuple(tile.bitangent) if normal_mapped else None,
+            water_flag=wf,
+        )
+
+        # Offset indices
+        idata_offset = idata + vertex_offset
+        vertex_offset += len(vdata)
+
+        all_vertex_chunks.append((tile.index, vdata))
+        all_index_chunks.append(idata_offset)
+
+    base_stride = 14 if normal_mapped else 8
+    stride = base_stride + (1 if has_any_water else 0)
+    if not all_vertex_chunks:
+        return (
+            np.zeros((0, stride), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.uint32),
+            tile_lod_map,
+        )
+
+    vertex_data = np.concatenate([v for _, v in all_vertex_chunks], axis=0)
+    index_data = np.concatenate(all_index_chunks, axis=0)
+
+    return vertex_data, index_data, tile_lod_map
 
 
 # ═══════════════════════════════════════════════════════════════════

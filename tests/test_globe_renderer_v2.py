@@ -51,6 +51,14 @@ from polygrid.globe_renderer_v2 import (
     BLOOM_INTENSITY,
     BG_CENTER_COLOR,
     BG_EDGE_COLOR,
+    select_lod_level,
+    estimate_tile_screen_fraction,
+    is_tile_backfacing,
+    stitch_lod_boundary,
+    build_lod_batched_globe_mesh,
+    LOD_LEVELS,
+    LOD_THRESHOLDS,
+    BACKFACE_THRESHOLD,
 )
 
 
@@ -2407,3 +2415,449 @@ class TestAtmosphereConstants:
     def test_bloom_threshold_range(self):
         """Bloom threshold should be in [0, 1]."""
         assert 0.0 < BLOOM_THRESHOLD < 1.0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 13F — Adaptive mesh resolution (LOD) tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSelectLodLevel:
+    """Tests for the LOD level selector."""
+
+    def test_tiny_tile_gets_coarsest(self):
+        """Very small screen fraction should get lowest LOD."""
+        lod = select_lod_level(0.001)
+        assert lod == LOD_LEVELS[0]
+
+    def test_large_tile_gets_finest(self):
+        """Large screen fraction should get highest LOD."""
+        lod = select_lod_level(0.5)
+        assert lod == LOD_LEVELS[-1]
+
+    def test_zero_fraction(self):
+        """Zero screen fraction should get the coarsest LOD."""
+        lod = select_lod_level(0.0)
+        assert lod == LOD_LEVELS[0]
+
+    def test_monotonically_increasing(self):
+        """LOD should never decrease as screen fraction grows."""
+        fractions = [0.0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.06, 0.1, 0.5]
+        lods = [select_lod_level(f) for f in fractions]
+        for i in range(1, len(lods)):
+            assert lods[i] >= lods[i - 1]
+
+    def test_custom_levels(self):
+        """Custom LOD levels should be respected."""
+        lod = select_lod_level(
+            0.5,
+            lod_levels=(2, 4, 8),
+            lod_thresholds=(0.0, 0.1, 0.3),
+        )
+        assert lod == 8
+
+    def test_custom_levels_low(self):
+        """Custom levels — low fraction picks the first."""
+        lod = select_lod_level(
+            0.05,
+            lod_levels=(2, 4, 8),
+            lod_thresholds=(0.0, 0.1, 0.3),
+        )
+        assert lod == 2
+
+    def test_mismatched_lengths_raises(self):
+        """Different-length levels and thresholds should raise."""
+        with pytest.raises(ValueError, match="same length"):
+            select_lod_level(0.1, lod_levels=(1, 2), lod_thresholds=(0.0,))
+
+    def test_exact_threshold_boundary(self):
+        """Screen fraction exactly at a threshold should select that level."""
+        # LOD_THRESHOLDS = (0.0, 0.005, 0.02, 0.06)
+        lod = select_lod_level(0.02)
+        assert lod == LOD_LEVELS[2]  # s=3
+
+    def test_returns_int(self):
+        """Return value should be an integer."""
+        lod = select_lod_level(0.03)
+        assert isinstance(lod, int)
+
+
+class TestEstimateTileScreenFraction:
+    """Tests for the angular-size screen fraction estimator."""
+
+    def test_close_tile_larger(self):
+        """A close tile should have a larger screen fraction."""
+        close = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.2, (0.0, 0.0, 1.5),
+        )
+        far = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.2, (0.0, 0.0, 10.0),
+        )
+        assert close > far
+
+    def test_zero_distance(self):
+        """Camera at tile centre should return 1.0 (max)."""
+        frac = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.2, (0.0, 0.0, 1.0),
+        )
+        assert frac == 1.0
+
+    def test_range_zero_to_one(self):
+        """Fraction should always be in [0, 1]."""
+        for dist in [0.5, 1.0, 2.0, 5.0, 20.0]:
+            frac = estimate_tile_screen_fraction(
+                (0.0, 0.0, 1.0), 0.2, (0.0, 0.0, 1.0 + dist),
+            )
+            assert 0.0 <= frac <= 1.0
+
+    def test_bigger_tile_larger_fraction(self):
+        """Bigger tiles should subtend a larger angle."""
+        small = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.1, (0.0, 0.0, 5.0),
+        )
+        big = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.5, (0.0, 0.0, 5.0),
+        )
+        assert big > small
+
+    def test_wider_fov_smaller_fraction(self):
+        """Wider FOV should yield a smaller screen fraction."""
+        narrow = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.2, (0.0, 0.0, 3.0),
+            fov_y=math.radians(30),
+        )
+        wide = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.2, (0.0, 0.0, 3.0),
+            fov_y=math.radians(90),
+        )
+        assert narrow > wide
+
+    def test_returns_float(self):
+        """Return value should be a float."""
+        frac = estimate_tile_screen_fraction(
+            (0.0, 0.0, 1.0), 0.2, (0.0, 0.0, 5.0),
+        )
+        assert isinstance(frac, float)
+
+
+class TestIsTileBackfacing:
+    """Tests for the backface culling function."""
+
+    def test_front_facing_not_culled(self):
+        """A tile facing the camera should not be culled."""
+        result = is_tile_backfacing(
+            (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 3.0),
+        )
+        assert result is False
+
+    def test_back_facing_culled(self):
+        """A tile facing away from the camera should be culled."""
+        result = is_tile_backfacing(
+            (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), (0.0, 0.0, 3.0),
+        )
+        assert result is True
+
+    def test_limb_tile_not_culled_default(self):
+        """A tile near the limb should survive the default negative threshold."""
+        # Tile slightly front-facing: normal at ~80° from view direction
+        # dot(normal, view_dir) ≈ cos(80°) ≈ 0.17 — well above BACKFACE_THRESHOLD(-0.1)
+        result = is_tile_backfacing(
+            (0.17, 0.0, 0.98), (0.17, 0.0, 0.98), (0.0, 0.0, 3.0),
+        )
+        assert result is False
+
+    def test_strict_threshold_culls_limb(self):
+        """A strict threshold should cull near-limb tiles."""
+        result = is_tile_backfacing(
+            (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 3.0),
+            threshold=0.5,
+        )
+        assert result is True
+
+    def test_camera_at_tile_not_culled(self):
+        """Camera at tile centre should not be culled."""
+        result = is_tile_backfacing(
+            (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 1.0),
+        )
+        assert result is False
+
+    def test_returns_bool(self):
+        """Return value should be a boolean."""
+        result = is_tile_backfacing(
+            (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 3.0),
+        )
+        assert isinstance(result, bool)
+
+    def test_opposite_side_of_globe(self):
+        """Tile on the far side of the globe should be culled."""
+        # Camera at z=3, tile at z=-1 pointing in -z
+        result = is_tile_backfacing(
+            (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), (0.0, 0.0, 3.0),
+        )
+        assert result is True
+
+
+class TestStitchLodBoundary:
+    """Tests for the LOD boundary stitching function."""
+
+    def test_snaps_to_nearest_low_vertex(self):
+        """High-LOD boundary vertex should snap to nearest low-LOD vertex."""
+        # Edge from (0,0,0) to (1,0,0)
+        # Low-LOD has vertices at t=0, t=0.5, t=1.0
+        # High-LOD has vertices at t=0, t=0.25, t=0.5, t=0.75, t=1.0
+        low = np.array([
+            [0.0, 0.0, 0.0, 1, 1, 1, 0, 0],
+            [0.5, 0.0, 0.0, 1, 1, 1, 0, 0],
+            [1.0, 0.0, 0.0, 1, 1, 1, 0, 0],
+        ], dtype=np.float32)
+        high = np.array([
+            [0.0,  0.0, 0.0, 1, 1, 1, 0, 0],
+            [0.25, 0.0, 0.0, 1, 1, 1, 0, 0],
+            [0.5,  0.0, 0.0, 1, 1, 1, 0, 0],
+            [0.75, 0.0, 0.0, 1, 1, 1, 0, 0],
+            [1.0,  0.0, 0.0, 1, 1, 1, 0, 0],
+        ], dtype=np.float32)
+
+        result = stitch_lod_boundary(
+            high, low,
+            shared_edge_start=(0.0, 0.0, 0.0),
+            shared_edge_end=(1.0, 0.0, 0.0),
+        )
+
+        # Vertices at t=0.25 → snap to t=0.0 or t=0.5 (nearest)
+        # t=0.25 is equidistant from 0.0 and 0.5 — argmin picks 0.0
+        assert result[1, 0] == pytest.approx(0.0, abs=0.01) or \
+               result[1, 0] == pytest.approx(0.5, abs=0.01)
+        # t=0.75 → snap to 0.5 or 1.0
+        assert result[3, 0] == pytest.approx(0.5, abs=0.01) or \
+               result[3, 0] == pytest.approx(1.0, abs=0.01)
+
+    def test_off_edge_vertices_unchanged(self):
+        """Vertices not on the shared edge should be untouched."""
+        low = np.array([
+            [0.0, 0.0, 0.0, 1, 1, 1, 0, 0],
+            [1.0, 0.0, 0.0, 1, 1, 1, 0, 0],
+        ], dtype=np.float32)
+        high = np.array([
+            [0.0, 0.0, 0.0, 1, 1, 1, 0, 0],
+            [0.5, 0.5, 0.0, 1, 1, 1, 0, 0],  # off-edge
+            [1.0, 0.0, 0.0, 1, 1, 1, 0, 0],
+        ], dtype=np.float32)
+        original_off = high[1].copy()
+
+        stitch_lod_boundary(
+            high, low,
+            shared_edge_start=(0.0, 0.0, 0.0),
+            shared_edge_end=(1.0, 0.0, 0.0),
+        )
+
+        np.testing.assert_array_equal(high[1], original_off)
+
+    def test_returns_same_array(self):
+        """Should return the same array object (in-place modification)."""
+        low = np.array([[0.0, 0.0, 0.0, 1, 1, 1, 0, 0]], dtype=np.float32)
+        high = np.array([[0.0, 0.0, 0.0, 1, 1, 1, 0, 0]], dtype=np.float32)
+        result = stitch_lod_boundary(
+            high, low, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+        )
+        assert result is high
+
+    def test_no_low_vertices_on_edge(self):
+        """If no low vertices are on the edge, high is untouched."""
+        low = np.array([
+            [0.0, 1.0, 0.0, 1, 1, 1, 0, 0],  # off-edge
+        ], dtype=np.float32)
+        high = np.array([
+            [0.5, 0.0, 0.0, 1, 1, 1, 0, 0],
+        ], dtype=np.float32)
+        original = high.copy()
+        stitch_lod_boundary(
+            high, low, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+        )
+        np.testing.assert_array_equal(high, original)
+
+    def test_zero_length_edge(self):
+        """Degenerate zero-length edge should return unchanged array."""
+        high = np.array([[0.0, 0.0, 0.0, 1, 1, 1, 0, 0]], dtype=np.float32)
+        low = np.array([[0.0, 0.0, 0.0, 1, 1, 1, 0, 0]], dtype=np.float32)
+        original = high.copy()
+        stitch_lod_boundary(
+            high, low, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+        )
+        np.testing.assert_array_equal(high, original)
+
+    def test_preserves_non_position_columns(self):
+        """Stitching should only modify XYZ, not colour/UV columns."""
+        low = np.array([
+            [0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
+            [1.0, 0.0, 0.0, 0.6, 0.7, 0.8, 0.9, 1.0],
+        ], dtype=np.float32)
+        high = np.array([
+            [0.0, 0.0, 0.0, 0.11, 0.22, 0.33, 0.44, 0.55],
+            [0.5, 0.0, 0.0, 0.66, 0.77, 0.88, 0.99, 0.12],
+            [1.0, 0.0, 0.0, 0.13, 0.14, 0.15, 0.16, 0.17],
+        ], dtype=np.float32)
+        original_attrs = high[:, 3:].copy()
+
+        stitch_lod_boundary(
+            high, low, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+        )
+
+        np.testing.assert_array_equal(high[:, 3:], original_attrs)
+
+
+class TestBuildLodBatchedGlobeMesh:
+    """Integration tests for the adaptive-LOD batched mesh builder."""
+
+    @pytest.fixture
+    def basic_uv_layout(self):
+        """Minimal UV layout for freq=3 globe (92 tiles)."""
+        from models.objects.goldberg import generate_goldberg_tiles
+        tiles = generate_goldberg_tiles(frequency=3, radius=1.0)
+        layout = {}
+        n = len(tiles)
+        for i, tile in enumerate(tiles):
+            u = (i % 10) / 10.0
+            v = (i // 10) / 10.0
+            layout[f"t{tile.index}"] = (u, v, u + 0.09, v + 0.09)
+        return layout
+
+    def test_returns_three_tuple(self, basic_uv_layout):
+        """Should return (vertex_data, index_data, tile_lod_map)."""
+        result = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+        )
+        assert len(result) == 3
+        vdata, idata, lod_map = result
+        assert isinstance(vdata, np.ndarray)
+        assert isinstance(idata, np.ndarray)
+        assert isinstance(lod_map, dict)
+
+    def test_lod_map_has_entries(self, basic_uv_layout):
+        """LOD map should have entries for rendered (non-culled) tiles."""
+        _, _, lod_map = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+        )
+        assert len(lod_map) > 0
+
+    def test_backface_culling_reduces_tiles(self, basic_uv_layout):
+        """Backface culling should render fewer tiles than no culling."""
+        _, _, culled_map = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=True,
+            eye_position=(0.0, 0.0, 3.0),
+        )
+        _, _, full_map = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=False,
+            eye_position=(0.0, 0.0, 3.0),
+        )
+        assert len(culled_map) < len(full_map)
+
+    def test_no_culling_renders_all(self, basic_uv_layout):
+        """Without backface culling, all tiles should be rendered."""
+        _, _, lod_map = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=False,
+        )
+        # freq=3 globe has 92 tiles
+        assert len(lod_map) == 92
+
+    def test_lod_values_in_levels(self, basic_uv_layout):
+        """All LOD values should be from the LOD_LEVELS set."""
+        _, _, lod_map = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=False,
+        )
+        for subdiv in lod_map.values():
+            assert subdiv in LOD_LEVELS
+
+    def test_close_camera_higher_lod(self, basic_uv_layout):
+        """Tiles should get higher LOD when camera is close."""
+        _, _, close_map = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=False,
+            eye_position=(0.0, 0.0, 1.5),
+        )
+        _, _, far_map = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=False,
+            eye_position=(0.0, 0.0, 20.0),
+        )
+        # Average LOD should be higher for close camera
+        avg_close = sum(close_map.values()) / len(close_map)
+        avg_far = sum(far_map.values()) / len(far_map)
+        assert avg_close >= avg_far
+
+    def test_vertex_data_shape(self, basic_uv_layout):
+        """Vertex data should have 8-float stride (basic)."""
+        vdata, _, _ = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+        )
+        assert vdata.ndim == 2
+        assert vdata.shape[1] == 8
+
+    def test_index_data_shape(self, basic_uv_layout):
+        """Index data should have 3 columns (triangles)."""
+        _, idata, _ = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+        )
+        assert idata.ndim == 2
+        assert idata.shape[1] == 3
+
+    def test_fewer_triangles_with_culling(self, basic_uv_layout):
+        """Culled mesh should have fewer triangles."""
+        _, idata_culled, _ = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=True,
+            eye_position=(0.0, 0.0, 3.0),
+        )
+        _, idata_full, _ = build_lod_batched_globe_mesh(
+            frequency=3,
+            uv_layout=basic_uv_layout,
+            backface_cull=False,
+        )
+        assert len(idata_culled) < len(idata_full)
+
+
+class TestLodConstants:
+    """Tests for the LOD module constants."""
+
+    def test_lod_levels_sorted(self):
+        """LOD_LEVELS should be sorted ascending."""
+        for i in range(1, len(LOD_LEVELS)):
+            assert LOD_LEVELS[i] > LOD_LEVELS[i - 1]
+
+    def test_lod_thresholds_sorted(self):
+        """LOD_THRESHOLDS should be sorted ascending."""
+        for i in range(1, len(LOD_THRESHOLDS)):
+            assert LOD_THRESHOLDS[i] > LOD_THRESHOLDS[i - 1]
+
+    def test_levels_and_thresholds_same_length(self):
+        """LOD_LEVELS and LOD_THRESHOLDS must have equal length."""
+        assert len(LOD_LEVELS) == len(LOD_THRESHOLDS)
+
+    def test_first_threshold_is_zero(self):
+        """Lowest threshold should be 0.0 so every tile gets at least coarsest LOD."""
+        assert LOD_THRESHOLDS[0] == 0.0
+
+    def test_backface_threshold_negative(self):
+        """BACKFACE_THRESHOLD should be slightly negative."""
+        assert BACKFACE_THRESHOLD < 0.0
+
+    def test_lod_levels_are_positive_ints(self):
+        """All LOD levels should be positive integers."""
+        for level in LOD_LEVELS:
+            assert isinstance(level, int)
+            assert level >= 1

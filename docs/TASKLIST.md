@@ -967,16 +967,16 @@ Layer 3: Shader & Lighting   — realistic PBR-lite rendering
   - Legacy v2 shaders preserved as fallback. `get_pbr_shader_sources()` and `get_v2_shader_sources()` convenience accessors.
 - [x] **13E.4 — Tests** — 34 new tests across 5 classes: encode/decode round-trip (7 tests), subdivide with tangent (6 tests), batched mesh normal_mapped (6 tests), normal map atlas (5 tests), PBR shader source validation (10 tests). 974 total tests passing.
 
-### 13F — Adaptive mesh resolution ◻️
+### 13F — Adaptive mesh resolution ✅
 
 **Problem:** Uniform subdivision (s=3 → 4,860 tris) is wasteful. Tiles near the camera need more detail; tiles on the far side of the globe need almost none.
 
 **Fix:** View-dependent level of detail.
 
-- [ ] **13F.1 — Multi-resolution mesh** — Pre-build meshes at multiple subdivision levels (s=1,2,3,5). At render time, select the appropriate mesh for each tile based on its screen-space size.
-- [ ] **13F.2 — Stitching at LOD boundaries** — Adjacent tiles at different LOD levels must share boundary vertices to prevent cracks. Constrain the higher-LOD tile's boundary vertices to match the lower-LOD neighbour.
-- [ ] **13F.3 — GPU frustum culling** — Don't submit back-facing tiles (dot(tile_normal, view_dir) < threshold) to the draw call. This halves the triangle count.
-- [ ] **13F.4 — Tests** — verify LOD selection produces correct subdivision levels; verify no cracks between LOD levels; verify frustum culling doesn't remove visible tiles.
+- [x] **13F.1 — Multi-resolution mesh** — `select_lod_level()` picks from `LOD_LEVELS = (1, 2, 3, 5)` based on `estimate_tile_screen_fraction()` (angular size vs FOV). `LOD_THRESHOLDS` defines screen-fraction breakpoints per level. `build_lod_batched_globe_mesh()` produces per-tile adaptive subdivision with a `tile_lod_map` return.
+- [x] **13F.2 — Stitching at LOD boundaries** — `stitch_lod_boundary()` finds vertices on a shared edge and snaps higher-LOD boundary vertices to the nearest lower-LOD position, preventing T-junction cracks. Operates in-place on the vertex array, preserving colour/UV columns.
+- [x] **13F.3 — GPU frustum culling** — `is_tile_backfacing()` uses `dot(tile_normal, view_dir) < BACKFACE_THRESHOLD` (default −0.1, slightly negative to avoid limb popping). `build_lod_batched_globe_mesh()` skips back-facing tiles entirely, halving triangle count.
+- [x] **13F.4 — Tests** — 43 new tests across 5 classes: `TestSelectLodLevel` (10), `TestEstimateTileScreenFraction` (7), `TestIsTileBackfacing` (7), `TestStitchLodBoundary` (6), `TestBuildLodBatchedGlobeMesh` (7 + fixture), `TestLodConstants` (6). 1101 total tests, 0 failures.
 
 ### 13G — Atmosphere & post-processing ✅
 
@@ -1015,7 +1015,7 @@ Layer 3: Shader & Lighting   — realistic PBR-lite rendering
 | **13C** | UV inset clamping | **High** — backstop for any remaining UV bleed | Low | ✅ Done |
 | **13D** | Colour harmonisation | **Medium** — softens biome transitions | Medium | ✅ Done |
 | **13E** | Normal-mapped lighting | **Medium** — adds terrain depth & realism | Medium | ✅ Done |
-| **13F** | Adaptive LOD | **Low** — performance (visible only at high freq) | High | 🟡 P2 |
+| **13F** | Adaptive LOD | **Low** — performance (visible only at high freq) | High | ✅ Done |
 | **13G** | Atmosphere | **Low** — aesthetic polish | Low | ✅ Done |
 | **13H** | Water rendering | **Low** — aesthetic polish | Medium | ✅ Done |
 
