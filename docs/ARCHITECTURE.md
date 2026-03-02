@@ -10,35 +10,42 @@ The workflow is:
 2. **Compose** them into assemblies (e.g. one pentagon + five hex grids stitched together).
 3. **Run algorithms** on the composed grid — partitioning into terrain zones, assigning biome types, generating heightmaps, placing features.
 4. **Store per-tile data** (biome, elevation, moisture, etc.) against individual faces.
-5. **Export** per-tile textures / PNGs for a 3D renderer that maps them onto a Goldberg polyhedron.
+5. **Generate detail** — expand each Goldberg tile into a local sub-grid with boundary-continuous terrain.
+6. **Render textures** — satellite-style detail textures packed into a texture atlas.
+7. **GPU render** — PBR-lit, normal-mapped 3D globe with water, atmosphere, bloom, and adaptive LOD.
 
-A separate package handles the 3D Goldberg polyhedron mechanics and rendering. PolyGrid focuses purely on the **2D topology, data, and algorithms** side.
+A separate `models` package provides the Goldberg polyhedron geometry primitives (tile positions, normals, tangents, adjacency). PolyGrid handles the **topology, terrain, textures, and rendering** side.
 
 ---
 
 ## Separation of Concerns
 
-The project is organised around a strict layering:
+The project is organised around strict layering:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   scripts / CLI                      │  Entry points
-├─────────────────────────────────────────────────────┤
-│                    visualize.py                      │  Rendering (matplotlib)
-│                     render.py                        │
-├─────────────────────────────────────────────────────┤
-│                   transforms.py                      │  Algorithms (Voronoi,
-│                    regions.py                        │  partition, terrain gen)
-│                   (future: terrain.py, biomes.py)    │
-├─────────────────────────────────────────────────────┤
-│                    tile_data.py                      │  Per-tile data layer
-├─────────────────────────────────────────────────────┤
-│    assembly.py  │  composite.py  │  builders.py      │  Composition & building
-│                 │                │  goldberg_topology │
-├─────────────────────────────────────────────────────┤
-│   polygrid.py  │  models.py  │  algorithms.py       │  Core topology
-│   geometry.py  │             │  io.py               │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           scripts / CLI                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  globe_renderer_v2.py │ globe_renderer.py │ visualize.py │ render.py  │  GPU + 2D rendering
+├─────────────────────────────────────────────────────────────────────────┤
+│  texture_pipeline.py │ detail_render.py │ detail_perf.py              │  Texture pipeline
+├─────────────────────────────────────────────────────────────────────────┤
+│  detail_grid.py │ tile_detail.py │ detail_terrain.py                  │  Sub-tile detail
+│                                  │ detail_terrain_3d.py               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  globe.py │ globe_terrain.py │ globe_export.py │ globe_mesh.py       │  Globe scale
+├─────────────────────────────────────────────────────────────────────────┤
+│  noise.py │ heightmap.py │ mountains.py │ rivers.py │ pipeline.py    │  Terrain generation
+│  terrain_render.py │ terrain_patches.py │ render_enhanced.py         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  transforms.py │ regions.py │ region_stitch.py                       │  Algorithms
+├─────────────────────────────────────────────────────────────────────────┤
+│  tile_data.py                                                         │  Per-tile data
+├─────────────────────────────────────────────────────────────────────────┤
+│  assembly.py │ composite.py │ builders.py │ goldberg_topology.py     │  Composition
+├─────────────────────────────────────────────────────────────────────────┤
+│  polygrid.py │ models.py │ algorithms.py │ geometry.py │ io.py       │  Core topology
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Layer rules
@@ -47,12 +54,16 @@ The project is organised around a strict layering:
 |-------|------------|---------------------|
 | **Core** (`models`, `polygrid`, `algorithms`, `geometry`, `io`) | Vertices, edges, faces, adjacency | Rendering, assembly, transforms, tile data |
 | **Building** (`builders`, `goldberg_topology`, `composite`, `assembly`) | Core layer | Rendering, game-specific data |
-| **Tile Data** (`tile_data`) | Core layer (algorithms, polygrid) | Rendering, transforms, regions |
-| **Transforms** (`transforms`, `regions`) | Core layer, tile data | Rendering |
-| **Rendering** (`visualize`, `render`) | Everything above | Nothing below it depends on rendering |
+| **Tile Data** (`tile_data`) | Core layer | Rendering, transforms, regions |
+| **Transforms** (`transforms`, `regions`, `region_stitch`) | Core layer, tile data | Rendering |
+| **Terrain** (`noise`, `heightmap`, `mountains`, `rivers`, `pipeline`) | Core, tile data, transforms | Rendering, globe topology |
+| **Globe** (`globe`, `globe_terrain`, `globe_export`, `globe_mesh`) | Core, tile data, terrain, `models` lib | Rendering |
+| **Detail** (`detail_grid`, `tile_detail`, `detail_terrain`, `detail_render`, `detail_perf`) | Core, terrain, globe | GPU rendering |
+| **Texture** (`texture_pipeline`) | Detail, globe | GPU rendering |
+| **Rendering** (`globe_renderer`, `globe_renderer_v2`, `visualize`) | Everything above | Nothing below it depends on rendering |
 | **Scripts / CLI** | Everything | — |
 
-**Key principle:** the core topology layer has **zero rendering dependencies**. Matplotlib is an optional install. All algorithm work (adjacency, ring detection, partitioning, future terrain generation) operates on the abstract `PolyGrid` graph, not on pixel positions.
+**Key principle:** the core topology layer has **zero rendering dependencies**. Matplotlib and pyglet are optional installs. All algorithm work operates on the abstract `PolyGrid` graph.
 
 ---
 
@@ -69,7 +80,7 @@ The central container. Holds dictionaries of vertices, edges, and faces, plus op
 
 ### Frozen dataclasses
 
-`Vertex`, `Edge`, `Face`, `MacroEdge` are all `@dataclass(frozen=True)` — immutable value objects. This makes them safe to share, hash, and reason about. When you need a modified copy, use `dataclasses.replace()`.
+`Vertex`, `Edge`, `Face`, `MacroEdge` are all `@dataclass(frozen=True)` — immutable value objects. This makes them safe to share, hash, and reason about.
 
 ### Topology-first
 
@@ -88,7 +99,7 @@ A hexagonal-shaped grid of hexagons, built from axial coordinates. Parameter: `r
 One central pentagon surrounded by rings of hexagons, forming a pentagonal shape. Built via:
 
 1. **Triangulation** — construct a triangular grid on a cone with 5-fold symmetry.
-2. **Dualisation** — each triangle becomes a dual vertex; each interior triangulation vertex becomes a dual face (apex → pentagon, rest → hexagons).
+2. **Dualisation** — each triangle becomes a dual vertex; each interior triangulation vertex becomes a dual face.
 3. **Tutte embedding** — pin boundary to a regular pentagon, solve Laplacian for interior positions.
 4. **Optimisation** — `scipy.optimize.least_squares` minimising edge-length variance, angle deviation, and area-inversion penalties.
 5. **Winding fix** — ensure all faces have CCW vertex ordering.
@@ -104,162 +115,119 @@ Has 5 macro-edges. Face count: `1 + 5·R·(R+1)/2`.
 Multiple `PolyGrid`s are composed via stitching — merging boundary vertices along matching macro-edges. The process:
 
 1. **Prefix** all ids to avoid collisions.
-2. **Merge** boundary vertex pairs (from `StitchSpec`s) into canonical vertices.
+2. **Merge** boundary vertex pairs into canonical vertices.
 3. **Deduplicate** edges that now reference the same vertex pair.
 4. **Rebuild** faces with remapped ids.
 
-Result: a single unified `PolyGrid` inside a `CompositeGrid` wrapper that also tracks the original components.
-
 ### `AssemblyPlan` & `pent_hex_assembly`
 
-An `AssemblyPlan` is a named collection of `PolyGrid` components + stitch specs. The current recipe `pent_hex_assembly(rings)` builds:
-
-- 1 pentagon-centred grid ("pent")
-- 5 hex grids ("hex0" … "hex4"), each positioned flush against a pent macro-edge
-- 5 pent↔hex stitches (pent edge i ↔ hex{i} edge 3)
-- 5 hex↔hex stitches (hex{i} edge 2 ↔ hex{(i+1)%5} edge 4)
-
-Hex grids are reflected to sit on the **outside** of the pentagon, then hex-hex boundary vertices are **snapped** to averaged positions to close the small angular gap (12° total at each pent corner, ~6° per flanking edge).
+An `AssemblyPlan` is a named collection of `PolyGrid` components + stitch specs. The current recipe `pent_hex_assembly(rings)` builds 1 pentagon + 5 hex grids stitched into a unified mesh.
 
 ---
 
-## Transforms & Overlays
+## Terrain Generation (Phases 6–7)
 
-Transforms are functions `PolyGrid → Overlay`. An `Overlay` holds derived geometry (points, segments, regions) that can be drawn on top of a grid without mutating it.
+### Partitioning
 
-### Current transforms
+The `regions` module splits grids into named regions using four algorithms:
 
-- **`apply_voronoi`** — Voronoi dual: face centroids as sites, dual edges between adjacent centroids, dual cells around each vertex.
-- **`apply_partition`** — Angular partitioning: divides faces into N sectors around the grid centroid, each sector gets a colour index.
+| Algorithm | Strategy | Use case |
+|-----------|----------|----------|
+| `partition_angular` | Equal angular sectors | Quick geometric split |
+| `partition_flood_fill` | Competitive BFS from seeds | Organic, topology-aware shapes |
+| `partition_voronoi` | Nearest seed by centroid distance | Clean, regular boundaries |
+| `partition_noise` | Voronoi + distance perturbation | Organic, irregular boundaries |
 
-### Future transforms (terrain generation)
+### Noise & heightmaps
 
-The transform pattern extends naturally to terrain algorithms — each terrain pass produces an overlay or attaches data to faces. See the tasklist for planned algorithms.
+`noise.py` provides simplex noise with octave layering and domain warping. `heightmap.py` bridges noise to grids, computing per-face elevations. `mountains.py` adds ridgeline-based mountain ranges with erosion simulation.
+
+### Rivers
+
+`rivers.py` generates river networks following downhill flow, with watershed detection and confluence points.
+
+### Pipeline
+
+`pipeline.py` provides a composition framework for chaining terrain generation passes.
 
 ---
 
-## Rendering
+## Globe-Scale Topology (Phase 8)
 
-Two rendering modules, both requiring `matplotlib` (optional dependency):
+`globe.py` builds a Goldberg polyhedron globe using the `models` library's `generate_goldberg_tiles()`. Each tile gets per-face terrain via `globe_terrain.py` (which applies noise, mountains, and biome colouring at the global scale). `globe_export.py` serialises the globe as JSON with per-tile colour, elevation, and adjacency.
 
-- **`render.py`** — simple single-grid PNG output (legacy).
-- **`visualize.py`** — multi-panel composite visualisation: exploded views, stitched views, overlay rendering, partition colouring.
+---
 
-Rendering is strictly a **leaf** dependency — nothing in the core or algorithm layers imports from rendering modules.
+## Sub-Tile Detail (Phase 10)
+
+Each Goldberg tile is expanded into a local hex sub-grid:
+
+1. **`tile_detail.py`** — `TileDetailSpec` + `DetailGridCollection` manage per-tile detail grids.
+2. **`detail_terrain.py`** — boundary-aware terrain generation that ensures continuity between adjacent tiles.
+3. **`detail_render.py`** — satellite-style texture rendering with biome-aware colour palettes.
+4. **`texture_pipeline.py`** — packs individual tile textures into a GPU-ready texture atlas with UV layout.
+5. **`detail_perf.py`** — parallel generation, PIL fast-path rendering, caching.
+
+---
+
+## GPU Rendering (Phases 12–13)
+
+`globe_renderer_v2.py` is the main renderer (~2,300 lines), implementing:
+
+### Phase 12 — Core rendering quality
+- **12A Flood-fill** — `flood_fill_tile_texture()` removes black borders.
+- **12B Subdivision** — `subdivide_tile_mesh()` subdivides triangle fans and projects onto sphere.
+- **12C Batched mesh** — `build_batched_globe_mesh()` merges all tiles into one VBO.
+
+### Phase 13 — Cohesive rendering
+- **13A Full-coverage textures** — terrain-coloured backgrounds eliminate seams.
+- **13B Atlas gutters** — padding pixels prevent bilinear bleed.
+- **13C UV clamping** — `compute_uv_polygon_inset()` + `clamp_uv_to_polygon()` prevent UV overshoot.
+- **13D Colour harmonisation** — `harmonise_tile_colours()` blends boundary vertex colours toward neighbour averages.
+- **13E Normal-mapped PBR** — tangent-space normal maps, `encode_normal_to_rgb()` / `decode_rgb_to_normal()`, PBR fragment shader with Fresnel specular, roughness, and Reinhard tone mapping.
+- **13F Adaptive LOD** — `select_lod_level()` picks from `LOD_LEVELS = (1, 2, 3, 5)` per tile. `estimate_tile_screen_fraction()` for view-dependent LOD. `is_tile_backfacing()` for culling. `stitch_lod_boundary()` for crack prevention. `build_lod_batched_globe_mesh()` for the adaptive pipeline.
+- **13G Atmosphere** — `build_atmosphere_shell()` (Fresnel limb haze), `build_background_quad()` (radial gradient), 3-pass bloom (extract → Gaussian blur → composite with Reinhard).
+- **13H Water** — `classify_water_tiles()`, `compute_water_depth()`, per-vertex `water_flag`. PBR shader with depth-based colour, animated waves (`u_time`), coastline foam via `dFdx`/`dFdy`.
+
+### Shader architecture
+
+| Shader set | Purpose |
+|-----------|---------|
+| `_V2_VERTEX/FRAGMENT_SHADER` | Legacy v2 (basic lighting) |
+| `_PBR_VERTEX/FRAGMENT_SHADER` | Full PBR with normal maps, water, specular |
+| `_ATMO_VERTEX/FRAGMENT_SHADER` | Atmosphere shell with Fresnel alpha |
+| `_BG_VERTEX/FRAGMENT_SHADER` | Background radial gradient |
+| `_BLOOM_EXTRACT/BLUR/COMPOSITE_SHADER` | 3-pass bloom post-processing |
 
 ---
 
 ## Per-Tile Data
 
-The **tile data layer** (`tile_data.py`) provides per-face key-value storage, kept strictly separate from grid topology.
-
-### Components
+`tile_data.py` provides per-face key-value storage:
 
 | Class | Responsibility |
 |-------|---------------|
-| `FieldDef` | Defines a single field: name, type (`int`/`float`/`str`/`bool`), optional default |
-| `TileSchema` | Declares the set of fields; validates values on write |
-| `TileData` | Raw data container — `{face_id: {key: value}}` with schema enforcement |
-| `TileDataStore` | Binds `TileData` to a `PolyGrid`; adds neighbour/ring queries and bulk operations |
-
-### Design principles
-- Data lives **alongside** the PolyGrid, not inside it — SoC between topology and game data.
-- Data is keyed by face id.
-- Schema validates every write — catches type errors early.
-- JSON-serialisable (separate from grid JSON; face ids are the join key).
-- Neighbour-aware: `get_neighbors_data()`, `get_ring_data()` use the grid's adjacency graph.
-- Bulk operations: `apply_to_all()`, `apply_to_ring()`, `apply_to_faces()` for algorithm passes.
-- Adjacency is lazily built and cached.
-
-### Intended usage
-```python
-schema = TileSchema([
-    FieldDef("elevation", float, 0.0),
-    FieldDef("biome", str, "none"),
-])
-store = TileDataStore(grid, schema=schema)
-store.initialise_all()                        # fill with defaults
-store.set("f1", "elevation", 42.0)            # set one face
-store.bulk_set(face_ids, "biome", "mountain") # set many
-store.apply_to_all("elevation", lambda fid, v: v + noise(fid))
-neighbors = store.get_neighbors_data("f1", "elevation")
-```
-
----
-
-## Terrain Partitioning
-
-The **regions module** (`regions.py`) splits a grid into named regions (continents, oceans, biome zones) that terrain-generation algorithms operate on.
-
-### Data model
-
-| Class | Responsibility |
-|-------|---------------|
-| `Region` | Named collection of face ids with metadata (e.g. biome type) |
-| `RegionMap` | Container for all regions; face↔region lookups, region adjacency queries |
-| `RegionValidation` | Validation result (ok + error list) |
-
-### Partitioning algorithms
-
-| Algorithm | Strategy | Use case |
-|-----------|----------|----------|
-| `partition_angular` | Equal angular sectors around grid centroid | Quick geometric split |
-| `partition_flood_fill` | Competitive BFS from seed faces | Organic, topology-aware shapes |
-| `partition_voronoi` | Nearest seed by centroid distance | Clean, regular boundaries |
-| `partition_noise` | Voronoi + distance perturbation | Organic, irregular boundaries |
-
-### Constraints & validation
-`validate_region_map()` checks: full coverage (every face assigned), no gaps, no overlaps, min region size, max region count, and required inter-region adjacency (e.g. "every continent must touch ocean").
-
-### TileData integration
-- `assign_field(region, store, key, value)` — bulk-set a field for all faces in a region.
-- `assign_biome(region, store, biome_type)` — convenience wrapper; also stores biome in region metadata.
-
-### Visualisation
-`regions_to_overlay(region_map, grid)` converts a `RegionMap` into an `Overlay` (kind=`"partition"`) that plugs directly into the existing partition rendering pipeline in `visualize.py`.
-
-### Intended usage
-```python
-# Partition into 4 Voronoi regions
-seeds = pick_seed_faces(grid, n=4)
-rm = partition_voronoi(grid, seeds, names=["land", "sea", "desert", "forest"])
-assert validate_region_map(rm).ok
-
-# Assign biomes via TileData
-for region in rm.regions:
-    assign_biome(region, store, region.name)
-
-# Render
-overlay = regions_to_overlay(rm, grid)
-render_stitched_with_overlay(assembly, overlay, "regions.png")
-```
-
----
-
-## Goldberg Polyhedron Integration (Planned)
-
-The full Goldberg polyhedron has 12 pentagonal faces and a configurable number of hexagonal faces. Each face of the polyhedron is itself a `PolyGrid` (pentagon-centred for pent faces, hex for hex faces).
-
-PolyGrid can represent the **whole-globe topology** as well — just the 12+N faces with their adjacency, no positions needed. This allows running algorithms (continent placement, ocean currents, climate) at the macro scale, then drilling into per-face detail grids.
+| `FieldDef` | Typed field definition (name, dtype, default) |
+| `TileSchema` | Field set declaration, validates on write |
+| `TileData` | Raw data container, JSON-serialisable |
+| `TileDataStore` | Binds data to grid; neighbour/ring queries, bulk ops |
 
 ---
 
 ## Testing
 
-277 tests across 18 test files, covering:
+1,101 tests across 36 test files, covering:
 
-- Core model validation and serialisation
-- Goldberg topology invariants (face counts, vertex degrees, boundary counts, corner detection)
-- Goldberg embedding quality (no crossings, positive areas)
-- Macro-edge detection and serialisation
-- Stitching correctness (vertex merging, edge dedup)
-- Assembly (component count, stitch count, boundary alignment)
-- Transforms (Voronoi properties, partition coverage)
-- Tile data layer (CRUD, schema validation, serialisation, neighbour/ring queries, bulk ops)
-- Terrain partitioning (all 4 algorithms, validation, constraints, TileData integration, overlay conversion, cross-algorithm parametrized tests)
-- Visualisation (PNG output, overlay rendering)
+- Core topology: model validation, serialisation, adjacency
+- Goldberg grids: face counts, vertex degrees, embedding quality
+- Composition: stitching, assembly, boundary alignment
+- Terrain: noise, heightmaps, mountains, rivers, pipeline
+- Globe: globe builder, terrain generation, export, rendering
+- Detail: sub-tile grids, boundary continuity, texture atlas
+- Renderer v2: subdivision, batching, UV clamping, colour harmonisation, normal maps, water, atmosphere, bloom, LOD
+- Partitioning: all 4 algorithms, validation, constraints
 
-All tests run in ~20s. No external service dependencies.
+Tests run in ~3 min with caching via `conftest.py` (globe grid + detail grid collection cached with `lru_cache`).
 
 ---
 
@@ -269,6 +237,9 @@ All tests run in ~20s. No external service dependencies.
 |-----------|-------------|--------------|
 | (none) | Core topology | default |
 | pytest | Testing | `dev` |
-| matplotlib | Rendering | `render` |
+| matplotlib | 2D rendering | `render` |
 | numpy, scipy | Embedding & optimisation | `embed` |
-| opensimplex | Noise-based region boundaries | `noise` (optional — deterministic fallback if absent) |
+| opensimplex | Noise-based terrain & boundaries | `noise` |
+| Pillow | Texture rendering | `render` |
+| pyglet | Interactive 3D viewer | `globe` |
+| models | Goldberg polyhedron geometry | `globe` |

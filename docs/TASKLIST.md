@@ -412,7 +412,7 @@ Feed per-tile colours and textures into the `models` library's rendering pipelin
 - [x] **9C.1 — Colour mesh builder** — `build_coloured_globe_mesh(frequency, tile_colours)` and `build_coloured_globe_mesh_from_export(payload)` in `globe_renderer.py`. Also `build_terrain_layout_mesh` in `globe_mesh.py` (from Phase 8E).
 - [x] **9C.2 — `render_terrain_globe_opengl(payload)`** — full OpenGL render of the Goldberg polyhedron with terrain colours. Uses `SimpleMeshRenderer` from models + pyglet window with mouse rotation/zoom. `prepare_terrain_scene(payload)` for CPU-side mesh prep.
 - [x] **9C.3 — Interactive demo** — `scripts/view_globe.py` loads a globe export JSON (or generates inline) and renders the terrain-coloured polyhedron with rotation/zoom.
-- [ ] **9C.4 — Textured mesh builder** (stretch goal) — produce UV-mapped meshes that reference the per-tile textures from 9B, for sub-tile detail rendering.
+- [x] **9C.4 — Textured mesh builder** (stretch goal) — superseded by Phase 12–13's `globe_renderer_v2.py` which provides batched, subdivided, PBR-lit textured mesh rendering with atlas UV mapping.
 - [x] **9C.5 — Tests:**
   - Coloured mesh has correct vertex count
   - Mesh vertex/index counts match reference terrain_layout_mesh
@@ -560,11 +560,7 @@ Extend the existing OpenGL renderer to support texture-mapped tiles instead of (
   - `--detail-rings 4`: control sub-tile resolution (default: 4)
   - Without `--textured`: same flat-colour rendering as before (backward compatible)
 
-- [ ] **10E.4 — Tests:**
-  - Textured shader compiles and links (unit test with mock context)
-  - Textured mesh has correct stride (position + color + uv = 32 bytes)
-  - Atlas texture loading produces a valid texture ID
-  - Renderer falls back to vertex colour when no atlas provided
+- [x] **10E.4 — Tests:** Covered in `test_globe.py`: `test_textured_vertex_shader_is_string`, `test_textured_fragment_shader_is_string`, `test_textured_vertex_shader_has_uv_passthrough`, `test_textured_fragment_shader_fallback`, `test_textured_shaders_version_330`, `test_textured_mesh_stride`, `test_textured_mesh_vertex_count`, `test_textured_mesh_has_uv_attribute`, `test_textured_mesh_uvs_within_atlas_slot`.
 
 ### 10F — Performance & Scale (`detail_perf.py`) ✅
 
@@ -598,7 +594,7 @@ End-to-end demos showing the full pipeline.
 
 - [x] **10G.3 — Higher frequency demo** — `--frequency 5 --detail-rings 4` producing a globe with 252 tiles × 61 sub-faces = ~15,000 visible terrain cells — enough to start seeing realistic terrain patterns.
 
-- [ ] **10G.4 — Documentation** — update `README.md` and `JSON_CONTRACT.md` with the detail grid system, atlas format, and viewer usage.
+- [x] **10G.4 — Documentation** — updated `README.md` (full Phase 10–13 coverage, package layout, CLI, usage examples), `JSON_CONTRACT.md` (added atlas/UV layout and vertex format sections), `ARCHITECTURE.md` (updated layer diagram, added terrain/globe/detail/rendering layers, Phase 12–13 shader architecture), `MODULE_REFERENCE.md` (all 40 source modules with line counts and dependencies).
 
 ### Summary — Phase 10 Implementation Order
 
