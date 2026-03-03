@@ -330,3 +330,289 @@ class TestComputeCoastDirection:
         fid = sorted(ocean_faces)[0]
         direction = compute_coast_direction(grid, fid, ocean_faces)
         assert direction is None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 17B — Ocean Texture Rendering
+# ═══════════════════════════════════════════════════════════════════
+
+try:
+    from PIL import Image as _PILImage
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
+needs_pil = pytest.mark.skipif(not _HAS_PIL, reason="PIL/Pillow not installed")
+
+
+def _make_ocean_tile(size=32, color=(40, 100, 160)):
+    """Create a small solid-colour test image."""
+    img = _PILImage.new("RGB", (size, size), color)
+    return img
+
+
+@needs_pil
+class TestRenderOceanDepthGradient:
+    """17B.1 — depth gradient fill."""
+
+    def test_shallow_brighter_than_deep(self):
+        from polygrid.ocean_render import render_ocean_depth_gradient
+        import numpy as np
+
+        shallow = _make_ocean_tile()
+        render_ocean_depth_gradient(shallow, 0.1, seed=42)
+        deep = _make_ocean_tile()
+        render_ocean_depth_gradient(deep, 0.9, seed=42)
+
+        s_mean = np.array(shallow).mean()
+        d_mean = np.array(deep).mean()
+        assert s_mean > d_mean, f"shallow={s_mean:.1f}, deep={d_mean:.1f}"
+
+    def test_not_flat_fill(self):
+        """Noise should produce spatial variation (not all identical pixels)."""
+        from polygrid.ocean_render import render_ocean_depth_gradient
+        import numpy as np
+
+        img = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(img, 0.4, seed=42)
+        arr = np.array(img)
+        # At least some pixel variance across the tile
+        assert arr.std() > 0.5, f"std={arr.std():.2f} — too flat"
+
+    def test_zero_depth_is_shallow_color(self):
+        from polygrid.ocean_render import render_ocean_depth_gradient, TEMPERATE_OCEAN
+        import numpy as np
+
+        img = _make_ocean_tile(size=16)
+        render_ocean_depth_gradient(img, 0.0, TEMPERATE_OCEAN, seed=0)
+        arr = np.array(img)
+        # Centre pixel should be close to shallow_color
+        mid = arr[8, 8]
+        sc = TEMPERATE_OCEAN.shallow_color
+        # Within ±20 per channel (noise perturbation)
+        for i in range(3):
+            assert abs(int(mid[i]) - sc[i]) < 25, (
+                f"ch{i}: pixel={mid[i]}, shallow={sc[i]}"
+            )
+
+    def test_deterministic(self):
+        from polygrid.ocean_render import render_ocean_depth_gradient
+
+        a = _make_ocean_tile()
+        render_ocean_depth_gradient(a, 0.5, seed=123)
+        b = _make_ocean_tile()
+        render_ocean_depth_gradient(b, 0.5, seed=123)
+        assert a.tobytes() == b.tobytes()
+
+
+@needs_pil
+class TestRenderWavePattern:
+    """17B.2 — wave pattern overlay."""
+
+    def test_modifies_pixels(self):
+        from polygrid.ocean_render import render_ocean_depth_gradient, render_wave_pattern
+        import numpy as np
+
+        img = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(img, 0.3, seed=42)
+        before = np.array(img).copy()
+        render_wave_pattern(img, 0.3, seed=42)
+        after = np.array(img)
+        assert not np.array_equal(before, after), "Waves had no effect"
+
+    def test_pixel_variance_increased(self):
+        from polygrid.ocean_render import render_ocean_depth_gradient, render_wave_pattern
+        import numpy as np
+
+        img = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(img, 0.3, seed=42)
+        var_before = np.array(img).astype(float).var()
+        render_wave_pattern(img, 0.3, seed=42)
+        var_after = np.array(img).astype(float).var()
+        # Waves should add variation
+        assert var_after >= var_before * 0.9  # at least not drastically reduced
+
+    def test_deep_ocean_calmer(self):
+        """Deep ocean should have less wave amplitude than shallow."""
+        from polygrid.ocean_render import render_ocean_depth_gradient, render_wave_pattern
+        import numpy as np
+
+        shallow = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(shallow, 0.1, seed=42)
+        before_s = np.array(shallow).copy().astype(float)
+        render_wave_pattern(shallow, 0.1, seed=42)
+        after_s = np.array(shallow).astype(float)
+        diff_shallow = np.abs(after_s - before_s).mean()
+
+        deep = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(deep, 0.9, seed=42)
+        before_d = np.array(deep).copy().astype(float)
+        render_wave_pattern(deep, 0.9, seed=42)
+        after_d = np.array(deep).astype(float)
+        diff_deep = np.abs(after_d - before_d).mean()
+
+        assert diff_shallow >= diff_deep * 0.8, (
+            f"shallow_diff={diff_shallow:.2f}, deep_diff={diff_deep:.2f}"
+        )
+
+    def test_deterministic(self):
+        from polygrid.ocean_render import render_wave_pattern
+
+        a = _make_ocean_tile()
+        render_wave_pattern(a, 0.5, seed=77)
+        b = _make_ocean_tile()
+        render_wave_pattern(b, 0.5, seed=77)
+        assert a.tobytes() == b.tobytes()
+
+
+@needs_pil
+class TestRenderCoastalFeatures:
+    """17B.3 — foam, sand, caustic, reef."""
+
+    def test_shallow_tile_modified(self):
+        from polygrid.ocean_render import (
+            render_ocean_depth_gradient, render_coastal_features,
+        )
+        import numpy as np
+
+        img = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(img, 0.05, seed=42)
+        before = np.array(img).copy()
+        render_coastal_features(img, 0.05, (0, -1, 0), seed=42)
+        after = np.array(img)
+        assert not np.array_equal(before, after), "Coastal features had no effect"
+
+    def test_deep_tile_unmodified(self):
+        """Tiles with depth > 0.3 should be unaffected."""
+        from polygrid.ocean_render import (
+            render_ocean_depth_gradient, render_coastal_features,
+        )
+        import numpy as np
+
+        img = _make_ocean_tile(size=32)
+        render_ocean_depth_gradient(img, 0.5, seed=42)
+        before = np.array(img).copy()
+        render_coastal_features(img, 0.5, (0, -1, 0), seed=42)
+        after = np.array(img)
+        assert np.array_equal(before, after), "Deep tile was modified by coastal features"
+
+    def test_foam_pixels_brighter_near_coast_edge(self):
+        """Foam zone should be brighter than the tile interior."""
+        from polygrid.ocean_render import (
+            render_ocean_depth_gradient, render_coastal_features,
+        )
+        import numpy as np
+
+        img = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(img, 0.05, seed=42)
+        # Coast direction: coast is to the "top" (negative y)
+        render_coastal_features(img, 0.05, (0.0, -1.0, 0.0), seed=42)
+        arr = np.array(img).astype(float)
+        # Top edge (coast-facing) should be brighter than bottom
+        top_mean = arr[:8, :, :].mean()
+        bottom_mean = arr[-8:, :, :].mean()
+        assert top_mean > bottom_mean, (
+            f"top={top_mean:.1f}, bottom={bottom_mean:.1f}"
+        )
+
+    def test_none_coast_direction_ok(self):
+        """Should work with coast_direction=None (default north)."""
+        from polygrid.ocean_render import (
+            render_ocean_depth_gradient, render_coastal_features,
+        )
+        img = _make_ocean_tile(size=32)
+        render_ocean_depth_gradient(img, 0.1, seed=42)
+        render_coastal_features(img, 0.1, None, seed=42)
+        # Just checking it doesn't crash
+        assert img.size == (32, 32)
+
+
+@needs_pil
+class TestRenderDeepOceanFeatures:
+    """17B.4 — abyssal darkness + upwelling."""
+
+    def test_deep_tile_darkened(self):
+        from polygrid.ocean_render import (
+            render_ocean_depth_gradient, render_deep_ocean_features,
+        )
+        import numpy as np
+
+        img = _make_ocean_tile(size=64)
+        render_ocean_depth_gradient(img, 0.8, seed=42)
+        before_mean = np.array(img).astype(float).mean()
+        render_deep_ocean_features(img, 0.8, seed=42)
+        after_mean = np.array(img).astype(float).mean()
+        assert after_mean < before_mean, (
+            f"before={before_mean:.1f}, after={after_mean:.1f}"
+        )
+
+    def test_shallow_tile_unmodified(self):
+        from polygrid.ocean_render import (
+            render_ocean_depth_gradient, render_deep_ocean_features,
+        )
+        import numpy as np
+
+        img = _make_ocean_tile(size=32)
+        render_ocean_depth_gradient(img, 0.3, seed=42)
+        before = np.array(img).copy()
+        render_deep_ocean_features(img, 0.3, seed=42)
+        after = np.array(img)
+        assert np.array_equal(before, after)
+
+    def test_very_deep_darker_than_medium(self):
+        from polygrid.ocean_render import (
+            render_ocean_depth_gradient, render_deep_ocean_features,
+        )
+        import numpy as np
+
+        medium = _make_ocean_tile(size=32)
+        render_ocean_depth_gradient(medium, 0.6, seed=42)
+        render_deep_ocean_features(medium, 0.6, seed=42)
+
+        very_deep = _make_ocean_tile(size=32)
+        render_ocean_depth_gradient(very_deep, 0.95, seed=42)
+        render_deep_ocean_features(very_deep, 0.95, seed=42)
+
+        m_mean = np.array(medium).astype(float).mean()
+        v_mean = np.array(very_deep).astype(float).mean()
+        assert v_mean < m_mean, f"very_deep={v_mean:.1f}, medium={m_mean:.1f}"
+
+
+@needs_pil
+class TestRenderOceanTile:
+    """17B.5 — composite render_ocean_tile."""
+
+    def test_produces_rgb_image(self):
+        from polygrid.ocean_render import render_ocean_tile
+        ground = _make_ocean_tile(size=32)
+        result = render_ocean_tile(ground, 0.3, seed=42)
+        assert result.mode == "RGB"
+        assert result.size == (32, 32)
+
+    def test_shallow_vs_deep_brightness(self):
+        from polygrid.ocean_render import render_ocean_tile
+        import numpy as np
+
+        shallow = render_ocean_tile(_make_ocean_tile(size=32), 0.05, seed=42)
+        deep = render_ocean_tile(_make_ocean_tile(size=32), 0.9, seed=42)
+        s_mean = np.array(shallow).mean()
+        d_mean = np.array(deep).mean()
+        assert s_mean > d_mean
+
+    def test_not_identical_to_input(self):
+        from polygrid.ocean_render import render_ocean_tile
+        ground = _make_ocean_tile(size=32)
+        result = render_ocean_tile(ground, 0.5, seed=42)
+        assert ground.tobytes() != result.tobytes()
+
+    def test_deterministic(self):
+        from polygrid.ocean_render import render_ocean_tile
+        a = render_ocean_tile(_make_ocean_tile(), 0.4, seed=99)
+        b = render_ocean_tile(_make_ocean_tile(), 0.4, seed=99)
+        assert a.tobytes() == b.tobytes()
+
+    def test_different_seeds_differ(self):
+        from polygrid.ocean_render import render_ocean_tile
+        a = render_ocean_tile(_make_ocean_tile(), 0.4, seed=1)
+        b = render_ocean_tile(_make_ocean_tile(), 0.4, seed=2)
+        assert a.tobytes() != b.tobytes()

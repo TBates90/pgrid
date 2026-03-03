@@ -303,6 +303,11 @@ from .ocean_render import (
     identify_ocean_tiles,
     compute_ocean_depth_map,
     compute_coast_direction,
+    render_ocean_depth_gradient,
+    render_wave_pattern,
+    render_coastal_features,
+    render_deep_ocean_features,
+    render_ocean_tile,
 )
 from .region_stitch import (
     FaceMapping,
@@ -623,6 +628,11 @@ __all__ = [
     "identify_ocean_tiles",
     "compute_ocean_depth_map",
     "compute_coast_direction",
+    "render_ocean_depth_gradient",
+    "render_wave_pattern",
+    "render_coastal_features",
+    "render_deep_ocean_features",
+    "render_ocean_tile",
     # Biome pipeline (Phase 14D)
     "BiomeRenderer",
     "ForestRenderer",

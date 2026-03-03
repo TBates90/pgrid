@@ -243,35 +243,21 @@ Ocean tiles border land tiles. Phase 16's soft edge blending (16B) will cross-fa
   - `TestComputeOceanDepthMap` (7): all ocean tiles present, values [0,1], land not in map, coastal < deep, empty set, all-ocean, elevation-weight dominance
   - `TestComputeCoastDirection` (2): coastal has unit vector, deep ocean returns None
 
-### 17B — Ocean Texture Rendering (`ocean_render.py`) 🔲
+### 17B — Ocean Texture Rendering (`ocean_render.py`) ✅
 
 Pixel-level rendering of ocean features onto tile textures.
 
-- [ ] **17B.1 — `render_ocean_depth_gradient(image, depth, config)` → None** — fill the tile with a depth-dependent colour gradient. Uses cubic interpolation between shallow/deep/abyssal colours based on the tile's depth value. Not a flat fill — adds subtle spatial variation using low-frequency noise.
+- [x] **17B.1 — `render_ocean_depth_gradient()`** — fills tile with depth-dependent colour gradient. Three-stop interpolation (shallow→deep→abyssal) controlled by `depth_gradient_power`. Low-frequency FBM noise (±8% depth perturbation) for spatial variation. 4 tests: shallow brighter than deep, not flat, zero-depth ≈ shallow_color, deterministic.
 
-- [ ] **17B.2 — `render_wave_pattern(image, depth, config)` → None** — overlay a subtle wave texture:
-  - Low-frequency sinusoidal ridges modulated by noise for natural wave patterns
-  - Wave amplitude decreases with depth (deep ocean = calmer surface)
-  - Orientation varies by latitude (trade winds, westerlies)
-  - Rendered as subtle brightness variation (±3-5% of base colour)
+- [x] **17B.2 — `render_wave_pattern()`** — baked wave overlay. Dual sinusoidal ridges (horizontal + diagonal) with FBM noise modulation. Amplitude attenuated by depth (deep = 0.2× shallow). Brightness variation ±4%. 4 tests: modifies pixels, variance, deep calmer, deterministic.
 
-- [ ] **17B.3 — `render_coastal_features(image, depth, coast_direction, config)` → None** — for shallow ocean tiles near coast:
-  - Foam/surf line: white band along the coast-facing edge
-  - Shallow-water sand visibility: warm beige-green blend where depth < 0.1
-  - Reef patches: irregular darker/lighter spots in shallow water (noise-based)
-  - Caustic ripple pattern: bright undulating network (underwater light refraction)
+- [x] **17B.3 — `render_coastal_features()`** — foam, sand, caustics, reefs for `depth < 0.3`. Coast direction projects to 2D for edge-localised effects. Foam band with noise breakup. Shallow sand blend at `depth < 0.1`. Caustic sin×sin pattern at `depth < 0.2`. Reef patches via `_render_reef_patches()` (probability-gated). 4 tests: modifies shallow, skips deep, foam brighter near coast, None direction ok.
 
-- [ ] **17B.4 — `render_deep_ocean_features(image, depth, config)` → None** — for deep ocean tiles:
-  - Abyssal darkness: colour tends toward near-black blue
-  - Occasional lighter patches: upwelling/current indicators (very subtle noise)
-  - Minimal wave texture (deep ocean surface is smoother)
+- [x] **17B.4 — `render_deep_ocean_features()`** — abyssal darkening (up to 25%) + subtle upwelling lighter patches via FBM. Active only when `depth > 0.5`. 3 tests: darkened, shallow unmodified, very deep < medium.
 
-- [ ] **17B.5 — Tests:**
-  - Depth gradient: shallow tile has higher RGB mean than deep tile
-  - Wave pattern: pixel variance > 0 (not flat)
-  - Coastal features: foam pixels near edge are brighter than interior
-  - Deep ocean: average brightness lower than shallow ocean
-  - Empty/zero-depth tile: returns plausible shallow ocean
+- [x] **17B.5 — `render_ocean_tile()` composite** — applies all four layers in order (gradient → waves → coastal → deep). Returns RGB copy. Also: `_depth_color()`, `_lerp_color()` helpers. 5 tests: RGB output, shallow vs deep brightness, differs from input, deterministic, seed-sensitive.
+
+- [x] **17B.6 — Tests:** 20 new tests in `test_ocean_render.py` (total 39 including 17A).
 
 ### 17C — Ocean Pipeline Integration 🔲
 
