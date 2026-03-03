@@ -231,34 +231,17 @@ The land-ocean boundary is the most visually critical zone. Options:
 
 Ocean tiles border land tiles. Phase 16's soft edge blending (16B) will cross-fade ocean and land textures at boundaries. This must look correct — the fade zone should produce a natural beach/coast gradient, not a murky green-blue blend. May need special-case handling for ocean↔land boundaries.
 
-### 17A — Ocean Feature Configuration 🔲
+### 17A — Ocean Feature Configuration ✅
 
-- [ ] **17A.1 — `OceanFeatureConfig` dataclass** — tuneable parameters:
-  - `shallow_color` — `(r, g, b)` for shallow coastal water (turquoise)
-  - `deep_color` — `(r, g, b)` for deep ocean (dark navy)
-  - `abyssal_color` — `(r, g, b)` for very deep ocean (near-black blue)
-  - `coastal_foam_color` — `(r, g, b)` for surf/foam (white/cream)
-  - `depth_gradient_power` — controls shallow→deep transition curve
-  - `wave_frequency` — spatial frequency of baked wave texture
-  - `wave_amplitude` — visual strength of wave pattern in texture
-  - `foam_width` — width of coastal foam band in pixels
-  - `caustic_frequency` — underwater caustic pattern frequency
-  - `caustic_strength` — visual intensity of caustic patterns
-  - `ice_latitude_threshold` — latitude above which ocean becomes icy
-  - `reef_probability` — chance of shallow-water reef colour patches
-  - Presets: `TROPICAL_OCEAN`, `TEMPERATE_OCEAN`, `ARCTIC_OCEAN`, `DEEP_OCEAN`
+- [x] **17A.1 — `OceanFeatureConfig` dataclass** in `ocean_render.py` — frozen dataclass with 14 tuneable parameters: `shallow_color`, `deep_color`, `abyssal_color`, `coastal_foam_color`, `sand_color`, `depth_gradient_power`, `wave_frequency`, `wave_amplitude`, `foam_width`, `caustic_frequency`, `caustic_strength`, `ice_latitude_threshold`, `reef_probability`, `density_scale`. Four presets: `TROPICAL_OCEAN`, `TEMPERATE_OCEAN`, `ARCTIC_OCEAN`, `DEEP_OCEAN` in `OCEAN_PRESETS` dict.
 
-- [ ] **17A.2 — `compute_ocean_depth_map(globe_grid, globe_store)` → `Dict[str, float]`** — globe-wide ocean depth map:
-  1. Identify ocean tiles (elevation < water_level)
-  2. Compute BFS distance from nearest land tile
-  3. Combine: `depth = (water_level - elevation) * distance_factor`
-  4. Normalise to [0, 1] (0 = coastline, 1 = deepest ocean)
+- [x] **17A.2 — `compute_ocean_depth_map()`** — hybrid elevation + BFS-distance depth. Multi-source BFS seeds from all land tiles bordering ocean. `elevation_weight`/`distance_weight` control the mix. Also: `identify_ocean_tiles()` (like `identify_forest_tiles` for ocean) and `compute_coast_direction()` (unit 3D vector toward nearest land).
 
-- [ ] **17A.3 — Tests:**
-  - Config presets have valid colour tuples
-  - Depth map: coastal tiles have depth ≈ 0, deep tiles ≈ 1
-  - All ocean tiles present in depth map
-  - Land tiles not in depth map (or have depth 0)
+- [x] **17A.3 — Tests:** 19 tests in `test_ocean_render.py`:
+  - `TestOceanFeatureConfig` (7): defaults valid, presets exist, valid colours, positive frequencies, shallow brighter than deep, frozen, custom config
+  - `TestIdentifyOceanTiles` (3): finds ocean, no ocean, custom terrain type
+  - `TestComputeOceanDepthMap` (7): all ocean tiles present, values [0,1], land not in map, coastal < deep, empty set, all-ocean, elevation-weight dominance
+  - `TestComputeCoastDirection` (2): coastal has unit vector, deep ocean returns None
 
 ### 17B — Ocean Texture Rendering (`ocean_render.py`) 🔲
 

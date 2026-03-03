@@ -293,6 +293,17 @@ from .biome_continuity import (
     compute_biome_transition_mask,
     stitch_feature_boundary,
 )
+from .ocean_render import (
+    OceanFeatureConfig,
+    TROPICAL_OCEAN,
+    TEMPERATE_OCEAN,
+    ARCTIC_OCEAN,
+    DEEP_OCEAN,
+    OCEAN_PRESETS,
+    identify_ocean_tiles,
+    compute_ocean_depth_map,
+    compute_coast_direction,
+)
 from .region_stitch import (
     FaceMapping,
     stitch_detail_grids,
@@ -602,6 +613,16 @@ __all__ = [
     "get_tile_margin_features",
     "compute_biome_transition_mask",
     "stitch_feature_boundary",
+    # Ocean biome (Phase 17A)
+    "OceanFeatureConfig",
+    "TROPICAL_OCEAN",
+    "TEMPERATE_OCEAN",
+    "ARCTIC_OCEAN",
+    "DEEP_OCEAN",
+    "OCEAN_PRESETS",
+    "identify_ocean_tiles",
+    "compute_ocean_depth_map",
+    "compute_coast_direction",
     # Biome pipeline (Phase 14D)
     "BiomeRenderer",
     "ForestRenderer",
