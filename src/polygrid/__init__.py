@@ -343,9 +343,17 @@ from .detail_perf import (
     generate_all_detail_terrain_parallel,
     render_detail_texture_fast,
     build_detail_atlas_fast,
+    build_detail_atlas_fullslot,
     DetailCache,
     generate_all_detail_terrain_cached,
     benchmark_pipeline,
+)
+
+# ── Tile texture — full-slot rendering (Phase 16A) ──────────────────
+from .tile_texture import (
+    build_face_lookup,
+    interpolate_at_pixel,
+    render_detail_texture_fullslot,
 )
 
 # ── Diagnostics ─────────────────────────────────────────────────────
@@ -614,9 +622,14 @@ __all__ = [
     "generate_all_detail_terrain_parallel",
     "render_detail_texture_fast",
     "build_detail_atlas_fast",
+    "build_detail_atlas_fullslot",
     "DetailCache",
     "generate_all_detail_terrain_cached",
     "benchmark_pipeline",
+    # Tile texture — full-slot rendering (Phase 16A)
+    "build_face_lookup",
+    "interpolate_at_pixel",
+    "render_detail_texture_fullslot",
     # Render enhanced (Phase 11E)
     "OCEAN_BIOME",
     "VEGETATION_BIOME",

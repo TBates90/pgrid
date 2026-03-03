@@ -343,6 +343,109 @@ def build_detail_atlas_fast(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 16A — Full-slot atlas builder (uses tile_texture renderer)
+# ═══════════════════════════════════════════════════════════════════
+
+def build_detail_atlas_fullslot(
+    collection: DetailGridCollection,
+    biome: Optional[BiomeConfig] = None,
+    output_dir: Path | str = Path("exports/detail_tiles"),
+    *,
+    tile_size: int = 256,
+    columns: int = 0,
+    noise_seed: int = 0,
+    gutter: int = 4,
+    k_neighbours: int = 4,
+    overscan: float = 0.15,
+) -> Tuple[Path, Dict[str, Tuple[float, float, float, float]]]:
+    """Build a detail atlas using the full-slot renderer (Phase 16A).
+
+    Same interface as :func:`build_detail_atlas_fast` but uses
+    :func:`~polygrid.tile_texture.render_detail_texture_fullslot`
+    which fills every pixel with coherent terrain colour —
+    no flat-fill background.
+
+    Returns
+    -------
+    tuple
+        ``(atlas_path, uv_layout)``
+    """
+    from PIL import Image
+    from .texture_pipeline import _fill_gutter
+    from .tile_texture import render_detail_texture_fullslot
+
+    if biome is None:
+        biome = BiomeConfig()
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    face_ids = collection.face_ids
+    n = len(face_ids)
+    if n == 0:
+        raise ValueError("No detail grids in the collection")
+
+    # Render individual tiles with full-slot renderer
+    tile_paths: Dict[str, Path] = {}
+    for fid in face_ids:
+        grid, store = collection.get(fid)
+        if store is None:
+            raise ValueError(
+                f"No terrain store for face '{fid}' — "
+                "call generate_all_detail_terrain first"
+            )
+        path = output_dir / f"tile_{fid}.png"
+        render_detail_texture_fullslot(
+            grid, store, path, biome,
+            tile_size=tile_size,
+            noise_seed=noise_seed + hash(fid) % 10000,
+            k_neighbours=k_neighbours,
+            overscan=overscan,
+        )
+        tile_paths[fid] = path
+
+    # Compute atlas layout
+    if columns <= 0:
+        columns = max(1, math.isqrt(n))
+        if columns * columns < n:
+            columns += 1
+    rows = math.ceil(n / columns)
+
+    slot_size = tile_size + 2 * gutter
+    atlas_w = columns * slot_size
+    atlas_h = rows * slot_size
+    atlas = Image.new("RGB", (atlas_w, atlas_h), (128, 128, 128))
+
+    uv_layout: Dict[str, Tuple[float, float, float, float]] = {}
+
+    for idx, fid in enumerate(face_ids):
+        col = idx % columns
+        row = idx // columns
+        slot_x = col * slot_size
+        slot_y = row * slot_size
+
+        tile_img = Image.open(tile_paths[fid]).convert("RGB")
+        tile_img = tile_img.resize((tile_size, tile_size), Image.LANCZOS)
+        atlas.paste(tile_img, (slot_x + gutter, slot_y + gutter))
+
+        if gutter > 0:
+            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+
+        inner_x = slot_x + gutter
+        inner_y = slot_y + gutter
+        u_min = inner_x / atlas_w
+        u_max = (inner_x + tile_size) / atlas_w
+        v_min = 1.0 - (inner_y + tile_size) / atlas_h
+        v_max = 1.0 - inner_y / atlas_h
+        uv_layout[fid] = (u_min, v_min, u_max, v_max)
+
+    atlas_path = output_dir / "detail_atlas.png"
+    atlas.save(str(atlas_path))
+
+    return atlas_path, uv_layout
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 10F.4 — Detail grid / texture caching
 # ═══════════════════════════════════════════════════════════════════
 

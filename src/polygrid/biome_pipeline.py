@@ -155,6 +155,7 @@ def build_feature_atlas(
     columns: int = 0,
     noise_seed: int = 0,
     gutter: int = 4,
+    fullslot: bool = False,
 ) -> Tuple[Path, Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas with biome feature overlays.
 
@@ -181,6 +182,10 @@ def build_feature_atlas(
     columns : int
     noise_seed : int
     gutter : int
+    fullslot : bool
+        When *True*, use the Phase 16A full-slot renderer that fills
+        every pixel with coherent terrain (no flat-fill background).
+        Default *False* for backward compatibility.
 
     Returns
     -------
@@ -205,6 +210,13 @@ def build_feature_atlas(
     # Default renderer is the first one
     default_renderer = next(iter(biome_renderers.values())) if biome_renderers else None
 
+    # Optionally use full-slot renderer (Phase 16A)
+    if fullslot:
+        from .tile_texture import render_detail_texture_fullslot
+        _render_ground = render_detail_texture_fullslot
+    else:
+        _render_ground = render_detail_texture_enhanced
+
     face_ids = collection.face_ids
     n = len(face_ids)
     if n == 0:
@@ -221,7 +233,7 @@ def build_feature_atlas(
             )
 
         ground_path = output_dir / f"tile_{fid}.png"
-        render_detail_texture_enhanced(
+        _render_ground(
             grid, store, ground_path, biome_config,
             tile_size=tile_size,
             noise_seed=noise_seed + hash(fid) % 10000,
