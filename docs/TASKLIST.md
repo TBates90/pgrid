@@ -527,37 +527,15 @@ Output proper texture assets suitable for game engines.
 - [x] **18D.5 — glTF 2.0 export** — `export_globe_gltf()` with embedded base64 buffers/textures, PBR metallic-roughness material, positions/normals/UVs
 - [x] **18D.6 — Tests:** 36 tests in `tests/test_texture_export.py` covering PoT, mipmaps, KTX2 header structure, ORM channels, material set, glTF structure
 
-### 18E — Visual Cohesion & Demo 🔲
+### 18E — Visual Cohesion & Demo ✅
 
 Integration testing and visual tuning to verify the cohesion improvements.
 
-- [ ] **18E.1 — Seam elimination verification** — render a globe and measure tile boundary visibility:
-  - Sample pixel colours along tile boundaries vs tile interiors
-  - The colour variance at boundaries should be within 2× of interior variance
-  - Visual comparison: before (Phase 17) vs after (Phase 18)
-
-- [ ] **18E.2 — Topology feature verification** — verify features follow sub-face structure:
-  - Trees sit at sub-face centroids (not arbitrary pixel positions)
-  - Ocean depth varies smoothly across sub-faces
-  - Feature placement is consistent across tile boundaries (apron overlap)
-
-- [ ] **18E.3 — Demo script `scripts/demo_cohesive_globe.py`** — updated viewer showcasing all improvements:
-  - Apron rendering (seamless tile boundaries)
-  - Topology-aware forests + oceans
-  - Material export (KTX2 + glTF preview)
-  - Side-by-side: old pipeline vs new pipeline
-  - `python scripts/demo_cohesive_globe.py -f 3 --detail-rings 4 --terrain earthlike --features --view`
-
-- [ ] **18E.4 — Performance budget** — ensure apron rendering doesn't blow up render times:
-  - Target: apron pipeline < 2× baseline (apron adds ~30% more sub-faces per tile)
-  - Profile atlas build time at freq=3, rings=4, tile_size=256
-  - Consider caching apron grids if build time is an issue
-
-- [ ] **18E.5 — Tests:**
-  - Full pipeline (terrain → apron → atlas → viewer) runs without error
-  - Atlas with apron gutters produces visibly better results
-  - glTF export loads in a standard viewer
-  - Performance regression test
+- [x] **18E.1 — Seam elimination verification** — `sample_boundary_pixels()`, `sample_interior_pixels()`, `measure_seam_visibility()` in `visual_cohesion.py`; boundary/interior variance ratio metric
+- [x] **18E.2 — Topology feature verification** — `verify_topology_features()` checks tree centroid placement, ocean depth assignment, and determinism
+- [x] **18E.3 — Demo script `scripts/demo_phase18_globe.py`** — side-by-side baseline vs apron vs apron+biomes; `--view` for 3D viewer, `--export` for KTX2/glTF, `--bench` for performance
+- [x] **18E.4 — Performance budget** — `benchmark_apron_pipeline()` compares apron vs baseline atlas time; target < 2× overhead
+- [x] **18E.5 — Tests:** 19 in `tests/test_visual_cohesion.py` (16 fast + 3 slow integration) — seam measurement, topology checks, full pipeline end-to-end with export
 
 ### Summary — Phase 18 Implementation Order
 

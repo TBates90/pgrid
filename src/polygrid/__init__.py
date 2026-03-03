@@ -424,6 +424,16 @@ from .texture_export import (
     export_globe_gltf,
 )
 
+# ── Visual cohesion validation (Phase 18E) ──────────────────────────
+from .visual_cohesion import (
+    sample_boundary_pixels,
+    sample_interior_pixels,
+    measure_seam_visibility,
+    verify_topology_features,
+    run_full_pipeline,
+    benchmark_apron_pipeline,
+)
+
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
     ring_diagnostics,
@@ -759,6 +769,13 @@ __all__ = [
     "build_orm_atlas",
     "build_material_set",
     "export_globe_gltf",
+    # Visual cohesion (Phase 18E)
+    "sample_boundary_pixels",
+    "sample_interior_pixels",
+    "measure_seam_visibility",
+    "verify_topology_features",
+    "run_full_pipeline",
+    "benchmark_apron_pipeline",
     # Render enhanced (Phase 11E)
     "OCEAN_BIOME",
     "VEGETATION_BIOME",
