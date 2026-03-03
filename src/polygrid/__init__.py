@@ -248,6 +248,11 @@ from .apron_grid import (
     compute_edge_subface_mapping,
     propagate_apron_terrain,
 )
+from .apron_texture import (
+    render_detail_texture_apron,
+    build_apron_atlas,
+    build_apron_feature_atlas,
+)
 from .detail_terrain_3d import (
     Terrain3DSpec,
     compute_subface_3d_position,
@@ -591,6 +596,10 @@ __all__ = [
     "classify_boundary_subfaces",
     "compute_edge_subface_mapping",
     "propagate_apron_terrain",
+    # Apron texture (Phase 18B)
+    "render_detail_texture_apron",
+    "build_apron_atlas",
+    "build_apron_feature_atlas",
     # Detail render (Phase 10C)
     "BiomeConfig",
     "detail_elevation_to_colour",
