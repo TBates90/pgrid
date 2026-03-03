@@ -2,11 +2,75 @@ import sys
 from pathlib import Path
 from functools import lru_cache
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+
+# ═══════════════════════════════════════════════════════════════════
+# Auto-apply speed-tier markers based on test-file grouping
+# ═══════════════════════════════════════════════════════════════════
+# Mirrors the groupings in scripts/run_tests.py so that
+#   pytest -m fast        → only fast tests  (~3s total)
+#   pytest -m "not slow"  → skip the expensive globe tests
+#   pytest -m medium      → mid-tier only
+
+_FILE_TIER: dict[str, str] = {
+    # Phase 1-4 — fast
+    "test_adjacency.py": "fast",
+    "test_rings.py": "fast",
+    "test_build_hex.py": "fast",
+    "test_hex_shape.py": "fast",
+    "test_serialization.py": "fast",
+    "test_composite.py": "fast",
+    "test_stitching.py": "fast",
+    "test_assembly.py": "fast",
+    "test_macro_edges.py": "fast",
+    "test_pentagon_centered.py": "fast",
+    "test_transforms.py": "fast",
+    "test_diagnostics.py": "fast",
+    "test_visualize.py": "fast",
+    # Phase 5-7 — fast
+    "test_tile_data.py": "fast",
+    "test_regions.py": "fast",
+    "test_noise.py": "fast",
+    "test_heightmap.py": "fast",
+    "test_mountains.py": "fast",
+    "test_rivers.py": "fast",
+    "test_pipeline.py": "fast",
+    "test_terrain_render.py": "fast",
+    "test_determinism.py": "fast",
+    # Phase 2 — medium
+    "test_goldberg.py": "medium",
+    # Phase 8-9 — slow
+    "test_globe.py": "slow",
+    # Phase 10 — medium
+    "test_tile_detail.py": "medium",
+    "test_detail_render.py": "medium",
+    "test_detail_perf.py": "medium",
+    # Phase 11 — medium
+    "test_detail_terrain.py": "medium",
+    "test_detail_terrain_3d.py": "medium",
+    "test_terrain_patches.py": "medium",
+    "test_globe_terrain.py": "medium",
+    "test_region_stitch.py": "medium",
+    "test_render_enhanced.py": "medium",
+    "test_texture_pipeline.py": "medium",
+    # Phase 12-13 — medium
+    "test_globe_renderer_v2.py": "medium",
+    "test_phase13_rendering.py": "medium",
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Automatically tag every test item with fast / medium / slow."""
+    for item in items:
+        fname = Path(item.fspath).name
+        tier = _FILE_TIER.get(fname, "fast")  # default unlisted files to fast
+        item.add_marker(getattr(pytest.mark, tier))
 
 # ═══════════════════════════════════════════════════════════════════
 # Cached globe builders — shared across all test files

@@ -22,3 +22,9 @@ polygrid = "polygrid.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "fast: Tests that run in < 3s per file (Phases 1-4, 5-7)",
+    "medium: Tests that run in 3-30s per file (Goldberg, detail, rendering)",
+    "slow: Tests that run in > 30s per file (globe integration)",
+    "needs_models: Requires the models library (Goldberg polyhedra)",
+]
