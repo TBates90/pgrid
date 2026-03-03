@@ -433,6 +433,22 @@ from .visual_cohesion import (
     run_full_pipeline,
     benchmark_apron_pipeline,
 )
+from .coastline import (
+    CoastlineConfig,
+    GENTLE_COAST,
+    RUGGED_COAST,
+    ARCHIPELAGO_COAST,
+    COASTLINE_PRESETS,
+    TileBiomeContext,
+    classify_tile_biome_context,
+    classify_all_tiles,
+    compute_edge_direction,
+    compute_coastline_mask,
+    CoastlineMask,
+    build_coastline_mask,
+    blend_biome_images,
+    render_coastal_strip,
+)
 
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
@@ -776,6 +792,21 @@ __all__ = [
     "verify_topology_features",
     "run_full_pipeline",
     "benchmark_apron_pipeline",
+    # Coastline transitions (Phase 19)
+    "CoastlineConfig",
+    "GENTLE_COAST",
+    "RUGGED_COAST",
+    "ARCHIPELAGO_COAST",
+    "COASTLINE_PRESETS",
+    "TileBiomeContext",
+    "classify_tile_biome_context",
+    "classify_all_tiles",
+    "compute_edge_direction",
+    "compute_coastline_mask",
+    "CoastlineMask",
+    "build_coastline_mask",
+    "blend_biome_images",
+    "render_coastal_strip",
     # Render enhanced (Phase 11E)
     "OCEAN_BIOME",
     "VEGETATION_BIOME",
