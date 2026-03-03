@@ -1275,6 +1275,240 @@ Forest canopy features add visual detail at the texture level. The existing norm
 
 ---
 
+## Phase 15 — Test Infrastructure Overhaul 🔲
+
+**Goal:** Restructure the test suite for faster execution, clearer progress output, removal of duplicate tests, and a single-command runner that groups tests by phase/speed and gives real-time terminal feedback.
+
+### Problem analysis — current state
+
+The test suite has grown to **1,101 tests across 36 files** as phases 1–13 accumulated. Several problems have emerged:
+
+**1. The `test_globe.py` monolith (3,025 lines, 217 tests, 82.7s)**
+This file was the original Phase 8–10 test file that grew as each sub-phase was developed. Later, dedicated test files were created for each module (e.g. `test_tile_detail.py`, `test_detail_terrain.py`, `test_detail_render.py`, `test_texture_pipeline.py`, `test_detail_perf.py`), but the original classes in `test_globe.py` were never removed. The result is **~97 duplicate tests** — classes in `test_globe.py` that test the same code already covered by dedicated files:
+
+| `test_globe.py` class | Tests | Dedicated file | Tests | Status |
+|------------------------|-------|----------------|-------|--------|
+| `TestDetailGrid` | 16 | `test_tile_detail.py` | 19 | Duplicate |
+| `TestTileDetail` | 24 | `test_tile_detail.py` | 19 | Duplicate |
+| `TestDetailTerrain` | 19 | `test_detail_terrain.py` | 15 | Duplicate |
+| `TestDetailRender` | 12 | `test_detail_render.py` | 26 | Duplicate |
+| `TestTexturePipeline` | 11 | `test_texture_pipeline.py` | 9 | Duplicate |
+| `TestTexturedRenderer` | 10 | (partial overlap with renderer_v2) | — | Duplicate |
+| `TestDetailPerf` | 15 | `test_detail_perf.py` | 15 | Duplicate |
+| **Total duplicates** | **~97** | | | |
+
+Removing these saves ~1,800 lines and ~40s of execution time.
+
+**2. Cold-start cost per subprocess**
+The `conftest.py` caching (lru_cache for globe grids + monkeypatched `DetailGridCollection.build`) works well *within* a single pytest process. But when timing tests per-file (or running with pytest-xdist), each subprocess rebuilds from scratch. The globe build (~15-20s) and collection build (~10-15s) are the dominant costs for any file that touches globe data.
+
+**3. No progress visibility**
+Running `pytest tests/` produces a wall of dots with no indication of which phase or file is running, how long each took, or what's slow. Developers get no feedback during the long globe-build phases.
+
+**4. Per-file timing breakdown (measured with isolated subprocess invocations)**
+
+| File | Tests | Time | ms/test | Category |
+|------|-------|------|---------|----------|
+| `test_globe.py` | 217 | 82.7s | 381 | 🔴 SLOW — monolith + duplicates |
+| `test_tile_detail.py` | 19 | 33.5s | 1763 | 🔴 SLOW — collection build |
+| `test_detail_terrain.py` | 15 | 27.7s | 1847 | 🔴 SLOW — collection build |
+| `test_render_enhanced.py` | 32 | 19.7s | 616 | 🟡 MEDIUM — globe + noise |
+| `test_goldberg.py` | 79 | 18.2s | 230 | 🟡 MEDIUM — topology build |
+| `test_terrain_patches.py` | 22 | 15.4s | 700 | 🟡 MEDIUM — globe + collection |
+| `test_phase13_rendering.py` | 15 | 13.7s | 913 | 🟡 MEDIUM — renderer tests |
+| `test_detail_terrain_3d.py` | 29 | 13.7s | 473 | 🟡 MEDIUM — 3D noise |
+| `test_texture_pipeline.py` | 9 | 13.2s | 1467 | 🟡 MEDIUM — collection build |
+| `test_globe_renderer_v2.py` | 245 | 11.9s | 49 | 🟢 FAST — pure CPU functions |
+| `test_globe_terrain.py` | 17 | 11.7s | 688 | 🟡 MEDIUM — globe + terrain |
+| `test_region_stitch.py` | 19 | 9.4s | 495 | 🟡 MEDIUM — globe build |
+| `test_detail_perf.py` | 15 | 6.6s | 440 | 🟡 MEDIUM — collection perf |
+| `test_detail_render.py` | 26 | 5.8s | 223 | 🟡 MEDIUM — collection build |
+| `test_visualize.py` | 4 | 5.5s | 1375 | 🟡 MEDIUM — matplotlib |
+| `test_assembly.py` | 16 | 3.0s | 188 | 🟢 FAST |
+| `test_macro_edges.py` | 10 | 2.3s | 230 | 🟢 FAST |
+| `test_pentagon_centered.py` | 6 | 2.0s | 333 | 🟢 FAST |
+| `test_terrain_render.py` | 24 | 1.9s | 81 | 🟢 FAST |
+| `test_tile_data.py` | 52 | 1.8s | 35 | 🟢 FAST |
+| `test_pipeline.py` | 20 | 1.7s | 85 | 🟢 FAST |
+| `test_transforms.py` | 15 | 1.7s | 113 | 🟢 FAST |
+| `test_regions.py` | 76 | 1.7s | 22 | 🟢 FAST |
+| `test_stitching.py` | 5 | 1.6s | 320 | 🟢 FAST |
+| `test_diagnostics.py` | 6 | 1.5s | 250 | 🟢 FAST |
+| `test_determinism.py` | 2 | 1.5s | 750 | 🟢 FAST |
+| `test_noise.py` | 40 | 1.4s | 35 | 🟢 FAST |
+| `test_mountains.py` | 16 | 1.5s | 94 | 🟢 FAST |
+| `test_adjacency.py` | 1 | 1.0s | 1000 | 🟢 FAST |
+| `test_hex_shape.py` | 1 | 0.9s | 900 | 🟢 FAST |
+| `test_rings.py` | 1 | 0.9s | 900 | 🟢 FAST |
+| `test_rivers.py` | 25 | 0.9s | 36 | 🟢 FAST |
+| `test_heightmap.py` | 19 | 0.8s | 42 | 🟢 FAST |
+| `test_serialization.py` | 1 | 0.8s | 800 | 🟢 FAST |
+| `test_composite.py` | 1 | 0.8s | 800 | 🟢 FAST |
+| `test_build_hex.py` | 1 | 0.7s | 700 | 🟢 FAST |
+| **TOTAL** | **1,101** | **~5 min** | | |
+
+**Single-process total (no subprocess overhead):** ~3-4 min with conftest caching.
+
+### 15A — Remove Duplicate Tests from `test_globe.py` 🔲
+
+Strip the 7 duplicate test classes from `test_globe.py`, keeping only the unique classes that aren't covered by dedicated test files.
+
+- [ ] **15A.1 — Audit each duplicate class** — for each of the 7 classes listed above, confirm that the dedicated file covers the same or more assertions. Any unique test methods in the `test_globe.py` version that don't appear in the dedicated file should be migrated, not deleted.
+
+- [ ] **15A.2 — Remove duplicate classes** — delete the following from `test_globe.py`:
+  - `TestDetailGrid` (line ~1095)
+  - `TestTileDetail` (line ~1403)
+  - `TestDetailTerrain` (line ~1692)
+  - `TestDetailRender` (line ~2052)
+  - `TestTexturePipeline` (line ~2228)
+  - `TestTexturedRenderer` (line ~2407)
+  - `TestDetailPerf` (line ~2564)
+
+- [ ] **15A.3 — Verify no regressions** — run the full test suite and confirm the same number of *unique* test scenarios pass. The total count drops by ~97 but no coverage is lost.
+
+- [ ] **15A.4 — Result:** `test_globe.py` shrinks from 3,025 lines / 217 tests to ~1,200 lines / ~120 tests. Run time drops from 82.7s to ~35-40s.
+
+### 15B — Pytest Markers & Groups 🔲
+
+Add pytest markers so tests can be run selectively by speed tier or phase.
+
+- [ ] **15B.1 — Define markers in `pyproject.toml` or `pytest.ini`:**
+  ```ini
+  [tool.pytest.ini_options]
+  markers = [
+      "fast: runs in < 3s per file (no globe/collection build)",
+      "medium: runs in 3-20s per file (globe or collection build)",
+      "slow: runs in > 20s per file (monolith, heavy builds)",
+      "phase1: Core topology",
+      "phase2: Goldberg topology",
+      "phase3: Stitching & assembly",
+      "phase4: Transforms & visualisation",
+      "phase5: Tile data",
+      "phase6: Terrain partitioning",
+      "phase7: Terrain algorithms",
+      "phase8: Globe topology",
+      "phase9: Export & 3D",
+      "phase10: Sub-tile detail",
+      "phase11: Cohesive terrain",
+      "phase12: Rendering quality",
+      "phase13: Cohesive rendering",
+  ]
+  ```
+
+- [ ] **15B.2 — Apply markers to all test files** — add `pytestmark = pytest.mark.<tier>` at module level in each test file. Also add phase markers.
+
+- [ ] **15B.3 — Selective run commands:**
+  - `pytest -m fast` — quick smoke test (~25s total)
+  - `pytest -m "not slow"` — skip the heaviest files (~2.5 min)
+  - `pytest -m phase13` — run only Phase 13 tests
+  - `pytest -m "fast or medium"` — everything except the monolith
+
+### 15C — Test Runner Script (`scripts/run_tests.py`) 🔲
+
+A developer-facing script that runs tests with grouped progress, timing, colour output, and optional filtering.
+
+- [ ] **15C.1 — `run_tests.py` with grouped execution:**
+  - Groups test files by phase (1–13) based on a mapping dict
+  - Runs each group via `subprocess` + pytest
+  - Prints phase header before each group
+  - Shows real-time per-file timing and pass/fail counts
+  - Prints a summary table at the end: phase, files, tests, time, status
+  - Colour output: green=pass, red=fail, yellow=warnings
+
+- [ ] **15C.2 — CLI flags:**
+  - `--fast` — only fast-tier files
+  - `--phase N` — only files for phase N
+  - `--file PATTERN` — only files matching a glob
+  - `--parallel N` — run N groups in parallel (using subprocesses, not xdist)
+  - `--verbose` — show individual test names
+  - `--summary-only` — skip per-file output, just the final table
+
+- [ ] **15C.3 — Example output:**
+  ```
+  ══════════════════════════════════════════════════════
+   PolyGrid Test Suite — 1,004 tests across 36 files
+  ══════════════════════════════════════════════════════
+
+  Phase 1-4 — Core Topology & Transforms
+    ✅ test_adjacency.py ................ 1 test     0.9s
+    ✅ test_rings.py .................... 1 test     0.9s
+    ✅ test_build_hex.py ................ 1 test     0.7s
+    ✅ test_hex_shape.py ................ 1 test     0.9s
+    ✅ test_serialization.py ............ 1 test     0.8s
+    ✅ test_composite.py ................ 1 test     0.8s
+    ✅ test_stitching.py ................ 5 tests    1.6s
+    ✅ test_assembly.py ................. 16 tests   3.0s
+    ✅ test_macro_edges.py .............. 10 tests   2.3s
+    ✅ test_pentagon_centered.py ........ 6 tests    2.0s
+    ✅ test_transforms.py ............... 15 tests   1.7s
+    ✅ test_diagnostics.py .............. 6 tests    1.5s
+    ✅ test_visualize.py ................ 4 tests    5.5s
+                                          ─────────────────
+                                          64 tests   22.6s
+
+  Phase 5-7 — Tile Data & Terrain
+    ✅ test_tile_data.py ................ 52 tests   1.8s
+    ✅ test_regions.py .................. 76 tests   1.7s
+    ✅ test_noise.py .................... 40 tests   1.4s
+    ...
+
+  ══════════════════════════════════════════════════════
+   SUMMARY
+  ══════════════════════════════════════════════════════
+   Phase 1-4     64 tests   22.6s  ✅
+   Phase 5-7    213 tests   27.8s  ✅
+   Phase 8-9    169 tests   52.3s  ✅
+   Phase 10     102 tests   41.2s  ✅
+   Phase 11      88 tests   28.4s  ✅
+   Phase 12-13  312 tests   30.1s  ✅
+   Goldberg      79 tests   18.2s  ✅
+  ──────────────────────────────────────────────────────
+   TOTAL       1,004 tests  3m 21s  ✅  ALL PASSED
+  ```
+
+- [ ] **15C.4 — Tests for the runner itself:** basic smoke test that the script runs and returns exit code 0 on the actual suite.
+
+### 15D — Consolidate Small Single-Test Files 🔲
+
+Several Phase 1-4 test files contain only 1 test each: `test_adjacency.py`, `test_build_hex.py`, `test_composite.py`, `test_hex_shape.py`, `test_rings.py`, `test_serialization.py`. These are legacy single-assertion files from early phases.
+
+- [ ] **15D.1 — Merge into `test_core.py`** — combine the 6 single-test files into one `test_core.py` with one class per original file. This reduces file count without losing any coverage.
+
+- [ ] **15D.2 — Remove the original 6 files** — delete after merging.
+
+- [ ] **15D.3 — Update runner mapping** — update `run_tests.py` group mappings.
+
+### 15E — Documentation & CI Integration 🔲
+
+- [ ] **15E.1 — Add testing guide to README or docs** — document how to run tests: full suite, fast tier, by phase, individual file.
+
+- [ ] **15E.2 — Update the "Ongoing" section** in this TASKLIST with the results of the overhaul: new test count, new timing, file structure.
+
+- [ ] **15E.3 — CI config** (stretch) — if GitHub Actions is set up, configure it to run `--fast` on every push and full suite on PRs.
+
+### Summary — Phase 15 Implementation Order
+
+| Step | Deliverable | Impact | Effort |
+|------|------------|--------|--------|
+| 15A | Remove ~97 duplicate tests from `test_globe.py` | -40s runtime, -1,800 lines | Low |
+| 15B | Pytest markers (fast/medium/slow, phase1-13) | Selective test runs | Low |
+| 15C | `run_tests.py` runner with grouped progress output | Developer UX | Medium |
+| 15D | Consolidate 6 single-test files into `test_core.py` | Cleaner file structure | Low |
+| 15E | Documentation + CI | Long-term maintainability | Low |
+
+### Expected outcome
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Total tests | 1,101 | ~1,004 |
+| Test files | 36 | ~31 |
+| `test_globe.py` size | 3,025 lines / 217 tests / 82.7s | ~1,200 lines / ~120 tests / ~35s |
+| Full suite time | ~5 min (subprocess) / ~3.5 min (single process) | ~3.5 min (subprocess) / ~2.5 min (single process) |
+| Fast tier time | N/A | ~25s |
+| Progress visibility | None (dots) | Per-phase grouped output with timing |
+
+---
+
 ## Ongoing — Code Quality & Refactoring
 
 - [x] **Ensure gitignore covers relevant files** — added `exports/`, `.venv/`, `.coverage`, `htmlcov/` to `.gitignore`; removed tracked `__pycache__/` and `exports/` from git.
