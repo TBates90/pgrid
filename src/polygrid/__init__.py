@@ -449,6 +449,17 @@ from .coastline import (
     blend_biome_images,
     render_coastal_strip,
 )
+from .uv_texture import (
+    UVTransform,
+    compute_tile_basis,
+    project_point_to_tile_uv,
+    compute_tile_uv_bounds,
+    project_and_normalize,
+    compute_detail_to_uv_transform,
+    render_tile_uv_aligned,
+    render_tile_uv_aligned_full,
+    build_uv_aligned_atlas,
+)
 
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (

@@ -62,6 +62,8 @@ _FILE_TIER: dict[str, str] = {
     "test_biome_render.py": "fast",
     "test_biome_pipeline.py": "medium",
     "test_biome_continuity.py": "medium",
+    # Phase 20 — UV texture alignment
+    "test_uv_texture.py": "fast",
 }
 
 

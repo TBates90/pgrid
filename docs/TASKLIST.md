@@ -769,30 +769,29 @@ instead of clamped edge pixels.
 **New function** `render_tile_uv_aligned()` in a new module
 `src/polygrid/uv_texture.py`:
 
-- [🔲] **20A.1** — `project_subfaces_to_tile_uv(detail_grid, store,
-  globe_tile)`:  For each sub-face in the detail grid, project its vertex
-  positions (3D → tile's tangent-plane 2D → normalised [0,1]) using the
-  same `projected_vertices` + `normalize_uvs` transform that the models
-  library uses for `GoldbergTile.uv_vertices`.  Returns a mapping of
-  `{sub_face_id: [(u,v), ...]}` pixel-space polygon vertices.
+- [✅] **20A.1** — `compute_tile_basis`, `project_point_to_tile_uv`,
+  `compute_tile_uv_bounds`, `project_and_normalize`:  Project sub-face
+  vertex positions (3D → tile's tangent-plane 2D → normalised [0,1])
+  using the same derivation that the models library uses for
+  `GoldbergTile.uv_vertices`.
 
-- [🔲] **20A.2** — `render_tile_uv_aligned(detail_grid, store,
-  globe_tile, *, tile_size, biome_config)`:  Rasterise each sub-face
-  polygon (in UV-aligned coordinates) into a `tile_size × tile_size`
-  image.  The polygon footprint of the tile itself maps to the full
-  [0,1]×[0,1] square — so every pixel within the hex/pent boundary
-  contains correct terrain data, and every pixel outside is in the
-  gutter zone.
+- [✅] **20A.2** — `UVTransform` + `compute_detail_to_uv_transform`:
+  Fit a similarity transform (rotation + uniform scale + translation)
+  mapping detail-grid 2D positions to tile UV [0,1] via angle-based
+  vertex matching and least-squares.
 
-- [🔲] **20A.3** — Handle apron sub-faces: project *neighbour* apron
-  sub-faces into the same UV space.  They will naturally land outside the
-  [0,1] polygon boundary, filling the gutter zone with real terrain data
-  from the adjacent tile.
+- [✅] **20A.3** — `render_tile_uv_aligned`: Rasterise each sub-face
+  polygon (including apron sub-faces from neighbours) in UV-aligned
+  coordinates into a `tile_size × tile_size` image.  Apron sub-faces
+  naturally land outside the [0,1] polygon boundary, filling the
+  gutter zone with real terrain data.
 
-- [🔲] **20A.4** — Tests:
-  - UV projection matches `GoldbergTile.uv_vertices` for polygon vertices
-  - Rasterised image has non-sentinel pixels inside the polygon footprint
-  - Gutter zone filled with neighbour data (not black / not clamped)
+- [✅] **20A.4** — Tests in `tests/test_uv_texture.py`:
+  - UV projection matches models library basis derivation
+  - Normalised UVs in [0,1] with correct extremes
+  - UVTransform affine mapping (identity, translation, rotation, scale)
+  - Similarity transform properties preserved
+  - Rasterised image has non-sentinel pixels, correct size
   - Pentagon and hexagon tiles both work correctly
 
 ### Phase 20B — Atlas Assembly with UV-Aligned Tiles
@@ -800,16 +799,16 @@ instead of clamped edge pixels.
 Replace the current atlas builder's rendering step with the UV-aligned
 rasteriser.
 
-- [🔲] **20B.1** — `build_uv_aligned_atlas(collection, globe_grid, *,
+- [✅] **20B.1** — `build_uv_aligned_atlas(collection, globe_grid, *,
   biome_renderers, biome_type_map, ...)`:  New atlas builder that uses
   `render_tile_uv_aligned()` instead of `render_detail_texture_apron()`.
   The atlas layout (slot grid, gutter, UV coordinates) stays the same —
   only the per-tile rendering changes.
 
-- [🔲] **20B.2** — Biome overlays:  Apply `ForestRenderer` / `OceanRenderer`
+- [✅] **20B.2** — Biome overlays:  Apply `ForestRenderer` / `OceanRenderer`
   to the UV-aligned ground images (same as current Phase 18C flow).
 
-- [🔲] **20B.3** — Coastline integration:  Phase 19 coastline masks work
+- [✅] **20B.3** — Coastline integration:  Phase 19 coastline masks work
   in pixel space within each tile, so they continue to work unchanged on
   the UV-aligned tiles.
 
