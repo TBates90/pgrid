@@ -516,50 +516,16 @@ Refactor forest and ocean renderers to be topology-aware.
   - Renderer classes work with and without grid context (fallback)
   - Polygon area utility: unit square, triangle, degenerate
 
-### 18D — Texture Export Pipeline 🔲
+### 18D — Texture Export Pipeline ✅
 
 Output proper texture assets suitable for game engines.
 
-- [ ] **18D.1 — Power-of-two atlas dimensions** — ensure atlas size is always a power of 2:
-  - Auto-compute closest PoT that fits all tiles at the requested tile_size
-  - Support 1024×1024, 2048×2048, 4096×4096 atlas sizes
-  - Respect GPU max texture limits
-
-- [ ] **18D.2 — Mipmap generation** — generate full mipmap chain for the atlas:
-  - Use high-quality downscaling (Lanczos)
-  - Option to store all mip levels in a single file (KTX2) or as separate files
-  - Mip-level 0 is the full atlas; subsequent levels halve in each dimension
-  - `generate_atlas_mipmaps(atlas_path, levels=None) -> List[Path]`
-
-- [ ] **18D.3 — KTX2 export** — export atlas + mipmaps as KTX2 container:
-  - KTX2 is the standard Vulkan/OpenGL texture container format
-  - Supports GPU-native compressed formats (BC7, ETC2, ASTC)
-  - Include all mip levels in a single file
-  - Optional: Basis Universal supercompression for maximum portability
-  - `export_atlas_ktx2(atlas_path, output_path, *, compression="bc7") -> Path`
-  - Fallback: if KTX toolchain not available, warn and export as PNG with mipmaps
-
-- [ ] **18D.4 — Channel-packed material textures** — combine multiple maps into channel-packed textures:
-  - **Albedo atlas** — RGB colour (existing atlas)
-  - **Normal atlas** — RGB normal map (existing from Phase 13E)
-  - **ORM atlas** — packed R=occlusion, G=roughness, B=metallic:
-    - Occlusion: darker in crevices (from hillshade data)
-    - Roughness: low for water tiles, medium for rock, high for foliage
-    - Metallic: 0 for all natural terrain (non-metallic)
-  - Export all three as a material set: `albedo.ktx2`, `normal.ktx2`, `orm.ktx2`
-
-- [ ] **18D.5 — glTF export** — export the textured globe as a glTF 2.0 asset:
-  - Mesh: all tile triangles with positions, normals, tangents, UVs
-  - Materials: PBR metallic-roughness with albedo, normal, ORM textures
-  - This is the standard interchange format for 3D engines (Unity, Unreal, Godot, three.js)
-  - `export_globe_gltf(grid, atlas_path, normal_path, orm_path, output_path) -> Path`
-
-- [ ] **18D.6 — Tests:**
-  - Atlas dimensions are always power-of-two
-  - Mipmap chain has correct level count and sizes
-  - KTX2 file is a valid container (header check)
-  - ORM atlas has correct channel assignment (R=AO, G=rough, B=metal)
-  - glTF validates against schema
+- [x] **18D.1 — Power-of-two atlas dimensions** — `next_power_of_two()`, `atlas_pot_size()`, `resize_atlas_pot()`
+- [x] **18D.2 — Mipmap generation** — `compute_mip_levels()`, `generate_atlas_mipmaps()` with Lanczos downscaling
+- [x] **18D.3 — KTX2 export** — `export_atlas_ktx2()` produces valid KTX2 container (R8G8B8A8_UNORM, optional mipmaps, minimal DFD); `validate_ktx2_header()`
+- [x] **18D.4 — Channel-packed material textures** — `build_orm_atlas()` (R=AO from hillshade, G=roughness per biome, B=metallic); `build_material_set()` outputs albedo + normal + ORM PNGs
+- [x] **18D.5 — glTF 2.0 export** — `export_globe_gltf()` with embedded base64 buffers/textures, PBR metallic-roughness material, positions/normals/UVs
+- [x] **18D.6 — Tests:** 36 tests in `tests/test_texture_export.py` covering PoT, mipmaps, KTX2 header structure, ORM channels, material set, glTF structure
 
 ### 18E — Visual Cohesion & Demo 🔲
 

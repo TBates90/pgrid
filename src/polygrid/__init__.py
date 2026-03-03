@@ -410,6 +410,20 @@ from .tile_texture import (
     apply_colour_dithering,
 )
 
+# ── Texture export (Phase 18D) ──────────────────────────────────────
+from .texture_export import (
+    next_power_of_two,
+    atlas_pot_size,
+    resize_atlas_pot,
+    compute_mip_levels,
+    generate_atlas_mipmaps,
+    export_atlas_ktx2,
+    validate_ktx2_header,
+    build_orm_atlas,
+    build_material_set,
+    export_globe_gltf,
+)
+
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
     ring_diagnostics,
@@ -734,6 +748,17 @@ __all__ = [
     "jitter_polygon_vertices",
     "apply_noise_overlay",
     "apply_colour_dithering",
+    # Texture export (Phase 18D)
+    "next_power_of_two",
+    "atlas_pot_size",
+    "resize_atlas_pot",
+    "compute_mip_levels",
+    "generate_atlas_mipmaps",
+    "export_atlas_ktx2",
+    "validate_ktx2_header",
+    "build_orm_atlas",
+    "build_material_set",
+    "export_globe_gltf",
     # Render enhanced (Phase 11E)
     "OCEAN_BIOME",
     "VEGETATION_BIOME",
