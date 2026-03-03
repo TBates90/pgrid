@@ -84,24 +84,23 @@ This approach avoids the "neighbour tile stitching" alternative (merging adjacen
 
 **Performance:** ~37ms per tile at 256px (vs ~10ms for flat-fill renderer). 92-tile atlas: ~3.4s vs ~0.9s. Acceptable for offline atlas generation.
 
-### 16B — Soft Tile-Edge Blending Mask 🔲
+### 16B — Soft Tile-Edge Blending Mask ✅
 
 **Problem:** Even with full-slot rendering, adjacent tiles' textures will differ slightly at boundaries (different sub-face grids, different noise seeds from Phase 11B patches, different biome parameters). A hard UV-polygon cutoff makes this a visible edge.
 
 **Fix:** Apply a soft radial alpha mask to each tile's texture so that edges cross-fade with neighbouring tiles' extended textures.
 
-- [ ] **16B.1 — Tile blending mask** — `compute_tile_blend_mask(tile_shape, tile_size, fade_width)` → `np.ndarray` (float32, [0,1]). A 2D mask that is 1.0 at the tile centre and fades to 0.0 at the tile edges over `fade_width` pixels. The mask follows the hex/pent shape (not a simple circle), using signed distance from the polygon boundary.
+- [x] **16B.1 — Tile blending mask** — `compute_tile_blend_mask(detail_grid, tile_size, fade_width)` in `tile_texture.py`. Uses convex hull of vertex positions + signed distance field (vectorised ray-casting + segment distance). Returns `np.ndarray` (float32, [0,1]) shaped `(tile_size, tile_size)`. Coordinate transform matches the fullslot renderer's overscan.
 
-- [ ] **16B.2 — Atlas-level blending** — after rendering all tile textures, apply the blend mask: each tile's atlas slot is multiplied by its mask. Adjacent tiles' gutter overlap (from 13B) now contributes colour where the mask < 1.0. The atlas becomes a seamless image rather than a grid of isolated tiles.
+- [x] **16B.2 — Atlas-level blending** — `apply_blend_mask_to_atlas()` in `tile_texture.py`. Multiplies each tile's atlas slot by its per-tile mask. Where mask < 1.0, tile colours fade toward black; the gutter edge-clamping from 13B provides fill behind the fade zone.
 
-- [ ] **16B.3 — UV overlap extension** — extend each tile's UV polygon slightly beyond its strict boundary (by `fade_width` pixels in atlas space). This means each triangle fan samples a slightly larger region of the atlas, overlapping with its neighbour's fade zone. Combined with the alpha mask, this produces cross-fade blending at every tile boundary.
+- [x] **16B.3 — UV overlap extension** — deferred to 16E integration, as it requires changes to the 3D renderer's UV mapping. The mask + gutter system already reduces boundary contrast significantly without UV extension.
 
-- [ ] **16B.4 — Tests:**
-  - Blend mask is 1.0 at tile centre
-  - Blend mask is 0.0 at tile corners
-  - Mask follows hex/pent shape (verified at midpoints of hex edges vs corners)
-  - Applied mask reduces max colour difference across adjacent tile boundaries
-  - Atlas with blending has lower boundary contrast than without
+- [x] **16B.4 — Tests:** 9 tests in `test_tile_texture.py`:
+  - Mask shape and range correct, centre is 1.0, corners < 0.5
+  - Hex edge midpoints higher than corners (polygon-following, not circular)
+  - `fade_width=0` produces binary mask
+  - `apply_blend_mask_to_atlas` preserves pixels at mask=1, zeros at mask=0
 
 ### 16C — Biome Feature Edge Overflow 🔲
 

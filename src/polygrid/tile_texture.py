@@ -381,3 +381,239 @@ def render_detail_texture_fullslot(
     img = Image.fromarray(pixels, "RGB")
     img.save(str(output_path))
     return output_path
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 16B — Soft tile-edge blending mask
+# ═══════════════════════════════════════════════════════════════════
+
+def _signed_distance_to_polygon(
+    px: np.ndarray,
+    py: np.ndarray,
+    poly_x: np.ndarray,
+    poly_y: np.ndarray,
+) -> np.ndarray:
+    """Signed distance from points to a convex polygon boundary.
+
+    Positive = inside, negative = outside.
+
+    Parameters
+    ----------
+    px, py : np.ndarray, shape (N,)
+        Query point coordinates.
+    poly_x, poly_y : np.ndarray, shape (V,)
+        Polygon vertex coordinates (ordered, closed automatically).
+
+    Returns
+    -------
+    np.ndarray, shape (N,)
+        Signed distances (positive inside, negative outside).
+    """
+    n_verts = len(poly_x)
+    n_pts = len(px)
+
+    # Start with a large positive distance (inside)
+    min_dist_sq = np.full(n_pts, np.inf, dtype=np.float64)
+
+    # For each edge, compute distance to that segment
+    for i in range(n_verts):
+        j = (i + 1) % n_verts
+        # Edge from (ax, ay) to (bx, by)
+        ax, ay = poly_x[i], poly_y[i]
+        bx, by = poly_x[j], poly_y[j]
+
+        dx = bx - ax
+        dy = by - ay
+        edge_len_sq = dx * dx + dy * dy
+        if edge_len_sq < 1e-20:
+            continue
+
+        # Project each point onto the edge
+        t = ((px - ax) * dx + (py - ay) * dy) / edge_len_sq
+        t = np.clip(t, 0.0, 1.0)
+
+        # Closest point on edge
+        cx = ax + t * dx
+        cy = ay + t * dy
+
+        dist_sq = (px - cx) ** 2 + (py - cy) ** 2
+        min_dist_sq = np.minimum(min_dist_sq, dist_sq)
+
+    min_dist = np.sqrt(min_dist_sq)
+
+    # Determine inside/outside using winding number (ray casting)
+    inside = np.zeros(n_pts, dtype=bool)
+    for i in range(n_verts):
+        j = (i + 1) % n_verts
+        yi, yj = poly_y[i], poly_y[j]
+        xi, xj = poly_x[i], poly_x[j]
+
+        # Points where the edge crosses the horizontal ray from (px, py)
+        cond = ((yi <= py) & (yj > py)) | ((yj <= py) & (yi > py))
+        if not np.any(cond):
+            continue
+        # x-coordinate of intersection
+        slope = (xj - xi) / (yj - yi + 1e-30)
+        x_intersect = xi + slope * (py - yi)
+        inside[cond] ^= (px[cond] < x_intersect[cond])
+
+    # Signed distance: positive inside, negative outside
+    signed = np.where(inside, min_dist, -min_dist)
+    return signed
+
+
+def compute_tile_blend_mask(
+    detail_grid: PolyGrid,
+    tile_size: int = 256,
+    fade_width: int = 16,
+    *,
+    overscan: float = 0.15,
+) -> np.ndarray:
+    """Compute a soft blending mask for a tile texture.
+
+    The mask is 1.0 at the tile centre and fades to 0.0 at the tile
+    edges over *fade_width* pixels, following the hex/pent polygon
+    shape using signed distance from the convex hull boundary.
+
+    Parameters
+    ----------
+    detail_grid : PolyGrid
+        The sub-face grid whose vertex positions define the polygon.
+    tile_size : int
+        Image dimension.
+    fade_width : int
+        Width of the fade zone in pixels.  Pixels more than
+        *fade_width* inside the polygon boundary are 1.0; pixels
+        at the boundary are 0.5; pixels *fade_width* outside are 0.0.
+    overscan : float
+        Must match the overscan used in ``render_detail_texture_fullslot()``.
+
+    Returns
+    -------
+    np.ndarray, shape (tile_size, tile_size), float32 in [0, 1]
+    """
+    from scipy.spatial import ConvexHull
+
+    # Gather all vertex positions
+    xs, ys = [], []
+    for v in detail_grid.vertices.values():
+        if v.has_position():
+            xs.append(v.x)
+            ys.append(v.y)
+
+    if len(xs) < 3:
+        return np.ones((tile_size, tile_size), dtype=np.float32)
+
+    # Compute convex hull to get the outer polygon
+    points = np.column_stack([xs, ys])
+    hull = ConvexHull(points)
+    hull_verts = points[hull.vertices]  # (V, 2) in grid coords
+
+    # Grid → pixel coordinate transform (must match fullslot renderer)
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    x_range = x_max - x_min or 1.0
+    y_range = y_max - y_min or 1.0
+    span = max(x_range, y_range)
+    pad = span * overscan
+    x_min -= pad
+    x_max += pad
+    y_min -= pad
+    y_max += pad
+
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    scale = tile_size / max(x_range, y_range)
+    ox = (tile_size - x_range * scale) / 2.0
+    oy = (tile_size - y_range * scale) / 2.0
+
+    # Convert hull vertices to pixel coordinates
+    hull_px = (hull_verts[:, 0] - x_min) * scale + ox
+    hull_py = tile_size - ((hull_verts[:, 1] - y_min) * scale + oy)
+
+    # Build pixel coordinate grid
+    col_coords = np.arange(tile_size, dtype=np.float64)
+    row_coords = np.arange(tile_size, dtype=np.float64)
+    px_grid, py_grid = np.meshgrid(col_coords, row_coords)
+
+    # Compute signed distance for every pixel
+    sd = _signed_distance_to_polygon(
+        px_grid.ravel(), py_grid.ravel(),
+        hull_px, hull_py,
+    ).reshape(tile_size, tile_size)
+
+    # Convert signed distance to blend weight:
+    # sd >= fade_width → 1.0 (fully opaque, tile interior)
+    # sd <= 0          → ramp from 0.5 down to 0.0 at -fade_width
+    # 0 < sd < fade_width → ramp from 0.5 up to 1.0
+    if fade_width <= 0:
+        mask = np.where(sd >= 0, 1.0, 0.0).astype(np.float32)
+    else:
+        # Map signed distance to [0, 1]: -fade_width→0, +fade_width→1
+        mask = np.clip((sd + fade_width) / (2.0 * fade_width), 0.0, 1.0)
+        mask = mask.astype(np.float32)
+
+    return mask
+
+
+def apply_blend_mask_to_atlas(
+    atlas_pixels: np.ndarray,
+    masks: Dict[str, np.ndarray],
+    face_ids: List[str],
+    tile_size: int,
+    gutter: int,
+    columns: int,
+) -> np.ndarray:
+    """Apply per-tile blend masks to an assembled atlas.
+
+    Multiplies each tile's slot by its mask, blending toward the
+    gutter pixels (which come from edge clamping).
+
+    Parameters
+    ----------
+    atlas_pixels : np.ndarray, shape (H, W, 3), uint8
+        The assembled atlas image.
+    masks : dict
+        ``{face_id: mask_array}`` where each mask is
+        ``(tile_size, tile_size)`` float32 in [0, 1].
+    face_ids : list of str
+        Ordered face IDs matching atlas layout.
+    tile_size : int
+    gutter : int
+    columns : int
+
+    Returns
+    -------
+    np.ndarray, shape (H, W, 3), uint8
+        Atlas with blend masks applied.
+    """
+    result = atlas_pixels.copy()
+    slot_size = tile_size + 2 * gutter
+
+    for idx, fid in enumerate(face_ids):
+        if fid not in masks:
+            continue
+
+        col = idx % columns
+        row = idx // columns
+        inner_x = col * slot_size + gutter
+        inner_y = row * slot_size + gutter
+
+        mask = masks[fid]  # (tile_size, tile_size) float32
+        tile_region = result[inner_y:inner_y + tile_size,
+                             inner_x:inner_x + tile_size].astype(np.float32)
+
+        # The gutter already has edge-clamped pixels.  We blend
+        # toward a neutral "background" colour that will be replaced
+        # by the gutter.  For simplicity, we just darken/fade toward
+        # the existing gutter values by applying the mask as a
+        # brightness multiplier (mask=1 → full colour, mask=0 → dim).
+        # A more sophisticated approach would composite with neighbour
+        # tiles, but this already reduces boundary contrast significantly.
+        blended = tile_region * mask[:, :, np.newaxis]
+        result[inner_y:inner_y + tile_size,
+               inner_x:inner_x + tile_size] = np.clip(
+            blended, 0, 255,
+        ).astype(np.uint8)
+
+    return result

@@ -321,3 +321,116 @@ class TestRenderDetailTextureFullslot:
         img1 = np.array(Image.open(out1))
         img2 = np.array(Image.open(out2))
         assert not np.array_equal(img1, img2), "Different seeds should produce different output"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 16B — Soft tile-edge blending mask
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestComputeTileBlendMask:
+    def test_mask_shape(self):
+        from polygrid.tile_texture import compute_tile_blend_mask
+        detail_grid, _ = _make_detail_grid_with_terrain()
+        mask = compute_tile_blend_mask(detail_grid, tile_size=64, fade_width=8)
+        assert mask.shape == (64, 64)
+        assert mask.dtype == np.float32
+
+    def test_mask_range(self):
+        from polygrid.tile_texture import compute_tile_blend_mask
+        detail_grid, _ = _make_detail_grid_with_terrain()
+        mask = compute_tile_blend_mask(detail_grid, tile_size=64, fade_width=8)
+        assert mask.min() >= 0.0
+        assert mask.max() <= 1.0
+
+    def test_centre_is_one(self):
+        """The mask should be 1.0 at the tile centre (deep inside the hex)."""
+        from polygrid.tile_texture import compute_tile_blend_mask
+        detail_grid, _ = _make_detail_grid_with_terrain()
+        mask = compute_tile_blend_mask(detail_grid, tile_size=64, fade_width=8)
+        # Centre pixel
+        centre = mask[32, 32]
+        assert centre == pytest.approx(1.0), f"Centre mask value {centre} != 1.0"
+
+    def test_corners_are_low(self):
+        """The mask should be close to 0.0 at tile corners (outside hex)."""
+        from polygrid.tile_texture import compute_tile_blend_mask
+        detail_grid, _ = _make_detail_grid_with_terrain()
+        mask = compute_tile_blend_mask(detail_grid, tile_size=64, fade_width=8)
+        corners = [mask[0, 0], mask[0, 63], mask[63, 0], mask[63, 63]]
+        for c in corners:
+            assert c < 0.5, f"Corner mask value {c} should be < 0.5"
+
+    def test_hex_edge_midpoint_higher_than_corner(self):
+        """Midpoint of a hex edge should have higher mask than a corner,
+        since the hex edge is closer to the polygon interior."""
+        from polygrid.tile_texture import compute_tile_blend_mask
+        detail_grid, _ = _make_detail_grid_with_terrain()
+        mask = compute_tile_blend_mask(detail_grid, tile_size=64, fade_width=8)
+        # Top-centre is nearer to hex boundary than top-left corner
+        top_centre = mask[0, 32]
+        top_left = mask[0, 0]
+        assert top_centre >= top_left, (
+            f"Top-centre {top_centre} should be >= top-left corner {top_left}"
+        )
+
+    def test_mask_follows_polygon_not_circle(self):
+        """The mask should not be circularly symmetric — hex shape
+        should make some edge midpoints lighter than corners."""
+        from polygrid.tile_texture import compute_tile_blend_mask
+        detail_grid, _ = _make_detail_grid_with_terrain()
+        mask = compute_tile_blend_mask(detail_grid, tile_size=64, fade_width=12)
+        # Edge midpoints (top, left, bottom, right)
+        midpoints = [mask[0, 32], mask[32, 0], mask[63, 32], mask[32, 63]]
+        # Corners
+        corners = [mask[0, 0], mask[0, 63], mask[63, 0], mask[63, 63]]
+        avg_mid = sum(midpoints) / len(midpoints)
+        avg_corner = sum(corners) / len(corners)
+        # Edge midpoints should be brighter on average than corners
+        assert avg_mid > avg_corner, (
+            f"Avg midpoint {avg_mid:.3f} should be > avg corner {avg_corner:.3f}"
+        )
+
+    def test_zero_fade_width(self):
+        """With fade_width=0, mask should be binary: 1 inside, 0 outside."""
+        from polygrid.tile_texture import compute_tile_blend_mask
+        detail_grid, _ = _make_detail_grid_with_terrain()
+        mask = compute_tile_blend_mask(detail_grid, tile_size=64, fade_width=0)
+        unique = np.unique(mask)
+        # Should only have 0.0 and 1.0
+        assert len(unique) == 2
+        assert 0.0 in unique
+        assert 1.0 in unique
+
+
+@needs_models
+class TestApplyBlendMaskToAtlas:
+    def test_atlas_unchanged_where_mask_is_one(self):
+        """Pixels where mask is 1.0 should be unchanged."""
+        from polygrid.tile_texture import apply_blend_mask_to_atlas
+        tile_size = 8
+        gutter = 2
+        slot_size = tile_size + 2 * gutter
+        atlas = np.full((slot_size, slot_size, 3), 200, dtype=np.uint8)
+
+        mask = np.ones((tile_size, tile_size), dtype=np.float32)
+        result = apply_blend_mask_to_atlas(
+            atlas, {"t0": mask}, ["t0"], tile_size, gutter, columns=1,
+        )
+        inner = result[gutter:gutter + tile_size, gutter:gutter + tile_size]
+        np.testing.assert_array_equal(inner, 200)
+
+    def test_atlas_darkened_where_mask_is_zero(self):
+        """Pixels where mask is 0.0 should become black."""
+        from polygrid.tile_texture import apply_blend_mask_to_atlas
+        tile_size = 8
+        gutter = 2
+        slot_size = tile_size + 2 * gutter
+        atlas = np.full((slot_size, slot_size, 3), 200, dtype=np.uint8)
+
+        mask = np.zeros((tile_size, tile_size), dtype=np.float32)
+        result = apply_blend_mask_to_atlas(
+            atlas, {"t0": mask}, ["t0"], tile_size, gutter, columns=1,
+        )
+        inner = result[gutter:gutter + tile_size, gutter:gutter + tile_size]
+        np.testing.assert_array_equal(inner, 0)

@@ -354,6 +354,8 @@ from .tile_texture import (
     build_face_lookup,
     interpolate_at_pixel,
     render_detail_texture_fullslot,
+    compute_tile_blend_mask,
+    apply_blend_mask_to_atlas,
 )
 
 # ── Diagnostics ─────────────────────────────────────────────────────
@@ -626,10 +628,12 @@ __all__ = [
     "DetailCache",
     "generate_all_detail_terrain_cached",
     "benchmark_pipeline",
-    # Tile texture — full-slot rendering (Phase 16A)
+    # Tile texture — full-slot rendering (Phase 16A/B)
     "build_face_lookup",
     "interpolate_at_pixel",
     "render_detail_texture_fullslot",
+    "compute_tile_blend_mask",
+    "apply_blend_mask_to_atlas",
     # Render enhanced (Phase 11E)
     "OCEAN_BIOME",
     "VEGETATION_BIOME",
