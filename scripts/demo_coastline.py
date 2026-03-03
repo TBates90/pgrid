@@ -22,6 +22,9 @@ Usage
     python scripts/demo_coastline.py --coastline rugged
     python scripts/demo_coastline.py --coastline archipelago
 
+    # UV-aligned rendering (Phase 20 — polygon-correct textures):
+    python scripts/demo_coastline.py --uv-aligned --view
+
 Outputs to ``exports/phase19_demo/``.
 
 Pipeline stages:
@@ -146,9 +149,9 @@ def _setup_biomes(grid, store, seed):
 def _build_coastline_atlas(
     coll, grid, density_map, biome_type_map, renderers,
     output_dir, tile_size, seed, coastline_preset,
+    *, uv_aligned=False,
 ):
     """Build atlas with coastline transitions."""
-    from polygrid.apron_texture import build_apron_feature_atlas
     from polygrid.coastline import COASTLINE_PRESETS
 
     coast_cfg = COASTLINE_PRESETS.get(coastline_preset)
@@ -156,20 +159,38 @@ def _build_coastline_atlas(
         print(f"  Unknown preset '{coastline_preset}', using default")
         coast_cfg = COASTLINE_PRESETS["default"]
 
-    print(f"Building atlas with coastline transitions (preset={coastline_preset})...")
+    mode = "UV-aligned" if uv_aligned else "apron"
+    print(f"Building atlas with coastline transitions (preset={coastline_preset}, mode={mode})...")
     t0 = time.perf_counter()
 
-    atlas_path, uv_layout = build_apron_feature_atlas(
-        coll, grid,
-        biome_renderers=renderers,
-        density_map=density_map,
-        biome_type_map=biome_type_map,
-        output_dir=output_dir / "coastline_tiles",
-        tile_size=tile_size,
-        noise_seed=seed,
-        coastline_config=coast_cfg,
-        enable_coastlines=True,
-    )
+    if uv_aligned:
+        from polygrid.uv_texture import build_uv_aligned_atlas
+
+        atlas_path, uv_layout = build_uv_aligned_atlas(
+            coll, grid,
+            biome_renderers=renderers,
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=output_dir / "coastline_tiles",
+            tile_size=tile_size,
+            noise_seed=seed,
+            coastline_config=coast_cfg,
+            enable_coastlines=True,
+        )
+    else:
+        from polygrid.apron_texture import build_apron_feature_atlas
+
+        atlas_path, uv_layout = build_apron_feature_atlas(
+            coll, grid,
+            biome_renderers=renderers,
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=output_dir / "coastline_tiles",
+            tile_size=tile_size,
+            noise_seed=seed,
+            coastline_config=coast_cfg,
+            enable_coastlines=True,
+        )
 
     elapsed = time.perf_counter() - t0
     print(f"  → {atlas_path} in {elapsed:.2f}s")
@@ -308,6 +329,8 @@ def main():
                         help="Coastline preset: default, gentle, rugged, archipelago")
     parser.add_argument("--compare", action="store_true",
                         help="Build both with and without coastlines for comparison")
+    parser.add_argument("--uv-aligned", action="store_true",
+                        help="Use Phase 20 UV-aligned texture rendering (polygon-correct)")
     parser.add_argument("--view", action="store_true",
                         help="Open interactive 3D viewer")
     args = parser.parse_args()
@@ -329,6 +352,7 @@ def main():
     atlas_path, uv_layout, t_coast = _build_coastline_atlas(
         coll, grid, density_map, biome_type_map, renderers,
         output_dir, args.tile_size, args.seed, args.coastline,
+        uv_aligned=args.uv_aligned,
     )
 
     # 5. Optional comparison
