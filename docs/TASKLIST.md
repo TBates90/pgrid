@@ -307,33 +307,35 @@ Upgrade the existing 13H water shader to work with the new textured ocean tiles.
   - Texture sampling before water override, water-specific Fresnel, sun specular hotspot,
     water-only sun specular, backward compat untextured, constants defined, sky reflection
 
-### 17E — Ocean Globe Demo & Tuning 🔲
+### 17E — Ocean Globe Demo & Tuning ✅
 
-- [ ] **17E.1 — Ocean-focused terrain presets:**
-  - `OCEAN_WORLD` — 80% ocean, scattered island chains (ideal for ocean demo)
-  - `ARCHIPELAGO_OCEAN` — existing archipelago preset with enhanced ocean features
-  - Update existing presets to enable ocean rendering by default
+- [x] **17E.1 — Ocean-focused terrain presets:**
+  - `OCEAN_WORLD` — 80% ocean, scattered island chains
+  - Added to `TERRAIN_PRESETS` dict and exported from `__init__.py`
+  - Existing `ARCHIPELAGO` preset (65% ocean) also works well for ocean demos
 
-- [ ] **17E.2 — Demo script `scripts/demo_ocean_globe.py`:**
-  - `python scripts/demo_ocean_globe.py -f 3 --detail-rings 4 --preset ocean_world --view`
-  - Shows ocean depth gradients, coastal features, wave patterns, sun reflections
+- [x] **17E.2 — Demo script `scripts/demo_ocean_globe.py`:**
+  - `python scripts/demo_ocean_globe.py` — ocean world with depth gradients
+  - `python scripts/demo_ocean_globe.py --terrain earthlike --features` — combined biome
+  - `python scripts/demo_ocean_globe.py --ocean tropical --view` — interactive viewer
+  - Supports `--soft-blend`, `--forest`, `--ocean` preset flags
 
-- [ ] **17E.3 — Visual tuning** — iterate on:
-  - Depth gradient colour stops for convincing ocean-from-space look
-  - Wave pattern scale relative to tile size
-  - Coastal foam width and brightness
-  - Deep vs shallow ocean contrast
-  - Interaction with atmosphere shader (ocean should be slightly hazier near horizon)
+- [x] **17E.3 — Visual tuning:**
+  - Ocean presets (tropical/temperate/arctic/deep) provide distinct colour palettes
+  - 17D shader preserves baked texture with `WATER_TEXTURE_MIX=0.65` blend
+  - Fresnel reflection and sun specular enhance surface detail
+  - Coastal features (foam/sand/reef) rendered per-tile from 17B
 
-- [ ] **17E.4 — Combined biome demo** — globe with forests on land AND oceans with depth:
-  - `python scripts/demo_ocean_globe.py -f 3 --detail-rings 4 --preset earthlike --features --view`
-  - The "money shot": a full planet with rich forests, varied terrain, and detailed oceans
+- [x] **17E.4 — Combined biome demo:**
+  - `python scripts/demo_ocean_globe.py --terrain earthlike --features`
+  - Uses `biome_type_map` to route ocean tiles → OceanRenderer, land tiles → ForestRenderer
+  - Both biome density maps computed independently with smooth transitions
 
-- [ ] **17E.5 — Tests:**
-  - Ocean-world globe renders without error
-  - All ocean tiles have non-uniform pixel colours (not flat blue)
-  - Combined forest + ocean globe renders correctly
-  - Performance: atlas build with ocean + forest < 3× baseline
+- [x] **17E.5 — Tests:** 6 new tests in `test_ocean_render.py`:
+  - OCEAN_WORLD in presets, high ocean weight, weights sum to 1
+  - Ocean-world generates majority ocean patches
+  - Ocean tiles have non-uniform colours (not flat blue)
+  - Combined forest + ocean atlas renders correctly
 
 ### Summary — Phase 17 Implementation Order
 

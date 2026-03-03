@@ -616,3 +616,137 @@ class TestRenderOceanTile:
         a = render_ocean_tile(_make_ocean_tile(), 0.4, seed=1)
         b = render_ocean_tile(_make_ocean_tile(), 0.4, seed=2)
         assert a.tobytes() != b.tobytes()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 17E — Ocean Globe Demo & Tuning Tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestOceanWorldPreset:
+    """Tests for the OCEAN_WORLD terrain preset."""
+
+    def test_ocean_world_in_presets(self):
+        from polygrid.terrain_patches import TERRAIN_PRESETS
+        assert "ocean_world" in TERRAIN_PRESETS
+
+    def test_ocean_world_high_ocean_weight(self):
+        from polygrid.terrain_patches import OCEAN_WORLD
+        nw = OCEAN_WORLD.normalised_weights
+        assert nw["ocean"] >= 0.75, f"ocean weight too low: {nw['ocean']}"
+
+    def test_ocean_world_weights_sum_to_one(self):
+        from polygrid.terrain_patches import OCEAN_WORLD
+        nw = OCEAN_WORLD.normalised_weights
+        total = sum(nw.values())
+        assert abs(total - 1.0) < 1e-6
+
+
+@needs_models
+class TestOceanGlobeRender:
+    """Integration tests: ocean-world globe renders without error."""
+
+    def test_ocean_world_generates_patches(self):
+        """generate_terrain_patches with ocean_world should produce ocean tiles."""
+        from polygrid.globe import build_globe_grid
+        from polygrid.terrain_patches import generate_terrain_patches, OCEAN_WORLD
+
+        grid = build_globe_grid(1)
+        patches = generate_terrain_patches(grid, distribution=OCEAN_WORLD, seed=42)
+        ocean_faces = set()
+        for p in patches:
+            if p.terrain_type == "ocean":
+                ocean_faces.update(p.face_ids)
+        # Should have majority ocean
+        ratio = len(ocean_faces) / len(grid.faces)
+        assert ratio > 0.5, f"ocean ratio only {ratio:.2f}"
+
+    def test_ocean_tiles_not_flat_colour(self):
+        """Ocean-rendered tiles should have non-uniform pixel colours."""
+        from polygrid.ocean_render import render_ocean_tile
+        import numpy as np
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("PIL not available")
+
+        ground = Image.new("RGB", (64, 64), (30, 80, 140))
+        result = render_ocean_tile(ground, depth=0.5, seed=42)
+        arr = np.array(result)
+        # Standard deviation of brightness should be > 0 (not flat)
+        std = arr.astype(float).std()
+        assert std > 2.0, f"Ocean tile too flat: std={std:.2f}"
+
+    def test_combined_forest_ocean_atlas(self, tmp_path):
+        """Atlas with both forest and ocean tiles renders correctly."""
+        from polygrid.globe import build_globe_grid
+        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
+        from polygrid.terrain_patches import generate_terrain_patches, EARTHLIKE
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.biome_pipeline import (
+            build_feature_atlas, ForestRenderer, OceanRenderer,
+            identify_forest_tiles,
+        )
+        from polygrid.ocean_render import (
+            identify_ocean_tiles,
+            compute_ocean_depth_map,
+        )
+        from polygrid.biome_continuity import build_biome_density_map
+        import random
+
+        grid = build_globe_grid(1)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+
+        patches = generate_terrain_patches(grid, distribution=EARTHLIKE, seed=42)
+        spec = TileDetailSpec(detail_rings=1)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        ocean_faces = identify_ocean_tiles(patches)
+        forest_faces = identify_forest_tiles(patches)
+        depth_map = compute_ocean_depth_map(grid, store, ocean_faces)
+
+        face_ids = coll.face_ids
+        density_map = {}
+        biome_type_map = {}
+
+        ocean_density = build_biome_density_map(
+            grid, face_ids, biome_faces=ocean_faces, seed=2042,
+        )
+        for fid, d in ocean_density.items():
+            if d > 0.01:
+                density_map[fid] = d
+                biome_type_map[fid] = "ocean"
+
+        forest_density = build_biome_density_map(
+            grid, face_ids, biome_faces=forest_faces, seed=1042,
+        )
+        for fid, d in forest_density.items():
+            if d > 0.01 and fid not in ocean_faces:
+                density_map[fid] = d
+                biome_type_map[fid] = "forest"
+
+        renderers = {
+            "ocean": OceanRenderer(
+                ocean_depth_map=depth_map,
+                ocean_faces=ocean_faces,
+                globe_grid=grid,
+            ),
+            "forest": ForestRenderer(),
+        }
+
+        atlas_path, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers=renderers,
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+        )
+        assert atlas_path.exists()
+        assert len(uv) == len(face_ids)

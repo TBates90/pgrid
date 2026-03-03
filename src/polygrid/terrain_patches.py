@@ -275,6 +275,18 @@ DEEP_FOREST = TerrainDistribution(
     },
 )
 
+OCEAN_WORLD = TerrainDistribution(
+    name="ocean_world",
+    weights={
+        "ocean": 0.80,
+        "hills": 0.06,
+        "plains": 0.05,
+        "forest": 0.04,
+        "mountain": 0.03,
+        "desert": 0.02,
+    },
+)
+
 TERRAIN_PRESETS: Dict[str, TerrainDistribution] = {
     "earthlike": EARTHLIKE,
     "mountainous": MOUNTAINOUS,
@@ -282,6 +294,7 @@ TERRAIN_PRESETS: Dict[str, TerrainDistribution] = {
     "pangaea": PANGAEA,
     "forest_world": FOREST_WORLD,
     "deep_forest": DEEP_FOREST,
+    "ocean_world": OCEAN_WORLD,
 }
 
 
