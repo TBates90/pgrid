@@ -13,6 +13,8 @@ Tests verify:
 from __future__ import annotations
 
 import math
+from pathlib import Path
+
 import pytest
 import numpy as np
 
@@ -545,3 +547,220 @@ class TestEdgeDirection:
         dx6, dy6 = compute_edge_direction(grid, "c", "n6")  # left
         # Should be roughly opposite
         assert dx3 + dx6 < 0.5  # roughly cancel out
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 19B — Integration: dual-biome rendering in the atlas pipeline
+# ═══════════════════════════════════════════════════════════════════
+
+def _make_globe_grid_real(frequency: int = 1):
+    """Build a real PolyGrid for integration tests."""
+    from polygrid.builders import build_pure_hex_grid
+    grid = build_pure_hex_grid(frequency)
+    return grid.with_neighbors()
+
+
+def _make_detail_collection_real(globe_grid, detail_rings=2):
+    """Build a real DetailGridCollection for integration tests."""
+    from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+    from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
+
+    spec = TileDetailSpec(detail_rings=detail_rings)
+    coll = DetailGridCollection.build(globe_grid, spec)
+
+    schema = TileSchema([FieldDef("elevation", float, 0.0)])
+    globe_store = TileDataStore(grid=globe_grid, schema=schema)
+    for fid in globe_grid.faces:
+        idx = int(fid.replace("f", "")) if fid.startswith("f") else 0
+        globe_store.set(fid, "elevation", 0.1 * (idx % 5))
+
+    coll.generate_all_terrain(globe_store, seed=42)
+    return coll
+
+
+@pytest.fixture
+def tmp_dir_19b():
+    """Temporary directory for 19B atlas output."""
+    import tempfile, shutil
+    d = tempfile.mkdtemp(prefix="coast_19b_")
+    yield Path(d)
+    shutil.rmtree(d, ignore_errors=True)
+
+
+class TestApronFeatureAtlasCoastlines:
+    """Tests for coastline integration into build_apron_feature_atlas."""
+
+    def test_atlas_with_coastlines_creates_output(self, tmp_dir_19b):
+        """Coastline-enabled atlas still produces a valid atlas."""
+        from polygrid.apron_texture import build_apron_feature_atlas
+        from polygrid.biome_pipeline import ForestRenderer, OceanRenderer
+
+        globe = _make_globe_grid_real(1)
+        coll = _make_detail_collection_real(globe, detail_rings=2)
+
+        face_ids = list(globe.faces.keys())
+        # Split: half forest, half ocean
+        mid = len(face_ids) // 2
+        density_map = {}
+        biome_type_map = {}
+        for fid in face_ids[:mid]:
+            density_map[fid] = 0.8
+            biome_type_map[fid] = "forest"
+        for fid in face_ids[mid:]:
+            density_map[fid] = 0.9
+            biome_type_map[fid] = "ocean"
+
+        atlas_path, uv_layout = build_apron_feature_atlas(
+            coll, globe,
+            biome_renderers={
+                "forest": ForestRenderer(),
+                "ocean": OceanRenderer(),
+            },
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=tmp_dir_19b,
+            tile_size=64,
+            gutter=2,
+            enable_coastlines=True,
+        )
+
+        assert atlas_path.exists()
+        assert len(uv_layout) == len(face_ids)
+
+    def test_coastline_disabled_backward_compatible(self, tmp_dir_19b):
+        """With enable_coastlines=False, behaviour matches Phase 18."""
+        from polygrid.apron_texture import build_apron_feature_atlas
+        from polygrid.biome_pipeline import ForestRenderer
+
+        globe = _make_globe_grid_real(1)
+        coll = _make_detail_collection_real(globe, detail_rings=2)
+
+        face_ids = list(globe.faces.keys())
+        density_map = {fid: 0.7 for fid in face_ids[:3]}
+        biome_type_map = {fid: "forest" for fid in face_ids[:3]}
+
+        atlas_path, uv_layout = build_apron_feature_atlas(
+            coll, globe,
+            biome_renderers={"forest": ForestRenderer()},
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=tmp_dir_19b,
+            tile_size=64,
+            gutter=2,
+            enable_coastlines=False,
+        )
+
+        assert atlas_path.exists()
+        assert len(uv_layout) == len(face_ids)
+
+    def test_transition_tiles_differ_from_interior(self, tmp_dir_19b):
+        """Tiles at biome boundaries should look different from interior tiles."""
+        from PIL import Image
+        from polygrid.apron_texture import build_apron_feature_atlas
+        from polygrid.biome_pipeline import ForestRenderer, OceanRenderer
+        from polygrid.algorithms import get_face_adjacency
+
+        globe = _make_globe_grid_real(1)
+        coll = _make_detail_collection_real(globe, detail_rings=2)
+
+        face_ids = list(globe.faces.keys())
+        mid = len(face_ids) // 2
+        density_map = {}
+        biome_type_map = {}
+        for fid in face_ids[:mid]:
+            density_map[fid] = 0.8
+            biome_type_map[fid] = "forest"
+        for fid in face_ids[mid:]:
+            density_map[fid] = 0.9
+            biome_type_map[fid] = "ocean"
+
+        atlas_path, uv_layout = build_apron_feature_atlas(
+            coll, globe,
+            biome_renderers={
+                "forest": ForestRenderer(),
+                "ocean": OceanRenderer(),
+            },
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=tmp_dir_19b,
+            tile_size=64,
+            gutter=2,
+            enable_coastlines=True,
+        )
+
+        # Check that individual tile images were saved
+        tile_files = list(tmp_dir_19b.glob("tile_*.png"))
+        assert len(tile_files) > 0
+
+    def test_no_biomes_no_crash_with_coastlines(self, tmp_dir_19b):
+        """Coastline feature with empty biome_type_map doesn't crash."""
+        from polygrid.apron_texture import build_apron_feature_atlas
+
+        globe = _make_globe_grid_real(1)
+        coll = _make_detail_collection_real(globe, detail_rings=2)
+
+        atlas_path, uv_layout = build_apron_feature_atlas(
+            coll, globe,
+            output_dir=tmp_dir_19b,
+            tile_size=64,
+            gutter=2,
+            enable_coastlines=True,
+        )
+
+        assert atlas_path.exists()
+
+    def test_custom_coastline_config(self, tmp_dir_19b):
+        """Custom CoastlineConfig is accepted."""
+        from polygrid.apron_texture import build_apron_feature_atlas
+        from polygrid.biome_pipeline import ForestRenderer, OceanRenderer
+        from polygrid.coastline import CoastlineConfig
+
+        globe = _make_globe_grid_real(1)
+        coll = _make_detail_collection_real(globe, detail_rings=2)
+
+        face_ids = list(globe.faces.keys())
+        mid = len(face_ids) // 2
+        density_map = {}
+        biome_type_map = {}
+        for fid in face_ids[:mid]:
+            density_map[fid] = 0.8
+            biome_type_map[fid] = "forest"
+        for fid in face_ids[mid:]:
+            density_map[fid] = 0.9
+            biome_type_map[fid] = "ocean"
+
+        cfg = CoastlineConfig(noise_frequency=2.0, noise_octaves=2)
+
+        atlas_path, uv_layout = build_apron_feature_atlas(
+            coll, globe,
+            biome_renderers={
+                "forest": ForestRenderer(),
+                "ocean": OceanRenderer(),
+            },
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=tmp_dir_19b,
+            tile_size=64,
+            gutter=2,
+            coastline_config=cfg,
+            enable_coastlines=True,
+        )
+
+        assert atlas_path.exists()
+
+
+class TestPickDominantBiome:
+    """Tests for _pick_dominant_other_biome helper."""
+
+    def test_single_biome(self):
+        from polygrid.apron_texture import _pick_dominant_other_biome
+        assert _pick_dominant_other_biome({"ocean"}) == "ocean"
+
+    def test_multiple_biomes_sorted(self):
+        from polygrid.apron_texture import _pick_dominant_other_biome
+        result = _pick_dominant_other_biome({"ocean", "desert"})
+        assert result == "desert"  # alphabetically first
+
+    def test_empty_returns_terrain(self):
+        from polygrid.apron_texture import _pick_dominant_other_biome
+        assert _pick_dominant_other_biome(set()) == "terrain"

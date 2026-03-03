@@ -442,6 +442,22 @@ def _fill_apron_gutter(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 19B — Coastline transition helpers
+# ═══════════════════════════════════════════════════════════════════
+
+def _pick_dominant_other_biome(other_biomes) -> str:
+    """Pick the most common "other" biome from a set.
+
+    When a tile borders multiple different biomes, we pick one
+    to use as the "other" biome for compositing.  For now this
+    just picks the first one alphabetically for determinism.
+    """
+    if not other_biomes:
+        return "terrain"
+    return sorted(other_biomes)[0]
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 18B.3 — Feature atlas with apron gutters
 # ═══════════════════════════════════════════════════════════════════
 
@@ -459,11 +475,17 @@ def build_apron_feature_atlas(
     noise_seed: int = 0,
     gutter: int = 4,
     smooth_iterations: int = 2,
+    coastline_config: Optional[Any] = None,
+    enable_coastlines: bool = True,
 ) -> Tuple[Path, Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas with biome features + apron gutters.
 
     Combines apron-aware ground rendering (18B.1) with biome feature
     overlays (forest, ocean) and fills gutters from apron data (18B.4).
+
+    Phase 19 addition: when *enable_coastlines* is True, tiles that
+    border a different biome get **dual-biome rendering** with a
+    noise-warped coastline transition instead of hard hex boundaries.
 
     Parameters
     ----------
@@ -484,6 +506,13 @@ def build_apron_feature_atlas(
     noise_seed : int
     gutter : int
     smooth_iterations : int
+    coastline_config : CoastlineConfig, optional
+        Noise and rendering parameters for coastline transitions.
+        If *None*, the default ``CoastlineConfig()`` is used.
+    enable_coastlines : bool
+        When *True* (default), tiles bordering a different biome
+        get dual-biome rendering with noise-warped coastlines.
+        Set *False* to disable (backward-compatible behaviour).
 
     Returns
     -------
@@ -520,6 +549,41 @@ def build_apron_feature_atlas(
             return biome_renderers[biome_key]
         return default_renderer
 
+    def _get_renderer_for_biome(biome_key: str):
+        """Look up a renderer by biome name."""
+        return biome_renderers.get(biome_key)
+
+    # ── Coastline classification (Phase 19) ─────────────────────
+    coastline_masks: Dict[str, Any] = {}
+    if enable_coastlines and biome_type_map:
+        from .coastline import (
+            CoastlineConfig,
+            classify_tile_biome_context,
+            build_coastline_mask,
+            blend_biome_images,
+            render_coastal_strip,
+        )
+        from .algorithms import get_face_adjacency
+
+        if coastline_config is None:
+            coastline_config = CoastlineConfig()
+
+        adjacency = get_face_adjacency(globe_grid)
+
+        for fid in face_ids:
+            ctx = classify_tile_biome_context(
+                fid, biome_type_map, adjacency,
+            )
+            if ctx.is_edge:
+                cm = build_coastline_mask(
+                    fid, ctx, globe_grid,
+                    tile_size=tile_size,
+                    config=coastline_config,
+                    seed=noise_seed,
+                )
+                if cm.has_transition:
+                    coastline_masks[fid] = cm
+
     # ── Build apron grids ───────────────────────────────────────
     apron_results = build_all_apron_grids(
         globe_grid, collection,
@@ -540,27 +604,87 @@ def build_apron_feature_atlas(
             noise_seed=noise_seed + hash(fid) % 10000,
         )
 
-        # Apply biome overlay
-        tile_density = density_map.get(fid, 0.0)
-        tile_renderer = _get_renderer(fid)
+        # ── Phase 19: Coastline dual-biome rendering ───────────
+        if fid in coastline_masks:
+            cm = coastline_masks[fid]
 
-        if tile_density > 0.01 and tile_renderer is not None:
-            center_3d = None
-            face = globe_grid.faces.get(fid)
-            if face is not None:
-                center_3d = face_center_3d(globe_grid.vertices, face)
+            # Render the tile as its OWN biome
+            tile_density = density_map.get(fid, 0.0)
+            tile_renderer = _get_renderer(fid)
+            img_own = ground_img.copy()
 
-            # Set grid context for topology-aware renderers (18C)
-            if hasattr(tile_renderer, "set_grid_context"):
-                tile_renderer.set_grid_context(ar.grid, ar.store)
+            if tile_density > 0.01 and tile_renderer is not None:
+                center_3d = None
+                face = globe_grid.faces.get(fid)
+                if face is not None:
+                    center_3d = face_center_3d(globe_grid.vertices, face)
+                if hasattr(tile_renderer, "set_grid_context"):
+                    tile_renderer.set_grid_context(ar.grid, ar.store)
+                img_own = tile_renderer.render(
+                    img_own, fid, tile_density,
+                    seed=noise_seed + hash(fid) % 100_000,
+                    globe_3d_center=center_3d,
+                )
 
-            ground_img = tile_renderer.render(
-                ground_img,
-                fid,
-                tile_density,
-                seed=noise_seed + hash(fid) % 100_000,
-                globe_3d_center=center_3d,
+            # Render the tile as the OTHER biome
+            # Pick the most common "other" biome from edge neighbours
+            other_biome = _pick_dominant_other_biome(cm.other_biomes)
+            other_renderer = _get_renderer_for_biome(other_biome)
+            img_other = ground_img.copy()
+
+            if other_renderer is not None:
+                # Use a high density for the "other" rendering so
+                # the biome is fully expressed where the mask says 1.0
+                other_density = density_map.get(fid, 0.8)
+                if other_density < 0.5:
+                    other_density = 0.8
+                center_3d = None
+                face = globe_grid.faces.get(fid)
+                if face is not None:
+                    center_3d = face_center_3d(globe_grid.vertices, face)
+                if hasattr(other_renderer, "set_grid_context"):
+                    other_renderer.set_grid_context(ar.grid, ar.store)
+                img_other = other_renderer.render(
+                    img_other, fid, other_density,
+                    seed=noise_seed + hash(fid) % 100_000 + 7777,
+                    globe_3d_center=center_3d,
+                )
+
+            # Composite through the coastline mask
+            ground_img = blend_biome_images(
+                img_own.convert("RGB"),
+                img_other.convert("RGB"),
+                cm.mask,
             )
+
+            # Paint coastal detail (beach + foam) in the transition zone
+            ground_img = render_coastal_strip(
+                ground_img, cm.mask,
+                config=cm.config, seed=noise_seed + hash(fid) % 100_000,
+            )
+
+        else:
+            # ── Standard single-biome rendering (no transition) ─
+            tile_density = density_map.get(fid, 0.0)
+            tile_renderer = _get_renderer(fid)
+
+            if tile_density > 0.01 and tile_renderer is not None:
+                center_3d = None
+                face = globe_grid.faces.get(fid)
+                if face is not None:
+                    center_3d = face_center_3d(globe_grid.vertices, face)
+
+                # Set grid context for topology-aware renderers (18C)
+                if hasattr(tile_renderer, "set_grid_context"):
+                    tile_renderer.set_grid_context(ar.grid, ar.store)
+
+                ground_img = tile_renderer.render(
+                    ground_img,
+                    fid,
+                    tile_density,
+                    seed=noise_seed + hash(fid) % 100_000,
+                    globe_3d_center=center_3d,
+                )
 
         tile_images[fid] = ground_img
 

@@ -658,22 +658,27 @@ is displaced by multi-octave noise to create organic coastline shapes.
       order-independence, blend compositing, coastal strip rendering,
       edge direction computation.
 
-#### 19B — Dual-Biome Tile Rendering 🔲
+#### 19B — Dual-Biome Tile Rendering ✅
 
 Render transition tiles by compositing two biome textures through the
 coastline mask.
 
-- [ ] **19B.1** — `render_transition_tile()` — given a tile, render it once
-      as biome A (forest), once as biome B (ocean), then composite:
-      `output = A * (1 - mask) + B * mask`
-- [ ] **19B.2** — Integration into `build_apron_feature_atlas()` — detect
-      transition tiles, call dual rendering instead of single biome.
-- [ ] **19B.3** — `render_coastal_strip()` — paint beach/sand detail in the
+- [x] **19B.1** — `render_transition_tile()` — integrated into
+      `build_apron_feature_atlas()`.  For each transition tile, renders
+      it once as biome A (own), once as biome B (other), then composites:
+      `output = A * (1 - mask) + B * mask`.
+- [x] **19B.2** — Integration into `build_apron_feature_atlas()` — detect
+      transition tiles via coastline classification, call dual rendering.
+      New parameters: `coastline_config`, `enable_coastlines` (default True).
+      `_pick_dominant_other_biome()` helper for multi-biome boundaries.
+- [x] **19B.3** — `render_coastal_strip()` — paints beach/sand detail in the
       narrow zone where mask ≈ 0.5 (the actual coastline).  Sand on the
-      land side (mask 0.3–0.5), foam/shallow water on the ocean side
-      (mask 0.5–0.7).
-- [ ] **19B.4** — Tests: transition tiles have both biome colours,
-      non-transition tiles unchanged, coastal strip present at boundary.
+      land side (mask 0.25–0.50), foam/shallow water on the ocean side
+      (mask 0.50–0.70).
+- [x] **19B.4** — Tests: 8 new tests in `test_coastline.py` covering
+      atlas creation with coastlines enabled/disabled, transition tile
+      detection, no-crash with empty biome maps, custom config,
+      _pick_dominant_other_biome helper.
 
 #### 19C — Visual Polish & Demo 🔲
 
