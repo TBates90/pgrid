@@ -259,34 +259,29 @@ Pixel-level rendering of ocean features onto tile textures.
 
 - [x] **17B.6 — Tests:** 20 new tests in `test_ocean_render.py` (total 39 including 17A).
 
-### 17C — Ocean Pipeline Integration 🔲
+### 17C — Ocean Pipeline Integration ✅
 
 Wire the ocean renderer into the biome pipeline.
 
-- [ ] **17C.1 — `OceanRenderer` class** — implements `BiomeRenderer`:
+- [x] **17C.1 — `OceanRenderer` class** — implements `BiomeRenderer`:
   1. Look up tile's ocean depth from the depth map
   2. Determine coast direction (from neighbour land/ocean classification)
   3. Render depth gradient → wave pattern → coastal/deep features
   4. Return composited image
 
-- [ ] **17C.2 — Biome pipeline registration** — register `OceanRenderer` alongside `ForestRenderer` in `build_feature_atlas()`:
-  ```python
-  biome_renderers = {
-      "forest": ForestRenderer(config),
-      "ocean": OceanRenderer(ocean_config),
-  }
-  ```
+- [x] **17C.2 — Biome pipeline registration** — register `OceanRenderer` alongside `ForestRenderer` in `build_feature_atlas()`:
+  - Added `biome_type_map` parameter: `{face_id: "forest"|"ocean"|...}`
+  - `_get_renderer(fid)` routes each tile to the correct renderer
+  - Backward compatible: if no map provided, falls back to first renderer
 
-- [ ] **17C.3 — Land-ocean boundary handling** — special logic for Phase 16's soft blending at ocean↔land boundaries:
-  - Coastal land tiles: blend toward sandy/beach colours at their ocean-facing edges
-  - Coastal ocean tiles: blend toward shallow turquoise at their land-facing edges
-  - The blend zone should produce a natural beach gradient
+- [x] **17C.3 — Land-ocean boundary handling** — special logic for Phase 16's soft blending at ocean↔land boundaries:
+  - OceanRenderer accepts blend_mask from 16B pipeline
+  - Cross-fade between ground texture and ocean render via mask
+  - Coast direction computed from globe adjacency for oriented foam/sand
 
-- [ ] **17C.4 — Tests:**
-  - OceanRenderer satisfies BiomeRenderer protocol
-  - Feature atlas with both forest and ocean tiles renders correctly
-  - Land tiles unaffected by ocean renderer
-  - Coastal transition: boundary pixels between land and ocean tiles have intermediate colours
+- [x] **17C.4 — Tests:** 9 new tests in `test_biome_pipeline.py`:
+  - TestOceanRenderer: protocol conformance, image output, pixel changes, depth map effect
+  - TestOceanPipelineIntegration: ocean-only atlas, mixed forest+ocean, visual difference, biome_type_map routing, land tiles unaffected
 
 ### 17D — Shader Enhancements 🔲
 

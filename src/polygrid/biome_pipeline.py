@@ -128,6 +128,90 @@ class ForestRenderer:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 17C.1 — OceanRenderer
+# ═══════════════════════════════════════════════════════════════════
+
+class OceanRenderer:
+    """Ocean biome renderer — implements :class:`BiomeRenderer`.
+
+    Renders ocean tile textures with depth-based colour gradients,
+    wave patterns, coastal detail, and deep-ocean effects.
+
+    Parameters
+    ----------
+    config : OceanFeatureConfig, optional
+        Ocean rendering parameters.  Defaults to ``TEMPERATE_OCEAN``.
+    ocean_depth_map : dict, optional
+        ``{face_id: float}`` normalised depth [0, 1] from
+        :func:`compute_ocean_depth_map`.  If *None*, tiles default
+        to depth 0.5.
+    ocean_faces : set, optional
+        Set of face IDs classified as ocean.  Needed for coast
+        direction computation.
+    globe_grid : PolyGrid, optional
+        Required for coast direction computation.
+    """
+
+    def __init__(
+        self,
+        config=None,
+        *,
+        ocean_depth_map: Optional[Dict[str, float]] = None,
+        ocean_faces: Optional[set] = None,
+        globe_grid=None,
+    ):
+        from .ocean_render import TEMPERATE_OCEAN as _DEFAULT_OCEAN
+        self.config = config if config is not None else _DEFAULT_OCEAN
+        self.ocean_depth_map = ocean_depth_map or {}
+        self.ocean_faces = ocean_faces or set()
+        self.globe_grid = globe_grid
+
+    def render(
+        self,
+        ground_image: "Image.Image",
+        tile_id: str,
+        density: float,
+        *,
+        seed: int = 42,
+        globe_3d_center: Optional[Tuple[float, float, float]] = None,
+        blend_mask=None,
+        neighbour_densities: Optional[Dict[str, float]] = None,
+        neighbour_seeds: Optional[Dict[str, int]] = None,
+    ) -> "Image.Image":
+        from .ocean_render import render_ocean_tile, compute_coast_direction
+
+        depth = self.ocean_depth_map.get(tile_id, 0.5)
+
+        # Compute coast direction if we have the info
+        coast_dir = None
+        if self.globe_grid is not None and self.ocean_faces:
+            coast_dir = compute_coast_direction(
+                self.globe_grid, tile_id, self.ocean_faces,
+            )
+
+        result = render_ocean_tile(
+            ground_image,
+            depth,
+            config=self.config,
+            coast_direction=coast_dir,
+            seed=seed + hash(tile_id) % 100_000,
+        )
+
+        # Apply blend mask cross-fade if provided (16B integration)
+        if blend_mask is not None:
+            import numpy as np
+            ground_arr = np.array(ground_image.convert("RGB")).astype(np.float32)
+            result_arr = np.array(result).astype(np.float32)
+            mask = blend_mask[:, :, np.newaxis]
+            blended = ground_arr * (1.0 - mask) + result_arr * mask
+            result = Image.fromarray(
+                np.clip(blended, 0, 255).astype(np.uint8)
+            )
+
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 14D.3 — Identify forest tiles from terrain patches
 # ═══════════════════════════════════════════════════════════════════
 
@@ -167,6 +251,7 @@ def build_feature_atlas(
     *,
     biome_renderers: Optional[Dict[str, BiomeRenderer]] = None,
     density_map: Optional[Dict[str, float]] = None,
+    biome_type_map: Optional[Dict[str, str]] = None,
     biome_config=None,
     output_dir: Path | str = Path("exports/detail_tiles"),
     tile_size: int = 256,
@@ -195,6 +280,11 @@ def build_feature_atlas(
     density_map : dict, optional
         ``{face_id: float}``.  If *None*, all tiles get density 0
         (no features — falls back to standard atlas).
+    biome_type_map : dict, optional
+        ``{face_id: "forest"|"ocean"|...}``.  Maps each tile to a
+        renderer key in *biome_renderers*.  If *None*, the first
+        renderer is used for all tiles with density > 0 (backward
+        compatible).
     biome_config : BiomeConfig, optional
         Ground-texture rendering configuration.
     output_dir : Path or str
@@ -240,8 +330,18 @@ def build_feature_atlas(
     if biome_renderers is None:
         biome_renderers = {"forest": ForestRenderer(fullslot=soft_blend)}
 
-    # Default renderer is the first one
+    if biome_type_map is None:
+        biome_type_map = {}
+
+    # Default renderer is the first one (backward compat)
     default_renderer = next(iter(biome_renderers.values())) if biome_renderers else None
+
+    def _get_renderer(fid: str) -> Optional[BiomeRenderer]:
+        """Look up the correct renderer for a face ID."""
+        biome_key = biome_type_map.get(fid)
+        if biome_key is not None and biome_key in biome_renderers:
+            return biome_renderers[biome_key]
+        return default_renderer
 
     # Optionally use full-slot renderer (Phase 16A + 16D)
     if fullslot:
@@ -296,7 +396,8 @@ def build_feature_atlas(
 
         # Apply biome overlay if this tile has density
         tile_density = density_map.get(fid, 0.0)
-        if tile_density > 0.01 and default_renderer is not None:
+        tile_renderer = _get_renderer(fid)
+        if tile_density > 0.01 and tile_renderer is not None:
             ground_img = Image.open(str(ground_path)).convert("RGB")
 
             # Get 3D centre for globe-coherent placement
@@ -319,7 +420,7 @@ def build_feature_atlas(
                     for nid in _adjacency[fid]
                 }
 
-            featured_img = default_renderer.render(
+            featured_img = tile_renderer.render(
                 ground_img,
                 fid,
                 tile_density,

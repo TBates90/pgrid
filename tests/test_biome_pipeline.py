@@ -434,3 +434,248 @@ class TestSoftBlendPipeline:
         )
         assert atlas_path.exists()
         assert len(uv) == len(face_ids)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 17C — Ocean Pipeline Integration
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_pil
+@needs_models
+class TestOceanRenderer:
+    """Tests for OceanRenderer class."""
+
+    def test_satisfies_protocol(self):
+        from polygrid.biome_pipeline import OceanRenderer
+        import inspect
+        renderer = OceanRenderer()
+        assert hasattr(renderer, "render")
+        sig = inspect.signature(renderer.render)
+        assert "ground_image" in sig.parameters
+        assert "tile_id" in sig.parameters
+        assert "density" in sig.parameters
+
+    def test_render_produces_image(self):
+        from polygrid.biome_pipeline import OceanRenderer
+        renderer = OceanRenderer()
+        ground = Image.new("RGB", (32, 32), (40, 100, 160))
+        result = renderer.render(ground, "f0", 0.8, seed=42)
+        assert result.size == (32, 32)
+        assert result.mode == "RGB"
+
+    def test_render_changes_pixels(self):
+        from polygrid.biome_pipeline import OceanRenderer
+        renderer = OceanRenderer()
+        ground = Image.new("RGB", (32, 32), (40, 100, 160))
+        result = renderer.render(ground, "f0", 0.8, seed=42)
+        assert ground.tobytes() != result.tobytes()
+
+    def test_depth_map_affects_output(self):
+        from polygrid.biome_pipeline import OceanRenderer
+        import numpy as np
+
+        shallow_renderer = OceanRenderer(
+            ocean_depth_map={"f0": 0.05},
+        )
+        deep_renderer = OceanRenderer(
+            ocean_depth_map={"f0": 0.95},
+        )
+        ground = Image.new("RGB", (32, 32), (40, 100, 160))
+        shallow = shallow_renderer.render(ground, "f0", 1.0, seed=42)
+        deep = deep_renderer.render(ground, "f0", 1.0, seed=42)
+
+        s_mean = np.array(shallow).mean()
+        d_mean = np.array(deep).mean()
+        assert s_mean > d_mean, f"shallow={s_mean:.1f} not brighter than deep={d_mean:.1f}"
+
+
+@needs_pil
+@needs_models
+class TestOceanPipelineIntegration:
+    """Integration tests: ocean + forest in the same atlas."""
+
+    def _build_collection(self, freq=1, rings=1):
+        from conftest import cached_build_globe
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
+        import random
+
+        grid = cached_build_globe(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+        spec = TileDetailSpec(detail_rings=rings)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+        return grid, store, coll
+
+    def test_ocean_only_atlas(self, tmp_path):
+        """Atlas with only ocean tiles should render correctly."""
+        from polygrid.biome_pipeline import build_feature_atlas, OceanRenderer
+        grid, store, coll = self._build_collection()
+        face_ids = coll.face_ids
+
+        density_map = {fid: 1.0 for fid in face_ids}
+        depth_map = {fid: 0.5 for fid in face_ids}
+        ocean_faces = set(face_ids)
+
+        renderer = OceanRenderer(
+            ocean_depth_map=depth_map,
+            ocean_faces=ocean_faces,
+            globe_grid=grid,
+        )
+
+        atlas_path, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers={"ocean": renderer},
+            density_map=density_map,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+        )
+        assert atlas_path.exists()
+        assert len(uv) == len(face_ids)
+
+    def test_mixed_forest_ocean_atlas(self, tmp_path):
+        """Atlas with both forest and ocean tiles using biome_type_map."""
+        from polygrid.biome_pipeline import (
+            build_feature_atlas, ForestRenderer, OceanRenderer,
+        )
+        grid, store, coll = self._build_collection()
+        face_ids = coll.face_ids
+
+        # Split tiles: first half forest, second half ocean
+        mid = len(face_ids) // 2
+        forest_ids = face_ids[:mid]
+        ocean_ids = face_ids[mid:]
+
+        density_map = {fid: 0.8 for fid in face_ids}
+        depth_map = {fid: 0.5 for fid in ocean_ids}
+        biome_type_map = {}
+        for fid in forest_ids:
+            biome_type_map[fid] = "forest"
+        for fid in ocean_ids:
+            biome_type_map[fid] = "ocean"
+
+        renderers = {
+            "forest": ForestRenderer(),
+            "ocean": OceanRenderer(
+                ocean_depth_map=depth_map,
+                ocean_faces=set(ocean_ids),
+                globe_grid=grid,
+            ),
+        }
+
+        atlas_path, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers=renderers,
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+        )
+        assert atlas_path.exists()
+        assert len(uv) == len(face_ids)
+
+    def test_ocean_tiles_differ_from_forest(self, tmp_path):
+        """Ocean and forest renderers should produce visibly different output."""
+        from polygrid.biome_pipeline import (
+            build_feature_atlas, ForestRenderer, OceanRenderer,
+        )
+        import numpy as np
+
+        grid, store, coll = self._build_collection()
+        face_ids = coll.face_ids
+        density_map = {fid: 0.9 for fid in face_ids}
+
+        # All-forest atlas
+        forest_path, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers={"forest": ForestRenderer()},
+            density_map=density_map,
+            output_dir=tmp_path / "forest",
+            tile_size=64,
+        )
+
+        # All-ocean atlas
+        depth_map = {fid: 0.5 for fid in face_ids}
+        ocean_path, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers={"ocean": OceanRenderer(ocean_depth_map=depth_map)},
+            density_map=density_map,
+            output_dir=tmp_path / "ocean",
+            tile_size=64,
+        )
+
+        f_arr = np.array(Image.open(str(forest_path))).astype(float)
+        o_arr = np.array(Image.open(str(ocean_path))).astype(float)
+        diff = np.abs(f_arr - o_arr).mean()
+        assert diff > 5, f"Forest and ocean too similar: mean_diff={diff:.1f}"
+
+    def test_biome_type_map_routes_correctly(self, tmp_path):
+        """biome_type_map should route tiles to the correct renderer."""
+        from polygrid.biome_pipeline import (
+            build_feature_atlas, ForestRenderer, OceanRenderer,
+        )
+
+        grid, store, coll = self._build_collection()
+        face_ids = coll.face_ids
+        if len(face_ids) < 2:
+            pytest.skip("Need at least 2 tiles")
+
+        # Make only the first tile ocean, rest use default (forest)
+        density_map = {fid: 0.9 for fid in face_ids}
+        depth_map = {face_ids[0]: 0.2}
+        biome_type_map = {face_ids[0]: "ocean"}
+
+        renderers = {
+            "forest": ForestRenderer(),
+            "ocean": OceanRenderer(
+                ocean_depth_map=depth_map,
+                ocean_faces={face_ids[0]},
+                globe_grid=grid,
+            ),
+        }
+
+        atlas_path, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers=renderers,
+            density_map=density_map,
+            biome_type_map=biome_type_map,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+        )
+        assert atlas_path.exists()
+        assert len(uv) == len(face_ids)
+
+    def test_land_tiles_unaffected_by_ocean(self, tmp_path):
+        """Tiles without ocean density should not be ocean-rendered."""
+        from polygrid.biome_pipeline import (
+            build_feature_atlas, OceanRenderer,
+        )
+        import numpy as np
+
+        grid, store, coll = self._build_collection()
+        face_ids = coll.face_ids
+
+        # No density → no features applied
+        atlas_no_features, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers={"ocean": OceanRenderer()},
+            output_dir=tmp_path / "no_feat",
+            tile_size=64,
+        )
+        # Same with empty density map
+        atlas_empty, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers={"ocean": OceanRenderer()},
+            density_map={},
+            output_dir=tmp_path / "empty",
+            tile_size=64,
+        )
+
+        a = np.array(Image.open(str(atlas_no_features)))
+        b = np.array(Image.open(str(atlas_empty)))
+        assert np.array_equal(a, b)

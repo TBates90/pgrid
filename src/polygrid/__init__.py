@@ -284,6 +284,7 @@ from .biome_render import (
 from .biome_pipeline import (
     BiomeRenderer,
     ForestRenderer,
+    OceanRenderer,
     identify_forest_tiles,
     build_feature_atlas,
 )
@@ -636,6 +637,7 @@ __all__ = [
     # Biome pipeline (Phase 14D)
     "BiomeRenderer",
     "ForestRenderer",
+    "OceanRenderer",
     "identify_forest_tiles",
     "build_feature_atlas",
     # Region stitch (Phase 11C)
