@@ -416,37 +416,37 @@ For a hex tile with 6 neighbours, we get 6 apron strips. For pentagons, 5. Each 
 - **Adjacent tiles render the same pixels in their overlap zone** (because they share the same sub-face data), producing seamless transitions.
 - **The gutter zone in the atlas actually contains correct terrain** instead of clamped edge pixels.
 
-### 18A — Apron Grid Construction 🔲
+### 18A — Apron Grid Construction ✅
 
 Build the "apron" — the extended detail grid that includes neighbour edge sub-faces.
 
-- [ ] **18A.1 — Identify boundary sub-faces** — for a detail grid, classify each sub-face as:
+- [x] **18A.1 — Identify boundary sub-faces** — for a detail grid, classify each sub-face as:
   - `interior` — not adjacent to any boundary edge
   - `boundary` — adjacent to at least one boundary edge
   - `edge_band` — the outermost ring(s) of sub-faces
   Expose as `classify_boundary_subfaces(detail_grid) -> Dict[str, str]`.
 
-- [ ] **18A.2 — Compute neighbour edge mapping** — for each globe-level edge between two adjacent tiles, determine which sub-faces from each tile's detail grid lie along that shared edge:
+- [x] **18A.2 — Compute neighbour edge mapping** — for each globe-level edge between two adjacent tiles, determine which sub-faces from each tile's detail grid lie along that shared edge:
   - Map tile A's edge sub-faces ↔ tile B's edge sub-faces by position on the shared macro-edge.
   - This establishes which sub-faces from neighbour B should appear in tile A's apron.
-  - `compute_edge_subface_mapping(globe_grid, face_id_a, face_id_b, coll) -> EdgeMapping`
+  - `compute_edge_subface_mapping(globe_grid, face_id_a, face_id_b, coll) -> EdgeSubfaceMapping`
 
-- [ ] **18A.3 — Build apron grid** — given a tile's own detail grid + its neighbour edge mappings, construct an extended `PolyGrid` that includes:
+- [x] **18A.3 — Build apron grid** — given a tile's own detail grid + its neighbour edge mappings, construct an extended `PolyGrid` that includes:
   - All of the tile's own sub-faces (unchanged)
   - The outermost sub-face ring from each neighbour (with positions transformed into the tile's local coordinate space)
-  - `build_apron_grid(globe_grid, face_id, coll) -> PolyGrid`
+  - `build_apron_grid(globe_grid, face_id, coll) -> (PolyGrid, apron_mapping)`
 
-- [ ] **18A.4 — Apron terrain propagation** — ensure the apron sub-faces have correct elevation data:
+- [x] **18A.4 — Apron terrain propagation** — ensure the apron sub-faces have correct elevation data:
   - Copy elevations from the neighbour's store
   - Optionally smooth the join zone (existing `boundary_smoothing` from `TileDetailSpec`)
-  - `propagate_apron_terrain(apron_grid, coll, face_id) -> TileDataStore`
+  - `propagate_apron_terrain(apron_grid, apron_mapping, coll, face_id) -> TileDataStore`
 
-- [ ] **18A.5 — Tests:**
+- [x] **18A.5 — Tests:** (28 tests in `tests/test_apron_grid.py`)
   - Boundary classification identifies correct sub-face counts
   - Edge mapping produces matched pairs (A's edge faces ↔ B's edge faces)
   - Apron grid has more sub-faces than the original detail grid
   - Apron terrain is continuous across the join
-  - Pentagon tiles get 5 apron strips, hexes get 6
+  - Batch `build_all_apron_grids()` builds for every tile
 
 ### 18B — Apron-Aware Texture Rendering 🔲
 

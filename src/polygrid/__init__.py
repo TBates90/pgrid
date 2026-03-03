@@ -238,6 +238,16 @@ from .detail_terrain import (
     generate_detail_terrain_bounded,
     generate_all_detail_terrain,
 )
+from .apron_grid import (
+    ApronResult,
+    EdgeSubfaceMapping,
+    build_all_apron_grids,
+    build_apron_grid,
+    boundary_subface_ids,
+    classify_boundary_subfaces,
+    compute_edge_subface_mapping,
+    propagate_apron_terrain,
+)
 from .detail_terrain_3d import (
     Terrain3DSpec,
     compute_subface_3d_position,
@@ -572,6 +582,15 @@ __all__ = [
     "classify_detail_faces",
     "generate_detail_terrain_bounded",
     "generate_all_detail_terrain",
+    # Apron grid (Phase 18A)
+    "ApronResult",
+    "EdgeSubfaceMapping",
+    "build_all_apron_grids",
+    "build_apron_grid",
+    "boundary_subface_ids",
+    "classify_boundary_subfaces",
+    "compute_edge_subface_mapping",
+    "propagate_apron_terrain",
     # Detail render (Phase 10C)
     "BiomeConfig",
     "detail_elevation_to_colour",
