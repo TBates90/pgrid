@@ -283,31 +283,29 @@ Wire the ocean renderer into the biome pipeline.
   - TestOceanRenderer: protocol conformance, image output, pixel changes, depth map effect
   - TestOceanPipelineIntegration: ocean-only atlas, mixed forest+ocean, visual difference, biome_type_map routing, land tiles unaffected
 
-### 17D — Shader Enhancements 🔲
+### 17D — Shader Enhancements ✅
 
 Upgrade the existing 13H water shader to work with the new textured ocean tiles.
 
-- [ ] **17D.1 — Texture-aware water shader** — the PBR fragment shader currently replaces water tile colours entirely. Update it to *enhance* the baked ocean texture instead:
-  - Sample the atlas texture (which now has depth gradients, waves, etc.)
-  - Add animated wave normal perturbation on top (existing 13H)
-  - Add specular reflection enhancement (water is more reflective than land)
-  - Preserve the baked depth gradient and coastal features
+- [x] **17D.1 — Texture-aware water shader** — PBR fragment shader now *enhances* baked ocean texture instead of replacing it:
+  - Preserves baked atlas texture (`baked_ocean`) with `WATER_TEXTURE_MIX` blend
+  - Falls back to procedural colour for untextured water tiles (backward compatible)
+  - Animated wave normal perturbation preserved from 13H
 
-- [ ] **17D.2 — Fresnel-based reflection** — enhance water Fresnel:
-  - At glancing angles (near globe edge): water is highly reflective (sky-coloured)
-  - At steep angles (looking straight down): water is transparent (shows baked texture)
-  - Uses existing Schlick approximation but with water-specific IOR
+- [x] **17D.2 — Fresnel-based reflection** — water-specific Fresnel:
+  - `WATER_F0 = 0.02` (IOR ≈ 1.33 for water)
+  - `fresnel_water` computed per-fragment: glancing → sky reflection, steep → baked texture
+  - Sky reflection colour blended at 60% Fresnel strength
 
-- [ ] **17D.3 — Sun specular hotspot** — bright specular reflection of the sun on the water surface:
-  - Position moves with globe rotation
-  - Size controlled by roughness (calm water = tight hotspot, rough = broad)
-  - Only on water tiles (use water_flag)
+- [x] **17D.3 — Sun specular hotspot** — bright specular on water only:
+  - `SUN_SPEC_POWER = 256.0` for tight hotspot on calm water
+  - `SUN_SPEC_STRENGTH = 1.8` intensity multiplier
+  - Water-specific Fresnel applied to sun specular
+  - Only inside `water_hint > 0.5` block, added to final combine
 
-- [ ] **17D.4 — Tests:**
-  - Shader source contains texture sampling before water colour override
-  - Fresnel keywords present in shader
-  - Specular hotspot code present
-  - Backward compatibility: shader still works with untextured water tiles
+- [x] **17D.4 — Tests:** 7 new tests in `test_globe_renderer_v2.py`:
+  - Texture sampling before water override, water-specific Fresnel, sun specular hotspot,
+    water-only sun specular, backward compat untextured, constants defined, sky reflection
 
 ### 17E — Ocean Globe Demo & Tuning 🔲
 

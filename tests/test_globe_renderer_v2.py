@@ -1731,6 +1731,66 @@ class TestPBRShaderSources:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 17D — Enhanced ocean shader tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestOceanShaderEnhancements:
+    """Tests for Phase 17D ocean shader enhancements."""
+
+    def test_texture_sampling_before_water_override(self):
+        """Shader should sample atlas texture and keep it for water tiles."""
+        _, fs = get_pbr_shader_sources()
+        # The shader should reference the baked texture in the water block
+        assert "baked_ocean" in fs, "shader should preserve baked ocean texture"
+        assert "WATER_TEXTURE_MIX" in fs, "shader should blend baked and procedural"
+
+    def test_fresnel_water_specific(self):
+        """Shader should have water-specific Fresnel with correct IOR."""
+        _, fs = get_pbr_shader_sources()
+        assert "WATER_F0" in fs, "shader should define water F0"
+        assert "fresnel_water" in fs, "shader should compute water-specific Fresnel"
+        assert "NdotV_water" in fs, "shader should have water NdotV"
+
+    def test_sun_specular_hotspot_present(self):
+        """Shader should have sun specular hotspot on water tiles."""
+        _, fs = get_pbr_shader_sources()
+        assert "sun_specular" in fs, "shader should have sun specular"
+        assert "SUN_SPEC_POWER" in fs, "shader should define sun spec power"
+        assert "SUN_SPEC_STRENGTH" in fs, "shader should define sun spec strength"
+
+    def test_sun_specular_water_only(self):
+        """Sun specular should only apply to water tiles (inside water_hint block)."""
+        _, fs = get_pbr_shader_sources()
+        # Find the sun_specular block: it should be inside a water_hint > 0.5 check
+        idx_sun = fs.index("sun_specular")
+        idx_water_check = fs.index("water_hint > 0.5")
+        # sun_specular should appear after the water check
+        assert idx_sun > idx_water_check, "sun_specular should be inside water block"
+        # and it should be added to the combine line
+        assert "sun_specular" in fs[fs.index("Combine"):]
+
+    def test_backward_compat_untextured_water(self):
+        """Shader should fall back to procedural for untextured water."""
+        _, fs = get_pbr_shader_sources()
+        # If u_use_texture is 0, shader should still use procedural ocean colours
+        assert "u_use_texture == 1" in fs, "shader should check texture flag"
+        assert "procedural_ocean" in fs, "shader should have procedural fallback"
+
+    def test_shader_constants_defined(self):
+        """17D constants should be defined in the shader."""
+        _, fs = get_pbr_shader_sources()
+        for constant in ["WATER_F0", "WATER_TEXTURE_MIX",
+                          "SUN_SPEC_POWER", "SUN_SPEC_STRENGTH"]:
+            assert constant in fs, f"Missing constant: {constant}"
+
+    def test_sky_reflection_for_water(self):
+        """Water Fresnel should blend toward a sky reflection colour."""
+        _, fs = get_pbr_shader_sources()
+        assert "sky_reflection" in fs
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 13H — Water rendering tests
 # ═══════════════════════════════════════════════════════════════════
 

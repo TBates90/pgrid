@@ -1966,6 +1966,12 @@ const float WAVE_SPEED         = 0.8;
 const float WAVE_SCALE         = 12.0;
 const float WAVE_AMPLITUDE     = 0.06;
 
+// 17D — Enhanced water constants
+const float WATER_F0           = 0.02;   // Schlick F0 for water (IOR ≈ 1.33)
+const float WATER_TEXTURE_MIX  = 0.65;   // how much baked texture to keep
+const float SUN_SPEC_POWER     = 256.0;  // tight sun hotspot on calm water
+const float SUN_SPEC_STRENGTH  = 1.8;    // intensity of sun specular
+
 // 13H — Coastline emphasis
 const vec3  COAST_COLOR       = vec3(0.85, 0.92, 0.95);   // bright foam
 const float COAST_WIDTH       = 0.012;                      // world-space width
@@ -2008,13 +2014,26 @@ void main() {
     // ── Roughness (water is shinier) ───────────────────────────────
     float roughness = mix(ROUGHNESS_TERRAIN, ROUGHNESS_WATER, water_hint);
 
-    // ── 13H.2: Water shader overrides ──────────────────────────────
+    // ── 13H.2 / 17D: Texture-aware water shader ─────────────────
     if (water_hint > 0.5) {
-        // Depth-based colour: shallow (turquoise) → deep (navy)
-        // Use the blue excess as a depth proxy
+        // 17D.1 — Preserve baked ocean texture, blend with procedural
+        // The atlas now contains depth gradients, waves, coastal detail
+        // from the ocean render pipeline (17A-17C).
+        vec3 baked_ocean = base;  // keep the baked texture
+
+        // Fallback procedural colour for untextured water tiles
         float depth = max(0.0, base.b - max(base.r, base.g));
         depth = smoothstep(WATER_THRESHOLD, 0.8, depth);
-        base = mix(WATER_SHALLOW, WATER_DEEP, depth);
+        vec3 procedural_ocean = mix(WATER_SHALLOW, WATER_DEEP, depth);
+
+        // If using texture atlas, blend baked texture with procedural
+        // enhancement; otherwise fall back to pure procedural (backward
+        // compatible with untextured water tiles).
+        if (u_use_texture == 1) {
+            base = mix(procedural_ocean, baked_ocean, WATER_TEXTURE_MIX);
+        } else {
+            base = procedural_ocean;
+        }
 
         // Animated wave normal perturbation
         vec3 world_n = normalize(v_world_pos);
@@ -2025,6 +2044,15 @@ void main() {
                  * sin(v_world_pos.z * WAVE_SCALE + wave_phase * 0.9);
         vec3 wave_offset = vec3(wx, 0.0, wz) * WAVE_AMPLITUDE;
         N = normalize(N + wave_offset);
+
+        // 17D.2 — Fresnel-based reflection (water-specific IOR)
+        // At glancing angles: highly reflective (sky-coloured)
+        // At steep angles: transparent (shows baked texture)
+        float NdotV_water = max(0.0, dot(N, V));
+        float fresnel_water = WATER_F0 + (1.0 - WATER_F0)
+                            * pow(1.0 - NdotV_water, 5.0);
+        vec3 sky_reflection = SKY_AMB * 1.5;  // brighter sky for water
+        base = mix(base, sky_reflection, fresnel_water * 0.6);
     }
 
     // ── 13H.3: Coastline emphasis ──────────────────────────────────
@@ -2053,6 +2081,16 @@ void main() {
     float F = 0.04 + 0.96 * pow(1.0 - HdotV, 5.0);
     vec3 specular = spec * F * KEY_COLOR * (1.0 - roughness);
 
+    // ── 17D.3: Sun specular hotspot on water ───────────────────────
+    // Tight, bright specular reflection only on water surfaces.
+    // Position moves with globe rotation via u_light_dir.
+    vec3 sun_specular = vec3(0.0);
+    if (water_hint > 0.5) {
+        float sun_spec = pow(NdotH, SUN_SPEC_POWER);
+        float sun_F = WATER_F0 + (1.0 - WATER_F0) * pow(1.0 - HdotV, 5.0);
+        sun_specular = sun_spec * sun_F * KEY_COLOR * SUN_SPEC_STRENGTH;
+    }
+
     // ── Hemisphere ambient ─────────────────────────────────────────
     float up = N.y * 0.5 + 0.5;  // 0 = down, 1 = up
     vec3 ambient = mix(GND_AMB, SKY_AMB, up);
@@ -2063,7 +2101,8 @@ void main() {
     vec3 rim = fresnel * SKY_AMB;
 
     // ── Combine ────────────────────────────────────────────────────
-    vec3 color = base * (diffuse_key + diffuse_fill + ambient) + specular + rim;
+    vec3 color = base * (diffuse_key + diffuse_fill + ambient)
+               + specular + sun_specular + rim;
 
     // Apply coastline highlight
     color = mix(color, COAST_COLOR, coast_factor * 0.6);
@@ -2083,6 +2122,9 @@ def get_pbr_shader_sources() -> Tuple[str, str]:
     - Normal-mapped lighting (Phase 13E)
     - Water rendering with animated waves, depth-based colour,
       coastline emphasis, and per-vertex water flag (Phase 13H)
+    - Texture-aware ocean shader with baked texture preservation,
+      Fresnel-based water reflection, and sun specular hotspot
+      (Phase 17D)
 
     Useful for offline compilation checks and tests.
 
