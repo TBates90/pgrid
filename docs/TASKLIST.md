@@ -371,9 +371,263 @@ If the automatic cross-fade doesn't produce a good coastal look, 17C.3 can add e
 
 ---
 
+## Phase 18 — Tile Shape Fidelity & Texture Export *(Planned)*
+
+### Problem Statement
+
+The current rendering pipeline has several cohesion issues visible in the attached screenshots:
+
+1. **Square textures on hex/pent meshes.** Each tile's detail grid is rendered to a square PNG. The 3D mesh maps a hex/pent polygon onto this square via UV projection. The polygon only covers ~75-80% of the square (hex inscribed in a square), so ~20-25% of every tile texture is wasted border that the GPU samples during bilinear filtering at tile edges, causing visible seams and colour bleed.
+
+2. **Tiles are rendered in isolation.** Each tile generates its own sub-face detail grid independently. The outer ring of sub-faces has no knowledge of the neighbouring tile's outer ring. This means terrain, colour, and features all have hard discontinuities at tile boundaries — visible as harsh seams on the 3D globe.
+
+3. **Biome renderers ignore polygrid structure.** The forest and ocean renderers (`biome_render.py`, `ocean_render.py`) paint onto flat PIL images using pixel-level noise and scatter. They don't reference the detail grid's sub-face polygons at all. This means biome features float disconnectedly from the underlying terrain topology — you can't, for example, have a tree per sub-face, or ocean depth that follows sub-face elevation.
+
+4. **PNG atlas is a development convenience, not a production asset.** Game engines and real-time renderers expect compressed texture formats (KTX2, DDS, Basis Universal) with mipmaps, power-of-two dimensions, and optionally normal+roughness channel packing. The current PNG atlas works for our pyglet viewer but wouldn't transfer to a real game pipeline.
+
+### Design: Edge Polygon Sharing ("Apron Tiles")
+
+The key insight for fixing tile boundary seams: **for each tile, include the outermost ring of sub-faces from every neighbouring tile ("apron polygons"), and render them as part of the tile's texture.** This creates an overlap zone where adjacent tiles agree on the pixel content.
+
+```
+   ┌─────────────────────────────────┐
+   │         Neighbour tile A        │
+   │  ┌───────────────────────────┐  │
+   │  │  A's edge sub-faces       │  │  ← These get copied into
+   │  │  (apron for tile C)       │  │    tile C's texture
+   │  └───────────────────────────┘  │
+   └─────────────────────────────────┘
+              ╲                    ╱
+               ╲                  ╱
+                ╲     Tile C     ╱
+                 ╲──────────────╱
+                  │  C's own    │
+                  │  sub-faces  │
+                  │             │
+                  │  + aprons   │
+                  │  from A,B,D │
+                 ╱──────────────╲
+                ╱                ╲
+```
+
+For a hex tile with 6 neighbours, we get 6 apron strips. For pentagons, 5. Each strip adds the neighbour's boundary sub-faces (half of the outer ring) into the tile's detail grid before rendering. The result:
+
+- **Every tile's texture extends slightly beyond its polygon boundary**, covering what would otherwise be the seam zone.
+- **Adjacent tiles render the same pixels in their overlap zone** (because they share the same sub-face data), producing seamless transitions.
+- **The gutter zone in the atlas actually contains correct terrain** instead of clamped edge pixels.
+
+### 18A — Apron Grid Construction 🔲
+
+Build the "apron" — the extended detail grid that includes neighbour edge sub-faces.
+
+- [ ] **18A.1 — Identify boundary sub-faces** — for a detail grid, classify each sub-face as:
+  - `interior` — not adjacent to any boundary edge
+  - `boundary` — adjacent to at least one boundary edge
+  - `edge_band` — the outermost ring(s) of sub-faces
+  Expose as `classify_boundary_subfaces(detail_grid) -> Dict[str, str]`.
+
+- [ ] **18A.2 — Compute neighbour edge mapping** — for each globe-level edge between two adjacent tiles, determine which sub-faces from each tile's detail grid lie along that shared edge:
+  - Map tile A's edge sub-faces ↔ tile B's edge sub-faces by position on the shared macro-edge.
+  - This establishes which sub-faces from neighbour B should appear in tile A's apron.
+  - `compute_edge_subface_mapping(globe_grid, face_id_a, face_id_b, coll) -> EdgeMapping`
+
+- [ ] **18A.3 — Build apron grid** — given a tile's own detail grid + its neighbour edge mappings, construct an extended `PolyGrid` that includes:
+  - All of the tile's own sub-faces (unchanged)
+  - The outermost sub-face ring from each neighbour (with positions transformed into the tile's local coordinate space)
+  - `build_apron_grid(globe_grid, face_id, coll) -> PolyGrid`
+
+- [ ] **18A.4 — Apron terrain propagation** — ensure the apron sub-faces have correct elevation data:
+  - Copy elevations from the neighbour's store
+  - Optionally smooth the join zone (existing `boundary_smoothing` from `TileDetailSpec`)
+  - `propagate_apron_terrain(apron_grid, coll, face_id) -> TileDataStore`
+
+- [ ] **18A.5 — Tests:**
+  - Boundary classification identifies correct sub-face counts
+  - Edge mapping produces matched pairs (A's edge faces ↔ B's edge faces)
+  - Apron grid has more sub-faces than the original detail grid
+  - Apron terrain is continuous across the join
+  - Pentagon tiles get 5 apron strips, hexes get 6
+
+### 18B — Apron-Aware Texture Rendering 🔲
+
+Update the texture pipeline to render apron grids instead of isolated tiles.
+
+- [ ] **18B.1 — Render with apron** — modify `render_detail_texture_fullslot()` to accept an apron grid:
+  - Render all sub-faces (including apron) using the same colouring pipeline
+  - The output image now extends beyond the tile's polygon boundary
+  - Apron sub-faces provide correct colours in what was previously the gutter zone
+  - `render_detail_texture_apron(apron_grid, store, ...) -> Image`
+
+- [ ] **18B.2 — Polygrid-aware biome rendering** — new rendering approach where biome features (forest, ocean) are driven by the sub-face grid structure:
+  - Instead of painting onto a flat image with pixel-level noise, iterate over sub-faces and assign per-sub-face biome attributes (tree presence, canopy density, ocean depth)
+  - Each sub-face becomes a "brush stroke" — its polygon boundary defines where a tree crown sits, where foam appears, etc.
+  - This naturally respects the grid topology and makes biome features follow terrain structure
+  - Interface: `BiomeRenderer.render_on_grid(apron_grid, store, tile_id, density, ...)` — new protocol method
+
+- [ ] **18B.3 — Seamless biome boundaries** — because the apron includes neighbour sub-faces, biome features near tile edges are rendered *with knowledge of what's on the other side*:
+  - A tree near a tile boundary has its canopy partially in the apron zone — both adjacent tiles render it consistently
+  - Ocean depth gradients in the apron zone match the neighbour's depth map
+  - Forest-to-ocean transitions render correctly at tile boundaries
+
+- [ ] **18B.4 — Atlas gutter from apron** — the atlas gutter pixels are now filled from the apron rendering instead of the current edge-pixel clamping:
+  - The gutter zone contains actual terrain/biome data
+  - Bilinear filtering at tile edges blends real terrain instead of repeated edge pixels
+  - This eliminates the visible "frame" around each tile on the 3D globe
+
+- [ ] **18B.5 — Tests:**
+  - Apron-rendered tile has correct colours in the gutter zone
+  - Two adjacent tiles produce matching pixels in their overlap zone
+  - Sub-face-driven biome rendering produces features aligned to polygon boundaries
+  - Atlas with apron gutters has no visible tile boundaries (pixel comparison)
+
+### 18C — Polygrid-Driven Biome Features 🔲
+
+Refactor forest and ocean renderers to be topology-aware.
+
+- [ ] **18C.1 — Sub-face forest features** — each sub-face can host a tree:
+  - Tree placement: iterate sub-faces in density order, place trees at centroids with jittered positions
+  - Canopy size proportional to sub-face area (natural variation for hex vs pentagon sub-faces)
+  - Sub-face elevation drives tree species/colour (higher = sparser, more alpine)
+  - Shadow direction follows global light direction through the sub-face grid
+  - Replaces current random-scatter approach with structured, topology-aware placement
+
+- [ ] **18C.2 — Sub-face ocean features** — each sub-face carries ocean properties:
+  - Depth per sub-face (from detail terrain elevation) rather than per-tile depth
+  - Coastal sub-faces (those adjacent to land sub-faces) get foam/sand treatment
+  - Deep sub-faces get abyssal darkening
+  - Wave patterns follow sub-face grid axes (not pixel coordinates)
+  - This gives ocean tiles the same structured, organic look as terrain tiles
+
+- [ ] **18C.3 — Hybrid rendering** — combine polygrid-driven features with pixel-level finishing:
+  - Step 1: Render sub-face polygons with biome-appropriate colours (topology pass)
+  - Step 2: Apply pixel-level noise overlay for micro-detail (existing 16D approach)
+  - Step 3: Apply biome feature compositing (trees, waves, foam) at polygon positions
+  - This layered approach gets the best of both worlds: structured topology + organic detail
+
+- [ ] **18C.4 — Tests:**
+  - Forest trees placed at sub-face centroids, not random pixel positions
+  - Ocean depth varies per sub-face within a tile
+  - Coastal sub-faces identified correctly (adjacent to land)
+  - Feature placement deterministic given same seed
+  - Visual comparison: topology-aware vs pixel-only rendering
+
+### 18D — Texture Export Pipeline 🔲
+
+Output proper texture assets suitable for game engines.
+
+- [ ] **18D.1 — Power-of-two atlas dimensions** — ensure atlas size is always a power of 2:
+  - Auto-compute closest PoT that fits all tiles at the requested tile_size
+  - Support 1024×1024, 2048×2048, 4096×4096 atlas sizes
+  - Respect GPU max texture limits
+
+- [ ] **18D.2 — Mipmap generation** — generate full mipmap chain for the atlas:
+  - Use high-quality downscaling (Lanczos)
+  - Option to store all mip levels in a single file (KTX2) or as separate files
+  - Mip-level 0 is the full atlas; subsequent levels halve in each dimension
+  - `generate_atlas_mipmaps(atlas_path, levels=None) -> List[Path]`
+
+- [ ] **18D.3 — KTX2 export** — export atlas + mipmaps as KTX2 container:
+  - KTX2 is the standard Vulkan/OpenGL texture container format
+  - Supports GPU-native compressed formats (BC7, ETC2, ASTC)
+  - Include all mip levels in a single file
+  - Optional: Basis Universal supercompression for maximum portability
+  - `export_atlas_ktx2(atlas_path, output_path, *, compression="bc7") -> Path`
+  - Fallback: if KTX toolchain not available, warn and export as PNG with mipmaps
+
+- [ ] **18D.4 — Channel-packed material textures** — combine multiple maps into channel-packed textures:
+  - **Albedo atlas** — RGB colour (existing atlas)
+  - **Normal atlas** — RGB normal map (existing from Phase 13E)
+  - **ORM atlas** — packed R=occlusion, G=roughness, B=metallic:
+    - Occlusion: darker in crevices (from hillshade data)
+    - Roughness: low for water tiles, medium for rock, high for foliage
+    - Metallic: 0 for all natural terrain (non-metallic)
+  - Export all three as a material set: `albedo.ktx2`, `normal.ktx2`, `orm.ktx2`
+
+- [ ] **18D.5 — glTF export** — export the textured globe as a glTF 2.0 asset:
+  - Mesh: all tile triangles with positions, normals, tangents, UVs
+  - Materials: PBR metallic-roughness with albedo, normal, ORM textures
+  - This is the standard interchange format for 3D engines (Unity, Unreal, Godot, three.js)
+  - `export_globe_gltf(grid, atlas_path, normal_path, orm_path, output_path) -> Path`
+
+- [ ] **18D.6 — Tests:**
+  - Atlas dimensions are always power-of-two
+  - Mipmap chain has correct level count and sizes
+  - KTX2 file is a valid container (header check)
+  - ORM atlas has correct channel assignment (R=AO, G=rough, B=metal)
+  - glTF validates against schema
+
+### 18E — Visual Cohesion & Demo 🔲
+
+Integration testing and visual tuning to verify the cohesion improvements.
+
+- [ ] **18E.1 — Seam elimination verification** — render a globe and measure tile boundary visibility:
+  - Sample pixel colours along tile boundaries vs tile interiors
+  - The colour variance at boundaries should be within 2× of interior variance
+  - Visual comparison: before (Phase 17) vs after (Phase 18)
+
+- [ ] **18E.2 — Topology feature verification** — verify features follow sub-face structure:
+  - Trees sit at sub-face centroids (not arbitrary pixel positions)
+  - Ocean depth varies smoothly across sub-faces
+  - Feature placement is consistent across tile boundaries (apron overlap)
+
+- [ ] **18E.3 — Demo script `scripts/demo_cohesive_globe.py`** — updated viewer showcasing all improvements:
+  - Apron rendering (seamless tile boundaries)
+  - Topology-aware forests + oceans
+  - Material export (KTX2 + glTF preview)
+  - Side-by-side: old pipeline vs new pipeline
+  - `python scripts/demo_cohesive_globe.py -f 3 --detail-rings 4 --terrain earthlike --features --view`
+
+- [ ] **18E.4 — Performance budget** — ensure apron rendering doesn't blow up render times:
+  - Target: apron pipeline < 2× baseline (apron adds ~30% more sub-faces per tile)
+  - Profile atlas build time at freq=3, rings=4, tile_size=256
+  - Consider caching apron grids if build time is an issue
+
+- [ ] **18E.5 — Tests:**
+  - Full pipeline (terrain → apron → atlas → viewer) runs without error
+  - Atlas with apron gutters produces visibly better results
+  - glTF export loads in a standard viewer
+  - Performance regression test
+
+### Summary — Phase 18 Implementation Order
+
+| Step | Module | Depends on | Delivers | Complexity |
+|------|--------|-----------|----------|------------|
+| **18A** | `detail_grid.py`, `tile_detail.py` | 10A (detail grid) | Apron grid construction | High |
+| **18B** | `tile_texture.py`, `biome_pipeline.py` | 18A + 16A (fullslot) | Apron-aware rendering | High |
+| **18C** | `biome_render.py`, `ocean_render.py` | 18B + 14D (biome) | Topology-aware biomes | Medium |
+| **18D** | New: `texture_export.py` | 18B + 13E (normals) | KTX2, glTF, ORM export | Medium |
+| **18E** | demo + validation | 18A–D | Visual cohesion proof | Low |
+
+### Design notes — Why apron grids instead of shader-based blending
+
+We considered several approaches for eliminating tile boundary seams:
+
+1. **Shader-level blending** (sample two atlas tiles at boundary pixels) — requires the fragment shader to know which adjacent tile to sample, plus a complex edge-distance SDF. Expensive and hard to get right for 5/6-sided polygons.
+
+2. **Enlarged tile rendering** (render each tile at 110% scale, overlap) — simple but imprecise. The overlap zone doesn't have correct terrain because the detail grid doesn't extend beyond the tile.
+
+3. **Apron grid extension** (our approach) — extends the detail grid with real neighbouring sub-faces. The overlap zone has geometrically correct terrain because it literally uses the neighbour's sub-face data. More work upfront, but the resulting textures are provably seamless.
+
+The apron approach also enables topology-aware biome rendering (18C) because the renderer sees the correct grid structure at tile boundaries — it can place a tree that straddles two tiles and render it consistently on both sides.
+
+### Design notes — Texture format choices
+
+| Format | Pros | Cons | Use case |
+|--------|------|------|----------|
+| **PNG** | Universal, lossless, easy | No mipmaps, large files, CPU decode | Development, debugging |
+| **KTX2** | GPU-native, mipmaps, compression | Needs KTX toolchain | Production rendering |
+| **Basis Universal** | Universal GPU transcoding | Lossy, needs basisu | Web/mobile targets |
+| **glTF** | Standard 3D interchange | Complex spec | Engine import |
+
+Our default pipeline continues to use PNG for development (fast iteration, easy debugging). The KTX2/glTF export is an optional production step for users who want to import their globe into a game engine.
+
+---
+
 ## Dependency Roadmap (Updated)
 
 | Phase | New dependencies |
 |-------|-----------------|
 | 16 (Visual Polish) | None (uses existing PIL + numpy + noise infra) |
 | 17 (Ocean Biome) | None (extends existing biome_pipeline + shader infra) |
+| 18A–C (Tile Fidelity) | None (extends existing detail grid + texture infra) |
+| 18D (Texture Export) | Optional: `pyktx` or `pygltflib` for KTX2/glTF export |
