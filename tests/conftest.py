@@ -20,12 +20,7 @@ if str(SRC) not in sys.path:
 
 _FILE_TIER: dict[str, str] = {
     # Phase 1-4 — fast
-    "test_adjacency.py": "fast",
-    "test_rings.py": "fast",
-    "test_build_hex.py": "fast",
-    "test_hex_shape.py": "fast",
-    "test_serialization.py": "fast",
-    "test_composite.py": "fast",
+    "test_core_topology.py": "fast",
     "test_stitching.py": "fast",
     "test_assembly.py": "fast",
     "test_macro_edges.py": "fast",

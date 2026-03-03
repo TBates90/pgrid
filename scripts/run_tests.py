@@ -48,12 +48,7 @@ def dim(t: str) -> str: return _c("2", t)
 
 GROUPS: list[tuple[str, list[str], str]] = [
     ("Phase 1-4 — Core Topology & Transforms", [
-        "test_adjacency.py",
-        "test_rings.py",
-        "test_build_hex.py",
-        "test_hex_shape.py",
-        "test_serialization.py",
-        "test_composite.py",
+        "test_core_topology.py",
         "test_stitching.py",
         "test_assembly.py",
         "test_macro_edges.py",
