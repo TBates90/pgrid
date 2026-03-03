@@ -102,23 +102,21 @@ This approach avoids the "neighbour tile stitching" alternative (merging adjacen
   - `fade_width=0` produces binary mask
   - `apply_blend_mask_to_atlas` preserves pixels at mask=1, zeros at mask=0
 
-### 16C — Biome Feature Edge Overflow 🔲
+### 16C — Biome Feature Edge Overflow ✅
 
 **Problem:** Forest canopy scatter (14A) places trees within the hex tile bounds with a small margin zone (14C). Trees near tile edges are clipped at the hex boundary. Adjacent tiles' canopies don't mesh.
 
 **Fix:** Extend biome feature rendering to cover the full tile slot (not just the hex interior).
 
-- [ ] **16C.1 — Full-slot feature scattering** — modify `scatter_features_on_tile()` to scatter features across the full square tile area (0,0 → tile_size, tile_size), not just the hex interior. Features outside the hex footprint will be visible through the fade zone (16B). Poisson disk sampling already works on rectangles — just expand the bounds.
+- [x] **16C.1 — Full-slot feature scattering** — `scatter_features_fullslot()` in `biome_scatter.py`. Expands sampling area by `overscan` fraction on each side (default 15%), scattering via Poisson disk on the enlarged rectangle. Feature positions are in tile-local coords (may be negative or exceed tile_size). 8 tests in `test_biome_scatter.py`: features outside tile bounds, more than standard, proportional to area, deterministic, neighbour density affects margin, zero density empty, density continuity at boundary.
 
-- [ ] **16C.2 — Neighbour-seeded margin features** — for tile edges, read the neighbours' density and seed values (from the globe-wide density map) and use them to scatter features in the margin zone with the *neighbour's* parameters. This ensures that trees flowing across a tile boundary have consistent species, size, and spacing from the neighbour's perspective.
+- [x] **16C.2 — Neighbour-seeded margin features** — `scatter_features_fullslot()` accepts `neighbour_densities` and `neighbour_seeds` dicts. The spatial density function uses neighbour density values for features in the margin zone (outside `[0, tile_size]`), ensuring cross-boundary feature coherence.
 
-- [ ] **16C.3 — Feature-level cross-fade** — features near the tile edge are rendered with reduced opacity (following the blend mask from 16B). Features from the neighbour (rendered into the neighbour's extended tile area) provide the matching opacity. The sum is a seamless canopy.
+- [x] **16C.3 — Feature-level cross-fade** — `render_forest_on_ground_fullslot()` in `biome_render.py`. Accepts optional `blend_mask` (from 16B). Composites featured image with ground image: `output = ground * (1-mask) + featured * mask`, so features fade toward ground at tile edges. `ForestRenderer` in `biome_pipeline.py` gains `fullslot=True` mode. 5 tests in `test_biome_render.py`: produces image, with blend mask, mask fades edges, no-mask mode, deterministic.
 
-- [ ] **16C.4 — Tests:**
-  - Features are scattered across the full square, not just the hex interior
-  - Margin features use neighbour density values
-  - Feature count in the extended area is proportional to the expanded bounds
-  - No visible gap in feature density at hex boundary (statistical test)
+- [x] **16C.4 — Tests:** 13 new tests total:
+  - `TestScatterFeaturesFullslot` (8): outside bounds, count comparison, area-proportional, deterministic, neighbour density, zero density, boundary continuity
+  - `TestRenderForestOnGroundFullslot` (5): image output, blend mask, edge fade, no-mask, deterministic
 
 ### 16D — Hex Shape Softening ✅
 

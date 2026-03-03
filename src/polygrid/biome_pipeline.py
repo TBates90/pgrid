@@ -83,9 +83,10 @@ class ForestRenderer:
     undergrowth, shadows, and canopy highlights.
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, fullslot: bool = False):
         from .biome_render import ForestFeatureConfig, TEMPERATE_FOREST
         self.config = config if config is not None else TEMPERATE_FOREST
+        self.fullslot = fullslot
 
     def render(
         self,
@@ -95,10 +96,27 @@ class ForestRenderer:
         *,
         seed: int = 42,
         globe_3d_center: Optional[Tuple[float, float, float]] = None,
+        blend_mask=None,
+        neighbour_densities: Optional[Dict[str, float]] = None,
+        neighbour_seeds: Optional[Dict[str, int]] = None,
     ) -> "Image.Image":
-        from .biome_render import render_forest_on_ground
-
         tile_seed = seed + hash(tile_id) % 100_000
+
+        if self.fullslot:
+            from .biome_render import render_forest_on_ground_fullslot
+            return render_forest_on_ground_fullslot(
+                ground_image,
+                density * self.config.density_scale,
+                config=self.config,
+                tile_size=ground_image.size[0],
+                seed=tile_seed,
+                globe_3d_center=globe_3d_center,
+                blend_mask=blend_mask,
+                neighbour_densities=neighbour_densities,
+                neighbour_seeds=neighbour_seeds,
+            )
+
+        from .biome_render import render_forest_on_ground
         return render_forest_on_ground(
             ground_image,
             density * self.config.density_scale,

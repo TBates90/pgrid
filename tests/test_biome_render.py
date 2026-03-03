@@ -221,3 +221,107 @@ class TestRenderForestOnGround:
             ground, 0.8, seed=42, globe_3d_center=(0.5, 0.5, 0.707),
         )
         assert result.size == (128, 128)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 16C — Full-slot forest rendering with feature cross-fade
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_pil
+class TestRenderForestOnGroundFullslot:
+    """16C.3 — Feature-level cross-fade with blend mask."""
+
+    def test_produces_image(self):
+        from polygrid.biome_render import render_forest_on_ground_fullslot
+        ground = Image.new("RGB", (64, 64), (100, 80, 50))
+        result = render_forest_on_ground_fullslot(
+            ground, 0.8, tile_size=64, seed=42,
+        )
+        assert result.size == (64, 64)
+
+    def test_with_blend_mask(self):
+        import numpy as np
+        from polygrid.biome_render import render_forest_on_ground_fullslot
+        ground = Image.new("RGB", (64, 64), (100, 80, 50))
+        # Mask: 1 in centre, 0 at edges
+        mask = np.ones((64, 64), dtype=np.float32)
+        mask[:8, :] = 0.0
+        mask[-8:, :] = 0.0
+        mask[:, :8] = 0.0
+        mask[:, -8:] = 0.0
+
+        result = render_forest_on_ground_fullslot(
+            ground, 0.8, tile_size=64, seed=42,
+            blend_mask=mask,
+        )
+        assert result.size == (64, 64)
+
+    def test_mask_fades_features_at_edges(self):
+        """Features at tile edges should be faded toward ground colour."""
+        import numpy as np
+        from polygrid.biome_render import render_forest_on_ground_fullslot
+
+        ground_colour = (100, 80, 50)
+        ground = Image.new("RGB", (64, 64), ground_colour)
+
+        # Full mask (no fade)
+        full_mask = np.ones((64, 64), dtype=np.float32)
+        no_fade = render_forest_on_ground_fullslot(
+            ground, 0.9, tile_size=64, seed=42,
+            blend_mask=full_mask,
+        )
+
+        # Edge-fade mask
+        fade_mask = np.ones((64, 64), dtype=np.float32)
+        fade_mask[:10, :] = 0.0
+        fade_mask[-10:, :] = 0.0
+        fade_mask[:, :10] = 0.0
+        fade_mask[:, -10:] = 0.0
+
+        with_fade = render_forest_on_ground_fullslot(
+            ground, 0.9, tile_size=64, seed=42,
+            blend_mask=fade_mask,
+        )
+
+        # Edge pixels with fade should be closer to ground colour
+        no_fade_arr = np.array(no_fade.convert("RGB"))
+        with_fade_arr = np.array(with_fade.convert("RGB"))
+        ground_arr = np.array(ground.convert("RGB"))
+
+        # Edge region (first 5 rows)
+        edge_nofade_diff = np.abs(
+            no_fade_arr[:5].astype(float) - ground_arr[:5].astype(float),
+        ).mean()
+        edge_fade_diff = np.abs(
+            with_fade_arr[:5].astype(float) - ground_arr[:5].astype(float),
+        ).mean()
+
+        # With fade, edge pixels should be closer to ground
+        assert edge_fade_diff <= edge_nofade_diff + 1.0, (
+            f"Faded edges ({edge_fade_diff:.1f}) should be closer to ground "
+            f"than unfaded ({edge_nofade_diff:.1f})"
+        )
+
+    def test_no_mask_is_same_as_standard(self):
+        """Without blend_mask, fullslot render should produce features."""
+        from polygrid.biome_render import render_forest_on_ground_fullslot
+        ground = Image.new("RGB", (64, 64), (100, 80, 50))
+        result = render_forest_on_ground_fullslot(
+            ground, 0.8, tile_size=64, seed=42,
+        )
+        # Should differ from ground (features added)
+        import numpy as np
+        result_arr = np.array(result.convert("RGB"))
+        ground_arr = np.array(ground)
+        assert not np.array_equal(result_arr, ground_arr)
+
+    def test_deterministic(self):
+        from polygrid.biome_render import render_forest_on_ground_fullslot
+        import numpy as np
+        ground = Image.new("RGB", (64, 64), (100, 80, 50))
+        a = render_forest_on_ground_fullslot(ground, 0.8, seed=42)
+        b = render_forest_on_ground_fullslot(ground, 0.8, seed=42)
+        np.testing.assert_array_equal(
+            np.array(a.convert("RGB")),
+            np.array(b.convert("RGB")),
+        )

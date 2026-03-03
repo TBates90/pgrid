@@ -449,3 +449,183 @@ def collect_margin_features(
             interior.append(inst)
 
     return interior, margin_list
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 16C.1 — Full-slot feature scattering
+# ═══════════════════════════════════════════════════════════════════
+
+def scatter_features_fullslot(
+    tile_density: float,
+    tile_size: int = 256,
+    *,
+    overscan: float = 0.15,
+    min_radius: float = 2.0,
+    max_radius: float = 7.0,
+    min_distance: float = 4.0,
+    colors: Optional[List[Tuple[int, int, int]]] = None,
+    shadow_color: Tuple[int, int, int] = (15, 35, 10),
+    color_noise: float = 15.0,
+    seed: int = 42,
+    globe_3d_center: Optional[Tuple[float, float, float]] = None,
+    neighbour_densities: Optional[Dict[str, float]] = None,
+    neighbour_seeds: Optional[Dict[str, int]] = None,
+) -> List[FeatureInstance]:
+    """Place features across the full square tile slot (not just hex interior).
+
+    Extends :func:`scatter_features_on_tile` by:
+
+    1. Expanding the sampling area by *overscan* on each side so
+       that features populate the corners/edges of the square tile.
+    2. Optionally incorporating neighbour density/seed values in the
+       margin zone (16C.2) so that features near tile boundaries are
+       seeded from the *neighbour's* parameters — producing coherent
+       cross-boundary canopy.
+
+    Positions are mapped back to tile-local coordinates after
+    scattering in the expanded area.  Features whose centre falls
+    outside ``[0, tile_size]`` are included (they'll be partially
+    visible through the fade zone from 16B).
+
+    Parameters
+    ----------
+    tile_density : float
+        Density for the tile interior (0–1).
+    tile_size : int
+        Tile image size in pixels (square).
+    overscan : float
+        Extra padding fraction.  The scatter area is
+        ``tile_size * (1 + 2 * overscan)`` on each axis, centred
+        on the tile.
+    min_radius, max_radius : float
+        Canopy radius range in pixels.
+    min_distance : float
+        Minimum pixel distance between feature centres.
+    colors : list of (r, g, b), optional
+    shadow_color : (r, g, b)
+    color_noise : float
+    seed : int
+    globe_3d_center : (x, y, z), optional
+    neighbour_densities : dict, optional
+        ``{direction: float}`` where direction is one of
+        ``"left", "right", "top", "bottom"``.  Density values used
+        for margin features in the corresponding overflow zone.
+        Missing directions use *tile_density*.
+    neighbour_seeds : dict, optional
+        ``{direction: int}`` seeds for margin-zone features.  When
+        a margin feature falls in a neighbour's overflow zone, it is
+        seeded from the neighbour's seed for cross-tile coherence.
+        Missing directions use *seed*.
+
+    Returns
+    -------
+    list of FeatureInstance
+        Features covering the full slot area.  Positions may be
+        negative or exceed *tile_size* (in the overscan margin).
+    """
+    if tile_density <= 0.01:
+        return []
+
+    if colors is None:
+        colors = [
+            (34, 120, 30),
+            (50, 135, 40),
+            (65, 145, 35),
+            (28, 100, 28),
+            (45, 128, 50),
+        ]
+
+    if neighbour_densities is None:
+        neighbour_densities = {}
+    if neighbour_seeds is None:
+        neighbour_seeds = {}
+
+    # Expanded sampling area
+    margin_px = tile_size * overscan
+    sample_w = tile_size + 2 * margin_px
+    sample_h = tile_size + 2 * margin_px
+
+    rng = random.Random(seed)
+
+    # Spatial density function — varies across the expanded area
+    def density_fn(px: float, py: float) -> float:
+        # Translate from sample coords to tile coords
+        tx = px - margin_px
+        ty = py - margin_px
+
+        # Determine which zone this point is in
+        in_left = tx < 0
+        in_right = tx > tile_size
+        in_top = ty < 0
+        in_bottom = ty > tile_size
+
+        # Use neighbour density for margin zones
+        if in_left:
+            d = neighbour_densities.get("left", tile_density)
+        elif in_right:
+            d = neighbour_densities.get("right", tile_density)
+        elif in_top:
+            d = neighbour_densities.get("top", tile_density)
+        elif in_bottom:
+            d = neighbour_densities.get("bottom", tile_density)
+        else:
+            d = tile_density
+
+        # Modulate with globe 3D noise for spatial variation
+        if globe_3d_center is not None:
+            gx, gy, gz = globe_3d_center
+            fx = tx / tile_size - 0.5
+            fy = ty / tile_size - 0.5
+            local_noise = fbm_3d(
+                gx + fx * 0.3, gy + fy * 0.3, gz,
+                frequency=8.0, octaves=3, seed=seed + 100,
+            )
+            mod = 0.7 + 0.3 * (local_noise + 1.0) * 0.5
+            d = d * mod
+
+        return max(0.0, d)
+
+    # Effective min_distance scales inversely with density
+    effective_min_d = min_distance / max(tile_density, 0.1)
+    effective_min_d = max(min_distance * 0.5, min(effective_min_d, tile_size * 0.5))
+
+    points = poisson_disk_sample(
+        sample_w,
+        sample_h,
+        effective_min_d,
+        seed=seed,
+        density_fn=density_fn,
+    )
+
+    instances: List[FeatureInstance] = []
+    for i, (px, py) in enumerate(points):
+        # Translate to tile-local coordinates
+        tx = px - margin_px
+        ty = py - margin_px
+
+        species = rng.randint(0, len(colors) - 1)
+        base_r, base_g, base_b = colors[species]
+
+        dr = rng.randint(-int(color_noise), int(color_noise))
+        dg = rng.randint(-int(color_noise), int(color_noise))
+        db = rng.randint(-int(color_noise), int(color_noise))
+        tree_color = (
+            max(0, min(255, base_r + dr)),
+            max(0, min(255, base_g + dg)),
+            max(0, min(255, base_b + db)),
+        )
+
+        radius = rng.uniform(min_radius, max_radius)
+
+        instances.append(FeatureInstance(
+            px=tx,
+            py=ty,
+            radius=radius,
+            color=tree_color,
+            shadow_color=shadow_color,
+            species_id=species,
+            depth=ty,
+        ))
+
+    instances.sort(key=lambda f: f.depth)
+    return instances

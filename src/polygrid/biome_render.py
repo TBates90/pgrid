@@ -424,3 +424,104 @@ def render_forest_on_ground(
         ground_image, instances, config,
         density=tile_density, seed=seed,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 16C.3 — Feature-level cross-fade using blend mask
+# ═══════════════════════════════════════════════════════════════════
+
+def render_forest_on_ground_fullslot(
+    ground_image: "Image.Image",
+    tile_density: float,
+    *,
+    config: Optional[ForestFeatureConfig] = None,
+    tile_size: int = 256,
+    seed: int = 42,
+    globe_3d_center: Optional[Tuple[float, float, float]] = None,
+    overscan: float = 0.15,
+    blend_mask: Optional["np.ndarray"] = None,
+    neighbour_densities: Optional[Dict[str, float]] = None,
+    neighbour_seeds: Optional[Dict[str, int]] = None,
+) -> "Image.Image":
+    """Full-slot forest rendering with feature-level cross-fade.
+
+    Uses :func:`scatter_features_fullslot` to place trees across the
+    full square tile area (including margins), then optionally applies
+    a per-pixel blend mask so that features near tile edges fade out
+    gracefully.
+
+    Parameters
+    ----------
+    ground_image : PIL.Image
+        Ground/elevation texture (RGB).
+    tile_density : float
+        Biome density (0–1).
+    config : ForestFeatureConfig, optional
+    tile_size : int
+    seed : int
+    globe_3d_center : (x, y, z), optional
+    overscan : float
+        How far features extend beyond the hex tile boundary.
+    blend_mask : np.ndarray, optional
+        ``(tile_size, tile_size)`` float32 in ``[0, 1]`` from
+        :func:`compute_tile_blend_mask`.  Features are alpha-scaled
+        by this mask so canopy fades toward tile edges.  If *None*,
+        no fade is applied.
+    neighbour_densities : dict, optional
+        ``{direction: density}`` for margin zone feature density.
+    neighbour_seeds : dict, optional
+        ``{direction: seed}`` for margin zone feature seeds.
+
+    Returns
+    -------
+    PIL.Image (RGBA)
+    """
+    import numpy as np
+    from .biome_scatter import scatter_features_fullslot
+
+    if config is None:
+        config = TEMPERATE_FOREST
+
+    instances = scatter_features_fullslot(
+        tile_density,
+        tile_size=tile_size,
+        overscan=overscan,
+        min_radius=config.canopy_radius_range[0],
+        max_radius=config.canopy_radius_range[1],
+        colors=config.canopy_colors,
+        shadow_color=config.shadow_color,
+        color_noise=config.color_noise_amplitude,
+        seed=seed,
+        globe_3d_center=globe_3d_center,
+        neighbour_densities=neighbour_densities,
+        neighbour_seeds=neighbour_seeds,
+    )
+
+    # Render forest on the ground image
+    result = render_forest_tile(
+        ground_image, instances, config,
+        density=tile_density, seed=seed,
+    )
+
+    # 16C.3 — Apply blend mask as alpha fade on the feature layer
+    if blend_mask is not None:
+        # Composite: blend between the original ground (no features)
+        # and the featured image, using the mask as the mixing factor.
+        # mask=1 → full features, mask=0 → ground only.
+        ground_rgba = ground_image.convert("RGBA")
+        result_rgba = result.convert("RGBA")
+
+        ground_arr = np.array(ground_rgba, dtype=np.float64)
+        result_arr = np.array(result_rgba, dtype=np.float64)
+
+        # Expand mask to (H, W, 1) for broadcasting
+        h, w = ground_arr.shape[:2]
+        mask_resized = blend_mask[:h, :w]  # safety clamp
+        mask_4d = mask_resized[:, :, np.newaxis]  # (H, W, 1)
+
+        # Blend: output = ground * (1 - mask) + featured * mask
+        blended = ground_arr * (1.0 - mask_4d) + result_arr * mask_4d
+        blended = np.clip(blended, 0, 255).astype(np.uint8)
+        result = Image.fromarray(blended, "RGBA")
+
+    return result

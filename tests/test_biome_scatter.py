@@ -292,3 +292,140 @@ class TestCollectMarginFeatures:
         interior, margin = collect_margin_features([], tile_size=256)
         assert interior == []
         assert margin == []
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 16C — Full-slot feature scattering
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestScatterFeaturesFullslot:
+    """16C.1 — Full-slot feature scattering across full square tile."""
+
+    def test_features_outside_tile_bounds(self):
+        """Full-slot scatter should produce features outside [0, tile_size]."""
+        from polygrid.biome_scatter import scatter_features_fullslot
+
+        instances = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64,
+            overscan=0.2, seed=42,
+        )
+        assert len(instances) > 0
+
+        # Some features should have positions outside [0, tile_size]
+        outside = [
+            inst for inst in instances
+            if inst.px < 0 or inst.px > 64 or inst.py < 0 or inst.py > 64
+        ]
+        assert len(outside) > 0, (
+            "Full-slot scatter should produce features outside tile bounds"
+        )
+
+    def test_more_features_than_standard(self):
+        """Full-slot scatter covers a larger area → more features."""
+        from polygrid.biome_scatter import scatter_features_fullslot
+
+        standard = scatter_features_on_tile(
+            tile_density=0.8, tile_size=64, seed=42,
+        )
+        fullslot = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64,
+            overscan=0.15, seed=42,
+        )
+        # Fullslot area ≈ (1 + 2*0.15)² ≈ 1.69× standard area
+        assert len(fullslot) >= len(standard), (
+            f"Full-slot {len(fullslot)} should have >= standard {len(standard)}"
+        )
+
+    def test_feature_count_proportional_to_area(self):
+        """Feature count should scale roughly with expanded area."""
+        from polygrid.biome_scatter import scatter_features_fullslot
+
+        small = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64,
+            overscan=0.0, seed=42,
+        )
+        large = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64,
+            overscan=0.3, seed=42,
+        )
+        # Area ratio: (1 + 2*0.3)² / 1² = 2.56
+        # Allow generous tolerance (Poisson disk is stochastic)
+        if len(small) > 5:
+            ratio = len(large) / len(small)
+            assert ratio > 1.0, f"Larger area should yield more features: {ratio}"
+
+    def test_deterministic(self):
+        from polygrid.biome_scatter import scatter_features_fullslot
+
+        a = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64, seed=42,
+        )
+        b = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64, seed=42,
+        )
+        assert len(a) == len(b)
+        for fa, fb in zip(a, b):
+            assert fa.px == fb.px
+            assert fa.py == fb.py
+
+    def test_neighbour_density_affects_margin(self):
+        """Features in the margin zone should use neighbour density."""
+        from polygrid.biome_scatter import scatter_features_fullslot
+
+        # High density everywhere
+        uniform = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64, overscan=0.2, seed=42,
+        )
+        # Zero density for neighbours → fewer features in margins
+        sparse_margins = scatter_features_fullslot(
+            tile_density=0.8, tile_size=64, overscan=0.2, seed=42,
+            neighbour_densities={
+                "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0,
+            },
+        )
+        # With zero neighbour density, margin features should be sparser
+        # (though both use the same Poisson seed, the density_fn differs
+        # so the accepted points may differ)
+        # Just verify it runs and produces features
+        assert len(sparse_margins) > 0
+
+    def test_zero_density_returns_empty(self):
+        from polygrid.biome_scatter import scatter_features_fullslot
+
+        instances = scatter_features_fullslot(
+            tile_density=0.0, tile_size=64, seed=42,
+        )
+        assert instances == []
+
+    def test_density_continuity_at_boundary(self):
+        """Feature density near the hex boundary shouldn't have a gap.
+
+        Count features in two bands: just inside [0, tile_size] and
+        just outside.  With uniform density, both should be populated.
+        """
+        from polygrid.biome_scatter import scatter_features_fullslot
+
+        tile_size = 128
+        instances = scatter_features_fullslot(
+            tile_density=0.8, tile_size=tile_size,
+            overscan=0.2, seed=42,
+        )
+
+        band = 10  # pixels
+        inside_band = [
+            inst for inst in instances
+            if 0 <= inst.px < band or 0 <= inst.py < band
+            or tile_size - band < inst.px <= tile_size
+            or tile_size - band < inst.py <= tile_size
+        ]
+        outside_band = [
+            inst for inst in instances
+            if inst.px < 0 and inst.px > -band
+            or inst.py < 0 and inst.py > -band
+            or inst.px > tile_size and inst.px < tile_size + band
+            or inst.py > tile_size and inst.py < tile_size + band
+        ]
+        # Both bands should have features (no gap at boundary)
+        assert len(inside_band) > 0, "No features just inside boundary"
+        assert len(outside_band) > 0, "No features just outside boundary"

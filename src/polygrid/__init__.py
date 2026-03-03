@@ -264,6 +264,7 @@ from .biome_scatter import (
     FeatureInstance,
     poisson_disk_sample,
     scatter_features_on_tile,
+    scatter_features_fullslot,
     compute_density_field,
     collect_margin_features,
 )
@@ -278,6 +279,7 @@ from .biome_render import (
     render_undergrowth,
     render_forest_tile,
     render_forest_on_ground,
+    render_forest_on_ground_fullslot,
 )
 from .biome_pipeline import (
     BiomeRenderer,
@@ -580,6 +582,7 @@ __all__ = [
     "FeatureInstance",
     "poisson_disk_sample",
     "scatter_features_on_tile",
+    "scatter_features_fullslot",
     "compute_density_field",
     "collect_margin_features",
     # Biome render (Phase 14B)
@@ -593,6 +596,7 @@ __all__ = [
     "render_undergrowth",
     "render_forest_tile",
     "render_forest_on_ground",
+    "render_forest_on_ground_fullslot",
     # Biome continuity (Phase 14C)
     "build_biome_density_map",
     "get_tile_margin_features",
