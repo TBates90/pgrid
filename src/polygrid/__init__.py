@@ -452,6 +452,8 @@ from .coastline import (
 from .uv_texture import (
     UVTransform,
     compute_tile_basis,
+    get_goldberg_tiles,
+    get_tile_uv_vertices,
     project_point_to_tile_uv,
     compute_tile_uv_bounds,
     project_and_normalize,

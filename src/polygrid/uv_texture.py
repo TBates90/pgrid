@@ -5,24 +5,25 @@ uses for UV mapping.  This eliminates the coordinate-system mismatch
 between the apron grid's 2D Tutte-embedding positions and the
 GoldbergTile's tangent-plane projection (which defines the atlas UVs).
 
-The key idea: project every sub-face vertex onto the GoldbergTile's
-tangent/bitangent plane, normalise to [0,1] exactly the way the models
-library does, and rasterise into pixel space.  The resulting texture
-is pixel-perfect aligned with the 3D mesh's UV coordinates.
+The key idea: the 3D mesh builder calls ``generate_goldberg_tiles()``
+from the models library to get per-tile ``uv_vertices`` (and the
+``tangent`` / ``bitangent`` basis that produced them).  We use those
+*exact same* GoldbergTile objects to derive the mapping from the
+detail grid's 2D positions into the mesh's UV space.
 
 Functions
 ---------
-- :func:`compute_tile_basis`            — derive tangent/bitangent for a tile
-- :func:`project_point_to_tile_uv`      — project a 3D point to tile UV
-- :func:`compute_detail_to_uv_transform`— affine mapping from detail-2D → tile-UV
-- :func:`render_tile_uv_aligned`        — rasterise an apron grid in UV-aligned space
-- :func:`build_uv_aligned_atlas`        — full atlas pipeline with UV alignment
+- :func:`get_goldberg_tiles`             — cached access to GoldbergTile list
+- :func:`compute_detail_to_uv_transform` — affine mapping detail-2D → tile-UV
+- :func:`render_tile_uv_aligned`         — rasterise an apron grid in UV-aligned space
+- :func:`build_uv_aligned_atlas`         — full atlas pipeline with UV alignment
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
@@ -40,9 +41,16 @@ if TYPE_CHECKING:
 # Sentinel colour for background pixels.
 _BG_SENTINEL = (255, 0, 255)
 
+# ── Models library availability ─────────────────────────────────
+try:
+    from models.objects.goldberg import generate_goldberg_tiles as _gen_tiles
+    _HAS_MODELS = True
+except ImportError:
+    _HAS_MODELS = False
+
 
 # ═══════════════════════════════════════════════════════════════════
-# 20A.1 — Tile basis and UV projection
+# 20A.1 — Authoritative GoldbergTile access
 # ═══════════════════════════════════════════════════════════════════
 
 def _normalize_vec(v: np.ndarray) -> np.ndarray:
@@ -51,20 +59,44 @@ def _normalize_vec(v: np.ndarray) -> np.ndarray:
     return v / n if n > 1e-12 else v
 
 
+@lru_cache(maxsize=8)
+def get_goldberg_tiles(frequency: int, radius: float = 1.0):
+    """Return the GoldbergTile tuple from the models library (cached).
+
+    These are the **exact same** tile objects that the mesh builder
+    (``build_batched_globe_mesh``) uses, so their ``uv_vertices``,
+    ``tangent``, ``bitangent``, ``center``, and ``vertices`` are
+    authoritative for UV alignment.
+    """
+    if not _HAS_MODELS:
+        raise ImportError(
+            "models library is required for UV-aligned rendering. "
+            "Install it or ensure it is on PYTHONPATH."
+        )
+    return _gen_tiles(frequency=frequency, radius=radius)
+
+
+def _match_tile_to_face(tiles, face_id: str):
+    """Find the GoldbergTile whose index matches a face id like 't42'."""
+    idx = int(face_id.replace("t", ""))
+    return tiles[idx]
+
+
 def compute_tile_basis(
     globe_grid: PolyGrid,
     face_id: str,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Derive tangent, bitangent, normal, and center for a globe tile.
 
-    Replicates the exact computation the models library performs in
-    ``generate_goldberg_tiles()`` so that projected UVs match the
-    ``GoldbergTile.uv_vertices``.
+    When the models library is available, returns the **authoritative**
+    basis from the GoldbergTile (same as the mesh builder uses).
+    Falls back to deriving from globe_grid vertices otherwise.
 
     Parameters
     ----------
     globe_grid : PolyGrid (GlobeGrid)
-        Must have 3D vertex positions (x, y, z).
+        Must have 3D vertex positions (x, y, z) and metadata with
+        ``frequency`` and ``radius``.
     face_id : str
         E.g. ``"t0"``, ``"t1"``.
 
@@ -73,37 +105,66 @@ def compute_tile_basis(
     (center, normal, tangent, bitangent)
         All as numpy arrays of shape (3,).
     """
-    face = globe_grid.faces[face_id]
+    if _HAS_MODELS:
+        freq = globe_grid.metadata.get("frequency", 3)
+        rad = globe_grid.metadata.get("radius", 1.0)
+        tiles = get_goldberg_tiles(freq, rad)
+        tile = _match_tile_to_face(tiles, face_id)
+        return (
+            np.array(tile.center, dtype=np.float64),
+            np.array(tile.normal, dtype=np.float64),
+            np.array(tile.tangent, dtype=np.float64),
+            np.array(tile.bitangent, dtype=np.float64),
+        )
 
-    # Collect 3D polygon vertices in order
+    # Fallback: derive from globe_grid polygon vertices
+    return _compute_tile_basis_from_grid(globe_grid, face_id)
+
+
+def _compute_tile_basis_from_grid(
+    globe_grid: PolyGrid,
+    face_id: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Fallback basis derivation from PolyGrid vertices."""
+    face = globe_grid.faces[face_id]
     verts_3d = []
     for vid in face.vertex_ids:
         v = globe_grid.vertices[vid]
         verts_3d.append(np.array([v.x, v.y, v.z], dtype=np.float64))
 
-    # Center = mean of polygon vertices
     center = np.mean(verts_3d, axis=0)
-
-    # Normal = cross product of first two edge vectors, normalised
     a = verts_3d[1] - verts_3d[0]
     b = verts_3d[2] - verts_3d[0]
     normal = _normalize_vec(np.cross(a, b))
-
-    # Tangent from first edge, projected onto tile plane
     edge = verts_3d[1] - verts_3d[0]
     edge_proj = edge - normal * float(np.dot(edge, normal))
     if np.linalg.norm(edge_proj) < 1e-6:
-        # Fallback: use world-axis projection
         axis = np.array([0.0, 0.0, 1.0])
         if abs(float(np.dot(axis, normal))) > 0.95:
             axis = np.array([0.0, 1.0, 0.0])
         edge_proj = axis - normal * float(np.dot(axis, normal))
     tangent = _normalize_vec(edge_proj)
-
-    # Bitangent = cross(normal, tangent)
     bitangent = _normalize_vec(np.cross(normal, tangent))
-
     return center, normal, tangent, bitangent
+
+
+def get_tile_uv_vertices(
+    globe_grid: PolyGrid,
+    face_id: str,
+) -> List[Tuple[float, float]]:
+    """Return the authoritative normalised UV polygon for a tile.
+
+    These are the exact ``GoldbergTile.uv_vertices`` that the mesh
+    builder uses.  The texture must be arranged so that these UV
+    coordinates sample the correct content.
+    """
+    if not _HAS_MODELS:
+        raise ImportError("models library is required")
+    freq = globe_grid.metadata.get("frequency", 3)
+    rad = globe_grid.metadata.get("radius", 1.0)
+    tiles = get_goldberg_tiles(freq, rad)
+    tile = _match_tile_to_face(tiles, face_id)
+    return list(tile.uv_vertices)
 
 
 def project_point_to_tile_uv(
@@ -129,9 +190,24 @@ def compute_tile_uv_bounds(
 ) -> Tuple[float, float, float, float]:
     """Compute the min/max UV bounds for a tile's polygon vertices.
 
-    Returns (u_min, v_min, u_max, v_max) in raw tangent-plane coordinates.
-    These are used for normalisation to [0,1].
+    When the models library is available, uses the **authoritative**
+    GoldbergTile vertices (same polygon the mesh uses) rather than
+    the globe_grid vertices (which may have different vertex ordering).
     """
+    if _HAS_MODELS:
+        freq = globe_grid.metadata.get("frequency", 3)
+        rad = globe_grid.metadata.get("radius", 1.0)
+        tiles = get_goldberg_tiles(freq, rad)
+        tile = _match_tile_to_face(tiles, face_id)
+        us, vs = [], []
+        for vtx in tile.vertices:
+            pt = np.array(vtx, dtype=np.float64)
+            u, vv = project_point_to_tile_uv(pt, center, tangent, bitangent)
+            us.append(u)
+            vs.append(vv)
+        return min(us), min(vs), max(us), max(vs)
+
+    # Fallback
     face = globe_grid.faces[face_id]
     us, vs = [], []
     for vid in face.vertex_ids:
@@ -197,27 +273,14 @@ def compute_detail_to_uv_transform(
 ) -> UVTransform:
     """Compute the affine transform from detail-grid 2D to tile UV [0,1].
 
-    Strategy:
-    ---------
-    The globe face has N vertices (5 for pentagon, 6 for hexagon)
-    with known 3D positions → known normalised UV positions.
-
-    The detail grid's outermost sub-faces have centroids that form the
-    same polygon shape (scaled/rotated/translated in 2D).  We find the
-    best-fit affine transform by matching the globe polygon's UV
-    coordinates to the detail grid's boundary vertex positions.
-
-    However, this approach requires careful boundary matching.  A more
-    robust approach: use the globe face's 3D vertices to get their UVs,
-    and use the detail grid's boundary to find corresponding 2D positions.
-
-    Simplest robust method:  Use the **face centroid** in both spaces
-    (which maps to the UV centroid), plus the **first vertex** of the
-    polygon in both spaces.  These two points define a similarity
-    transform (rotation + uniform scale + translation) which is sufficient
-    for the regular hex/pentagon grids.
-
-    For maximum accuracy we use least-squares over all polygon vertices.
+    Strategy
+    --------
+    When the models library is available, we use the **authoritative**
+    ``GoldbergTile.uv_vertices`` — these are the exact UV polygon that
+    the 3D mesh builder samples.  We match these UV vertices to the
+    detail grid's outermost boundary vertices by angle from centroid,
+    then solve a least-squares similarity transform (4 DOF: scale,
+    rotation, translation).
 
     Parameters
     ----------
@@ -231,40 +294,27 @@ def compute_detail_to_uv_transform(
     -------
     UVTransform
     """
-    face = globe_grid.faces[face_id]
+    # ── UV positions of the tile polygon vertices ───────────────
+    # Use the authoritative uv_vertices from the GoldbergTile when
+    # available — these are what the mesh builder uses.
+    if _HAS_MODELS:
+        uv_verts = get_tile_uv_vertices(globe_grid, face_id)
+        uv_poly = [np.array(uv, dtype=np.float64) for uv in uv_verts]
+    else:
+        # Fallback: derive from globe_grid vertices
+        face = globe_grid.faces[face_id]
+        uv_poly = []
+        for vid in face.vertex_ids:
+            v = globe_grid.vertices[vid]
+            pt3 = np.array([v.x, v.y, v.z], dtype=np.float64)
+            uv = project_and_normalize(pt3, center, tangent, bitangent, uv_bounds)
+            uv_poly.append(np.array(uv, dtype=np.float64))
 
-    # ── UV positions of the globe polygon vertices ──────────────
-    uv_poly = []
-    for vid in face.vertex_ids:
-        v = globe_grid.vertices[vid]
-        pt3 = np.array([v.x, v.y, v.z], dtype=np.float64)
-        uv = project_and_normalize(pt3, center, tangent, bitangent, uv_bounds)
-        uv_poly.append(uv)
-
-    uv_centroid = np.mean(uv_poly, axis=0)
+    uv_arr = np.array(uv_poly)
+    uv_centroid = uv_arr.mean(axis=0)
 
     # ── Corresponding 2D positions from the detail grid ─────────
-    # The detail grid's boundary vertices correspond to the globe face's
-    # polygon vertices.  However, detail grids are built as standard
-    # hex/pent grids centred at (0,0), so we use the detail grid's
-    # face centroids to find the overall centroid and the outer boundary.
-
-    # Collect all face centroids from the detail grid
-    detail_centroids = []
-    for fid_d, face_d in detail_grid.faces.items():
-        c = face_center(detail_grid.vertices, face_d)
-        if c is not None:
-            detail_centroids.append(c)
-
-    if not detail_centroids:
-        # Degenerate — return identity
-        return UVTransform(A=np.eye(2), t=np.zeros(2))
-
-    detail_centroid = np.mean(detail_centroids, axis=0)
-
-    # Find the outermost vertices of the detail grid — these form the
-    # tile's polygon boundary.  We use the vertex positions that are
-    # furthest from the centroid.
+    # Collect all vertex positions
     all_detail_verts = []
     for v in detail_grid.vertices.values():
         if v.has_position():
@@ -273,41 +323,32 @@ def compute_detail_to_uv_transform(
     if len(all_detail_verts) < 3:
         return UVTransform(A=np.eye(2), t=np.zeros(2))
 
-    all_detail_verts = np.array(all_detail_verts)
-    dists = np.linalg.norm(all_detail_verts - detail_centroid, axis=1)
+    all_detail_verts_arr = np.array(all_detail_verts)
+    detail_centroid = all_detail_verts_arr.mean(axis=0)
+    dists = np.linalg.norm(all_detail_verts_arr - detail_centroid, axis=1)
     max_dist = dists.max()
+
+    if max_dist < 1e-12:
+        return UVTransform(A=np.eye(2), t=np.zeros(2))
 
     # The boundary vertices are those at (approximately) the maximum
     # distance.  For a regular hex/pent grid they sit on the outer ring.
     boundary_threshold = max_dist * 0.85
     boundary_mask = dists >= boundary_threshold
-    boundary_verts = all_detail_verts[boundary_mask]
+    boundary_verts = all_detail_verts_arr[boundary_mask]
 
-    # ── Compute affine transform via least-squares ──────────────
-    # We want: UV = A * detail_2d + t
-    # Use the centroid-to-centroid mapping plus angular alignment.
-    #
-    # Method: fit a similarity transform (4 DOF: scale, rotation,
-    # translation) using the polygon vertices in both spaces.
-
-    # Get the polygon vertices' angles from centroid in UV space
+    # ── Match polygon UV vertices to boundary detail vertices ───
     n_poly = len(uv_poly)
-    uv_arr = np.array(uv_poly)
     uv_angles = np.arctan2(uv_arr[:, 1] - uv_centroid[1],
                            uv_arr[:, 0] - uv_centroid[0])
-
-    # For each polygon vertex in UV, find the closest boundary vertex
-    # in the detail grid (matching by angle from centroid)
     boundary_angles = np.arctan2(boundary_verts[:, 1] - detail_centroid[1],
                                  boundary_verts[:, 0] - detail_centroid[0])
 
-    # Match each UV polygon vertex to the closest boundary vertex by angle
     src_points = []  # detail-2D
     dst_points = []  # UV [0,1]
 
     for i in range(n_poly):
         target_angle = uv_angles[i]
-        # Find boundary vertex closest in angle
         angle_diffs = np.abs(np.arctan2(
             np.sin(boundary_angles - target_angle),
             np.cos(boundary_angles - target_angle),
