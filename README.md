@@ -88,7 +88,15 @@ texture atlas for GPU rendering.
 The full rendering pipeline produces a seamless, PBR-lit globe:
 
 ```bash
-# Cohesive globe: terrain → atlas → PBR-lit 3D viewer
+# Full Phase 13 viewer — PBR + water + atmosphere + bloom:
+python scripts/view_globe_v3.py
+
+# Options:
+python scripts/view_globe_v3.py -f 3 --detail-rings 4 --preset earthlike
+python scripts/view_globe_v3.py --no-bloom --no-atmosphere  # simpler rendering
+python scripts/view_globe_v3.py --subdivisions 5            # higher mesh quality
+
+# Cohesive globe (legacy v2 shaders):
 python scripts/demo_cohesive_globe.py --view
 
 # 3D terrain with elevation displacement
