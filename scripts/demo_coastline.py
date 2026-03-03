@@ -207,19 +207,12 @@ def _build_no_coastline_atlas(
 # ═══════════════════════════════════════════════════════════════════
 
 def _render_flat(grid, atlas_path, uv_layout, output_path):
-    """Render a flat 2D atlas-textured globe."""
+    """Save a copy of the atlas as the flat render output."""
     from PIL import Image
-    from polygrid.render_enhanced import render_seamless_texture
-    from polygrid.globe_render import render_globe_flat
 
-    atlas_img = Image.open(str(atlas_path))
-    out = render_globe_flat(
-        grid, atlas_img, uv_layout,
-        width=1024, height=512,
-    )
-    out.save(str(output_path))
-    print(f"  Flat render: {output_path}")
-    return out
+    atlas_img = Image.open(str(atlas_path)).convert("RGB")
+    atlas_img.save(str(output_path))
+    print(f"  Flat render (atlas): {output_path}")
 
 
 # ═══════════════════════════════════════════════════════════════════
