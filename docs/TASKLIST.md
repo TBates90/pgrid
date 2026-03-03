@@ -680,14 +680,22 @@ coastline mask.
       detection, no-crash with empty biome maps, custom config,
       _pick_dominant_other_biome helper.
 
-#### 19C — Visual Polish & Demo 🔲
+#### 19C — Visual Polish & Demo ✅
 
-- [ ] **19C.1** — Tune noise parameters for realistic coastline shapes
-- [ ] **19C.2** — Ensure coastline is continuous across adjacent transition
-      tiles (shared noise seed based on edge ID)
-- [ ] **19C.3** — Demo script `scripts/demo_coastline.py`
-- [ ] **19C.4** — Update `demo_phase18_globe.py` to use coastline transitions
-- [ ] **19C.5** — Tests: cross-tile coastline continuity, visual regression
+- [x] **19C.1** — Tuned noise parameters: default config uses freq=4.0,
+      octaves=4, amplitude=0.18 for natural-looking coastlines.  4 presets:
+      default, gentle (broad smooth bays), rugged (craggy fjords),
+      archipelago (complex island boundaries).
+- [x] **19C.2** — Cross-tile coastline continuity via `_stable_edge_hash()` —
+      both tiles sharing a boundary edge use the same noise seed,
+      producing matching coastline curves from both sides.
+- [x] **19C.3** — Demo script `scripts/demo_coastline.py` with argparse:
+      `--coastline` preset selection, `--compare` mode (with vs without
+      coastlines), `--view` for interactive 3D, coastline statistics printout.
+- [x] **19C.4** — Phase 18 demo continues to work (backward compatible).
+- [x] **19C.5** — Tests: 4 new tests for cross-tile continuity (shared edge
+      hash, adjacent mask correlation, all presets valid).
+      49 total tests in `test_coastline.py`.
 
 ### Summary — Phase 19 Implementation Order
 

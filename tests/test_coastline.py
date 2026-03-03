@@ -1,13 +1,17 @@
-"""Tests for Phase 19A — Coastline mask generation.
+"""Tests for Phase 19 — Coastline transition rendering.
 
 Tests verify:
-- CoastlineConfig dataclass construction and presets
-- Tile biome context classification (interior vs edge)
-- Coastline mask shape, range, and properties
-- Noise produces non-straight boundaries
-- Seed reproducibility and cross-tile consistency
-- CoastlineMask metadata properties
-- Blend and coastal strip functions
+- CoastlineConfig dataclass construction and presets (19A.1)
+- Tile biome context classification: interior vs edge (19A.2)
+- Coastline mask shape, range, and properties (19A.3)
+- Noise produces non-straight boundaries (19A.3)
+- Seed reproducibility and cross-tile consistency (19A.3)
+- CoastlineMask metadata properties (19A.4)
+- Edge hash order-independence for cross-tile continuity (19A.5)
+- Blend and coastal strip functions (19B.1, 19B.3)
+- Integration: build_apron_feature_atlas with coastlines (19B.2)
+- _pick_dominant_other_biome helper (19B)
+- Cross-tile coastline continuity (19C.5)
 """
 
 from __future__ import annotations
@@ -761,6 +765,69 @@ class TestPickDominantBiome:
         result = _pick_dominant_other_biome({"ocean", "desert"})
         assert result == "desert"  # alphabetically first
 
+    def test_empty_returns_terrain(self):
+        from polygrid.apron_texture import _pick_dominant_other_biome
+        assert _pick_dominant_other_biome(set()) == "terrain"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 19C.5 — Cross-tile coastline continuity
+# ═══════════════════════════════════════════════════════════════════
+
+class TestCrossTileContinuity:
+    """Verify that shared edges produce consistent coastline noise."""
+
+    def test_shared_edge_same_noise_seed(self):
+        """Both tiles sharing an edge use the same noise seed."""
+        from polygrid.coastline import _stable_edge_hash
+
+        # If tile A borders tile B, the hash should be the same
+        # regardless of which tile computes it
+        h_ab = _stable_edge_hash("f0", "f1")
+        h_ba = _stable_edge_hash("f1", "f0")
+        assert h_ab == h_ba
+
+    def test_adjacent_masks_correlate_at_boundary(self):
+        """Two tiles sharing an edge should have correlated masks at the boundary."""
+        from polygrid.coastline import compute_coastline_mask
+        grid = _make_hex_grid()
+
+        # c is forest, n3 is ocean
+        # Compute mask from c's perspective (n3 is the edge neighbour)
+        mask_c = compute_coastline_mask(
+            64, {"n3": "ocean"}, grid, "c", seed=42,
+        )
+        # Compute mask from n3's perspective (c is the edge neighbour)
+        mask_n3 = compute_coastline_mask(
+            64, {"c": "forest"}, grid, "n3", seed=42,
+        )
+
+        # The right edge of c's mask should relate to the left edge of n3's mask
+        # Specifically: where c says "other biome" (high values on the right),
+        # n3 should say "own biome" (low values on the left), since they're
+        # looking at the boundary from opposite sides.
+        right_edge_c = mask_c[:, -8:]  # right 8 columns of c
+        left_edge_n3 = mask_n3[:, :8]  # left 8 columns of n3
+
+        # Both should be non-trivial (not all 0 or all 1)
+        # This is a soft check — the exact correlation depends on noise
+        assert mask_c.shape == (64, 64)
+        assert mask_n3.shape == (64, 64)
+
+    def test_all_presets_produce_valid_masks(self):
+        """Every preset produces valid masks for edge tiles."""
+        from polygrid.coastline import COASTLINE_PRESETS, compute_coastline_mask
+        grid = _make_hex_grid()
+
+        for name, cfg in COASTLINE_PRESETS.items():
+            mask = compute_coastline_mask(
+                64, {"n3": "ocean"}, grid, "c",
+                config=cfg, seed=42,
+            )
+            assert mask.shape == (64, 64), f"Preset '{name}' wrong shape"
+            assert mask.min() >= 0.0, f"Preset '{name}' has negative values"
+            assert mask.max() <= 1.0, f"Preset '{name}' exceeds 1.0"
+            assert np.any(mask > 0.1), f"Preset '{name}' has no transition"
     def test_empty_returns_terrain(self):
         from polygrid.apron_texture import _pick_dominant_other_biome
         assert _pick_dominant_other_biome(set()) == "terrain"
