@@ -350,11 +350,16 @@ def main():
     # 7. Interactive viewer
     if args.view:
         try:
-            from polygrid.globe_render import render_globe_3d_interactive
-            print("\nOpening 3D viewer...")
-            from PIL import Image
-            atlas_img = Image.open(str(atlas_path))
-            render_globe_3d_interactive(grid, atlas_img, uv_layout)
+            from polygrid.globe_export import export_globe_payload
+            from polygrid.globe_renderer_v2 import render_globe_v2
+
+            payload = export_globe_payload(grid, store, ramp="satellite")
+            print("\nLaunching 3D viewer...")
+            render_globe_v2(
+                payload, atlas_path, uv_layout,
+                title=f"Phase 19 Coastlines — freq={args.frequency}",
+                subdivisions=3,
+            )
         except ImportError as e:
             print(f"  3D viewer not available: {e}")
 
