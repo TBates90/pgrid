@@ -434,3 +434,279 @@ class TestApplyBlendMaskToAtlas:
         )
         inner = result[gutter:gutter + tile_size, gutter:gutter + tile_size]
         np.testing.assert_array_equal(inner, 0)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 16D — Hex Shape Softening
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestJitterPolygonVertices:
+    """16D.1 — Sub-face edge dissolution."""
+
+    def test_jittered_within_bounds(self):
+        """Jittered positions are within ±max_jitter of originals."""
+        from polygrid.tile_texture import jitter_polygon_vertices
+
+        verts = [(10.0, 20.0), (30.0, 40.0), (50.0, 60.0)]
+        jittered = jitter_polygon_vertices(verts, max_jitter=2.0, seed=42)
+        assert len(jittered) == len(verts)
+        for (ox, oy), (jx, jy) in zip(verts, jittered):
+            assert abs(jx - ox) <= 2.0, f"x jitter too large: {abs(jx - ox)}"
+            assert abs(jy - oy) <= 2.0, f"y jitter too large: {abs(jy - oy)}"
+
+    def test_zero_jitter_returns_original(self):
+        """max_jitter=0 should return the original vertices."""
+        from polygrid.tile_texture import jitter_polygon_vertices
+
+        verts = [(10.0, 20.0), (30.0, 40.0)]
+        jittered = jitter_polygon_vertices(verts, max_jitter=0.0, seed=42)
+        for (ox, oy), (jx, jy) in zip(verts, jittered):
+            assert ox == jx
+            assert oy == jy
+
+    def test_deterministic(self):
+        """Same seed + same verts → same result."""
+        from polygrid.tile_texture import jitter_polygon_vertices
+
+        verts = [(10.0, 20.0), (30.0, 40.0), (50.0, 60.0)]
+        a = jitter_polygon_vertices(verts, max_jitter=1.5, seed=99)
+        b = jitter_polygon_vertices(verts, max_jitter=1.5, seed=99)
+        assert a == b
+
+    def test_different_seed_gives_different_result(self):
+        from polygrid.tile_texture import jitter_polygon_vertices
+
+        verts = [(10.0, 20.0), (30.0, 40.0), (50.0, 60.0)]
+        a = jitter_polygon_vertices(verts, max_jitter=1.5, seed=1)
+        b = jitter_polygon_vertices(verts, max_jitter=1.5, seed=2)
+        # At least one vertex should differ
+        assert a != b
+
+
+class TestApplyNoiseOverlay:
+    """16D.2 — Pixel-level noise overlay."""
+
+    def test_output_shape_and_dtype(self):
+        from polygrid.tile_texture import apply_noise_overlay
+
+        pixels = np.full((32, 32, 3), 128, dtype=np.uint8)
+        result = apply_noise_overlay(pixels, frequency=0.1, amplitude=0.05, seed=42)
+        assert result.shape == (32, 32, 3)
+        assert result.dtype == np.uint8
+
+    def test_noise_changes_pixels(self):
+        """Noise should change at least some pixel values."""
+        from polygrid.tile_texture import apply_noise_overlay
+
+        pixels = np.full((32, 32, 3), 128, dtype=np.uint8)
+        result = apply_noise_overlay(pixels, frequency=0.1, amplitude=0.05, seed=42)
+        assert not np.array_equal(pixels, result), "Noise overlay had no effect"
+
+    def test_noise_within_amplitude(self):
+        """Pixel changes should not exceed amplitude fraction of base."""
+        from polygrid.tile_texture import apply_noise_overlay
+
+        base_val = 200
+        amp = 0.10  # 10%
+        pixels = np.full((16, 16, 3), base_val, dtype=np.uint8)
+        result = apply_noise_overlay(pixels, frequency=0.05, amplitude=amp, seed=42)
+        diff = np.abs(result.astype(np.int16) - base_val)
+        # Max possible change: base_val * amplitude = 200 * 0.10 = 20
+        # Allow a small margin for floating-point rounding
+        max_expected = base_val * amp + 2
+        assert diff.max() <= max_expected, (
+            f"Max pixel change {diff.max()} exceeds expected {max_expected}"
+        )
+
+    def test_deterministic(self):
+        from polygrid.tile_texture import apply_noise_overlay
+
+        pixels = np.full((16, 16, 3), 128, dtype=np.uint8)
+        a = apply_noise_overlay(pixels, seed=42)
+        b = apply_noise_overlay(pixels, seed=42)
+        np.testing.assert_array_equal(a, b)
+
+    def test_different_seeds_differ(self):
+        from polygrid.tile_texture import apply_noise_overlay
+
+        pixels = np.full((16, 16, 3), 128, dtype=np.uint8)
+        a = apply_noise_overlay(pixels, seed=42)
+        b = apply_noise_overlay(pixels, seed=999)
+        assert not np.array_equal(a, b)
+
+
+class TestApplyColourDithering:
+    """16D.3 — Sub-face colour dithering."""
+
+    def test_output_shape_and_dtype(self):
+        from polygrid.tile_texture import apply_colour_dithering, _BG_SENTINEL
+
+        pixels = np.full((16, 16, 3), 128, dtype=np.uint8)
+        centroids = np.array([[4.0, 4.0], [12.0, 12.0]])
+        colours = np.array([[100.0, 150.0, 200.0], [200.0, 100.0, 50.0]])
+        result = apply_colour_dithering(
+            pixels, centroids, colours, blend_radius=6.0,
+        )
+        assert result.shape == (16, 16, 3)
+        assert result.dtype == np.uint8
+
+    def test_sentinel_pixels_unchanged(self):
+        """Sentinel (background) pixels should not be dithered."""
+        from polygrid.tile_texture import apply_colour_dithering, _BG_SENTINEL
+
+        pixels = np.full((16, 16, 3), _BG_SENTINEL[0], dtype=np.uint8)
+        # Make the whole image sentinel
+        pixels[:, :, 0] = _BG_SENTINEL[0]
+        pixels[:, :, 1] = _BG_SENTINEL[1]
+        pixels[:, :, 2] = _BG_SENTINEL[2]
+
+        centroids = np.array([[4.0, 4.0], [12.0, 12.0]])
+        colours = np.array([[100.0, 150.0, 200.0], [200.0, 100.0, 50.0]])
+        result = apply_colour_dithering(pixels, centroids, colours)
+        np.testing.assert_array_equal(result, pixels)
+
+    def test_centre_pixels_less_changed_than_edge(self):
+        """Pixels near a centroid should change less than pixels at edges."""
+        from polygrid.tile_texture import apply_colour_dithering
+
+        # Create a simple image: left half one colour, right half another
+        pixels = np.zeros((16, 16, 3), dtype=np.uint8)
+        pixels[:, :8] = [100, 150, 200]
+        pixels[:, 8:] = [200, 100, 50]
+
+        centroids = np.array([[4.0, 8.0], [12.0, 8.0]])
+        colours = np.array([[100.0, 150.0, 200.0], [200.0, 100.0, 50.0]])
+        result = apply_colour_dithering(
+            pixels, centroids, colours, blend_radius=8.0,
+        )
+
+        # Pixel at centroid (4, 8) should barely change
+        centre_diff = np.abs(
+            result[8, 4].astype(int) - pixels[8, 4].astype(int),
+        ).sum()
+        # Pixel at boundary (8, 8) should change more
+        edge_diff = np.abs(
+            result[8, 8].astype(int) - pixels[8, 8].astype(int),
+        ).sum()
+        assert centre_diff <= edge_diff, (
+            f"Centre diff {centre_diff} should be <= edge diff {edge_diff}"
+        )
+
+    def test_dithered_reduces_boundary_contrast(self):
+        """Dithering should reduce the colour jump at sub-face boundaries."""
+        from polygrid.tile_texture import apply_colour_dithering
+
+        # Sharp boundary at column 8
+        pixels = np.zeros((16, 16, 3), dtype=np.uint8)
+        pixels[:, :8] = [60, 120, 80]
+        pixels[:, 8:] = [180, 60, 40]
+
+        centroids = np.array([[4.0, 8.0], [12.0, 8.0]])
+        colours = np.array([[60.0, 120.0, 80.0], [180.0, 60.0, 40.0]])
+
+        result = apply_colour_dithering(
+            pixels, centroids, colours, blend_radius=8.0,
+        )
+
+        # Contrast at boundary: diff between col 7 and col 8
+        orig_contrast = np.abs(
+            pixels[:, 7].astype(float) - pixels[:, 8].astype(float),
+        ).mean()
+        dither_contrast = np.abs(
+            result[:, 7].astype(float) - result[:, 8].astype(float),
+        ).mean()
+        assert dither_contrast < orig_contrast, (
+            f"Dithered contrast {dither_contrast:.1f} should be < "
+            f"original {orig_contrast:.1f}"
+        )
+
+
+@needs_models
+class TestFullslotWith16D:
+    """Integration tests for fullslot renderer with 16D enhancements."""
+
+    def test_with_all_enhancements(self, tmp_path):
+        """Render with all 16D enhancements enabled — should succeed."""
+        from polygrid.tile_texture import render_detail_texture_fullslot
+
+        detail_grid, detail_store = _make_detail_grid_with_terrain()
+        out = tmp_path / "enhanced.png"
+        result = render_detail_texture_fullslot(
+            detail_grid, detail_store, out,
+            tile_size=32,
+            vertex_jitter=1.5,
+            noise_overlay=True,
+            colour_dither=True,
+        )
+        assert result.exists()
+        assert result.stat().st_size > 0
+
+    def test_without_enhancements(self, tmp_path):
+        """Render with all 16D enhancements disabled — should succeed."""
+        from polygrid.tile_texture import render_detail_texture_fullslot
+
+        detail_grid, detail_store = _make_detail_grid_with_terrain()
+        out = tmp_path / "plain.png"
+        result = render_detail_texture_fullslot(
+            detail_grid, detail_store, out,
+            tile_size=32,
+            vertex_jitter=0.0,
+            noise_overlay=False,
+            colour_dither=False,
+        )
+        assert result.exists()
+        assert result.stat().st_size > 0
+
+    def test_enhanced_differs_from_plain(self, tmp_path):
+        """16D enhancements should change the output pixels."""
+        from PIL import Image
+        from polygrid.tile_texture import render_detail_texture_fullslot
+
+        detail_grid, detail_store = _make_detail_grid_with_terrain()
+
+        plain = tmp_path / "plain.png"
+        render_detail_texture_fullslot(
+            detail_grid, detail_store, plain,
+            tile_size=32, noise_seed=42,
+            vertex_jitter=0.0,
+            noise_overlay=False,
+            colour_dither=False,
+        )
+
+        enhanced = tmp_path / "enhanced.png"
+        render_detail_texture_fullslot(
+            detail_grid, detail_store, enhanced,
+            tile_size=32, noise_seed=42,
+            vertex_jitter=1.5,
+            noise_overlay=True,
+            colour_dither=True,
+        )
+
+        img_plain = np.array(Image.open(plain))
+        img_enhanced = np.array(Image.open(enhanced))
+        assert not np.array_equal(img_plain, img_enhanced), (
+            "Enhanced output should differ from plain"
+        )
+
+    def test_deterministic_with_enhancements(self, tmp_path):
+        """Same seed → same pixels, even with all enhancements."""
+        from PIL import Image
+        from polygrid.tile_texture import render_detail_texture_fullslot
+
+        detail_grid, detail_store = _make_detail_grid_with_terrain()
+
+        out1 = tmp_path / "det1.png"
+        out2 = tmp_path / "det2.png"
+        for out in (out1, out2):
+            render_detail_texture_fullslot(
+                detail_grid, detail_store, out,
+                tile_size=32, noise_seed=123,
+                vertex_jitter=1.5,
+                noise_overlay=True,
+                colour_dither=True,
+            )
+
+        img1 = np.array(Image.open(out1))
+        img2 = np.array(Image.open(out2))
+        assert np.array_equal(img1, img2), "Same seed should produce identical output"

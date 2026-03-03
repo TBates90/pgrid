@@ -356,6 +356,10 @@ from .tile_texture import (
     render_detail_texture_fullslot,
     compute_tile_blend_mask,
     apply_blend_mask_to_atlas,
+    # Phase 16D — hex shape softening
+    jitter_polygon_vertices,
+    apply_noise_overlay,
+    apply_colour_dithering,
 )
 
 # ── Diagnostics ─────────────────────────────────────────────────────
@@ -634,6 +638,10 @@ __all__ = [
     "render_detail_texture_fullslot",
     "compute_tile_blend_mask",
     "apply_blend_mask_to_atlas",
+    # Hex shape softening (Phase 16D)
+    "jitter_polygon_vertices",
+    "apply_noise_overlay",
+    "apply_colour_dithering",
     # Render enhanced (Phase 11E)
     "OCEAN_BIOME",
     "VEGETATION_BIOME",

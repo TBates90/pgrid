@@ -120,23 +120,23 @@ This approach avoids the "neighbour tile stitching" alternative (merging adjacen
   - Feature count in the extended area is proportional to the expanded bounds
   - No visible gap in feature density at hex boundary (statistical test)
 
-### 16D — Hex Shape Softening 🔲
+### 16D — Hex Shape Softening ✅
 
 **Problem:** The hex sub-face grid creates a visible hexagonal structure in the texture — concentric rings of faces with slightly different sizes/colours.
 
 **Fix:** Break up the hex grid pattern at the rendering level.
 
-- [ ] **16D.1 — Sub-face edge dissolution** — when rendering sub-face polygons, add a small random jitter (1-2px) to sub-face vertex positions. This prevents the perfectly straight edges between sub-faces from creating visible grid lines. The jitter is noise-seeded (deterministic) and much smaller than a sub-face, so it doesn't distort topology.
+- [x] **16D.1 — Sub-face edge dissolution** — `jitter_polygon_vertices()` in `tile_texture.py`. Per-vertex deterministic jitter (±1.5 px default) seeded from vertex position hash + noise_seed. Integrated into `render_detail_texture_fullslot()` via `vertex_jitter` parameter. 4 tests: bounds check, zero jitter passthrough, determinism, seed sensitivity.
 
-- [ ] **16D.2 — Pixel-level noise overlay** — after rendering sub-face polygons, apply a high-frequency pixel-level noise layer (Perlin/simplex at frequency ~0.05 px⁻¹) that adds micro-variation. This breaks up the uniform colour within each sub-face and masks the regular grid pattern. Amplitude: ±5% of the base colour.
+- [x] **16D.2 — Pixel-level noise overlay** — `apply_noise_overlay()` in `tile_texture.py`. FBM noise (3 octaves, frequency 0.05 px⁻¹, amplitude ±5%) applied as multiplicative brightness shift `pixel * (1 + noise)`. Applied after IDW background fill so all pixels get micro-variation. 5 tests: shape/dtype, pixel changes, amplitude bounds, determinism, seed sensitivity.
 
-- [ ] **16D.3 — Sub-face colour dithering** — instead of a single colour per sub-face, vary the colour across the sub-face area using interpolation from the sub-face's neighbours' colours. This softens the hard colour boundaries between adjacent sub-faces. Implemented in the PIL renderer (not matplotlib).
+- [x] **16D.3 — Sub-face colour dithering** — `apply_colour_dithering()` in `tile_texture.py`. KDTree-based IDW blend of K nearest sub-face colours. Blend factor ramps from 0 at centroid to 0.5 at `blend_radius` distance. Applied before IDW background fill (only polygon-covered pixels). Sentinel pixels skipped. 4 tests: shape/dtype, sentinel preservation, centre-vs-edge change, boundary contrast reduction.
 
-- [ ] **16D.4 — Tests:**
-  - Jittered vertex positions are within ±2px of originals
-  - Noise overlay changes pixel values by < 15% of base
-  - Dithered sub-faces have lower boundary contrast than non-dithered
-  - Output image is deterministic (same seed → same pixels)
+- [x] **16D.4 — Tests:** 17 new tests in `test_tile_texture.py`:
+  - `TestJitterPolygonVertices` (4): within ±2px, zero passthrough, deterministic, seed-sensitive
+  - `TestApplyNoiseOverlay` (5): shape, pixel changes, amplitude < 15%, deterministic, seed-sensitive
+  - `TestApplyColourDithering` (4): shape, sentinel preserved, centre < edge change, boundary contrast reduced
+  - `TestFullslotWith16D` (4): all-on, all-off, enhanced ≠ plain, deterministic with enhancements
 
 ### 16E — Pipeline Integration & Validation 🔲
 

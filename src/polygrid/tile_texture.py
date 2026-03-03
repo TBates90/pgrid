@@ -1,4 +1,4 @@
-"""Full-slot tile texture rendering — Phase 16A.
+"""Full-slot tile texture rendering — Phase 16A + 16D hex softening.
 
 Replaces the flat-colour background approach with per-pixel terrain
 sampling so that *every* pixel in the tile slot has coherent terrain
@@ -16,11 +16,26 @@ Strategy — Hybrid Polygon + IDW Fill
 The result: every pixel has coherent terrain colour with noise,
 hillshade, and vegetation.  No flat fill.
 
+Phase 16D — Hex Shape Softening
+---------------------------------
+Three techniques to break up the visible hexagonal sub-face grid:
+
+- **16D.1 Sub-face edge dissolution** — small random jitter of polygon
+  vertex positions (1–2 px) prevents perfectly straight sub-face edges.
+- **16D.2 Pixel-level noise overlay** — high-frequency FBM noise adds
+  micro-variation (±5 %) that masks uniform flat-colour sub-faces.
+- **16D.3 Sub-face colour dithering** — each sub-face's colour is
+  blended toward its neighbours' colours based on pixel distance from
+  the centroid, softening hard colour boundaries.
+
 Functions
 ---------
 - :func:`render_detail_texture_fullslot` — full-slot PIL renderer
 - :func:`build_face_lookup` — spatial index builder
 - :func:`interpolate_at_pixel` — IDW interpolation helper
+- :func:`jitter_polygon_vertices` — 16D.1 vertex jitter
+- :func:`apply_noise_overlay` — 16D.2 pixel noise
+- :func:`apply_colour_dithering` — 16D.3 neighbour-blended dithering
 """
 
 from __future__ import annotations
@@ -178,6 +193,12 @@ def render_detail_texture_fullslot(
     noise_seed: int = 0,
     k_neighbours: int = 4,
     overscan: float = 0.15,
+    vertex_jitter: float = 1.5,
+    noise_overlay: bool = True,
+    noise_frequency: float = 0.05,
+    noise_amplitude: float = 0.05,
+    colour_dither: bool = True,
+    dither_radius: float = 6.0,
 ) -> Path:
     """Render a detail grid to a PNG, filling the entire tile slot.
 
@@ -191,9 +212,16 @@ def render_detail_texture_fullslot(
        computed in step 1, no additional per-pixel noise calls are
        needed.
 
-    This is ~2-3× the cost of the flat-fill renderer (vs. ~20× for
-    the naïve per-pixel noise approach), while eliminating all flat-
-    fill background pixels.
+    Phase 16D hex-softening enhancements (all optional):
+
+    3. **Vertex jitter** (16D.1) — sub-face polygon vertices are
+       displaced by ±*vertex_jitter* pixels to dissolve straight
+       edges.  Set ``vertex_jitter=0`` to disable.
+    4. **Noise overlay** (16D.2) — a high-frequency FBM noise layer
+       adds ±*noise_amplitude* micro-variation per pixel.
+    5. **Colour dithering** (16D.3) — pixels near sub-face edges
+       are blended toward neighbour colours, softening hard colour
+       boundaries.
 
     Parameters
     ----------
@@ -210,8 +238,19 @@ def render_detail_texture_fullslot(
         background pixels.  Default 4.
     overscan : float
         Fraction of extra padding beyond the grid bounding box.
-        Larger values ensure corner pixels have good neighbour
-        coverage.  Default 0.15 (15%).
+    vertex_jitter : float
+        Maximum vertex displacement in pixels (16D.1).  Set 0 to
+        disable.  Default 1.5.
+    noise_overlay : bool
+        Enable pixel-level noise overlay (16D.2).  Default True.
+    noise_frequency : float
+        Noise spatial frequency (16D.2).  Default 0.05.
+    noise_amplitude : float
+        Noise colour shift fraction (16D.2).  Default 0.05.
+    colour_dither : bool
+        Enable sub-face colour dithering (16D.3).  Default True.
+    dither_radius : float
+        Blend radius in pixels for dithering (16D.3).  Default 6.0.
 
     Returns
     -------
@@ -326,13 +365,32 @@ def render_detail_texture_fullslot(
             verts.append(_to_pixel(v.x, v.y))
         else:
             if len(verts) >= 3 and fid in face_pixel_colours:
+                # 16D.1 — vertex jitter
+                if vertex_jitter > 0:
+                    verts = jitter_polygon_vertices(
+                        verts,
+                        max_jitter=vertex_jitter,
+                        seed=noise_seed + hash(fid) % 100_000,
+                    )
                 colour = face_pixel_colours[fid]
                 draw.polygon(verts, fill=colour, outline=colour)
 
-    # ── Step 2: IDW fill for background pixels ──────────────────
-    # Convert to numpy for fast pixel scanning
+    # Convert to numpy for further processing
     pixels = np.array(img)  # (H, W, 3) uint8
 
+    # ── Step 1b: Colour dithering (16D.3) ───────────────────────
+    # Applied before IDW fill so only polygon-covered pixels are
+    # dithered — background pixels will be filled next.
+    if colour_dither and len(centroid_pixels) >= 2:
+        centroid_arr_d = np.array(centroid_pixels, dtype=np.float64)
+        colour_arr_d = np.array(colour_array, dtype=np.float64)
+        pixels = apply_colour_dithering(
+            pixels, centroid_arr_d, colour_arr_d,
+            blend_radius=dither_radius,
+            k_neighbours=min(k_neighbours, len(centroid_arr_d)),
+        )
+
+    # ── Step 2: IDW fill for background pixels ──────────────────
     # Find background pixels (sentinel colour)
     bg_mask = (
         (pixels[:, :, 0] == _BG_SENTINEL[0]) &
@@ -377,6 +435,15 @@ def render_detail_texture_fullslot(
         # Write back into the pixel array
         blended_uint8 = np.clip(blended, 0, 255).astype(np.uint8)
         pixels[bg_rows, bg_cols] = blended_uint8
+
+    # ── Step 3: Pixel-level noise overlay (16D.2) ───────────────
+    if noise_overlay:
+        pixels = apply_noise_overlay(
+            pixels,
+            frequency=noise_frequency,
+            amplitude=noise_amplitude,
+            seed=noise_seed + 7777,
+        )
 
     img = Image.fromarray(pixels, "RGB")
     img.save(str(output_path))
@@ -615,5 +682,203 @@ def apply_blend_mask_to_atlas(
                inner_x:inner_x + tile_size] = np.clip(
             blended, 0, 255,
         ).astype(np.uint8)
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 16D — Hex Shape Softening
+# ═══════════════════════════════════════════════════════════════════
+
+
+# ── 16D.1 — Sub-face edge dissolution (vertex jitter) ──────────
+
+def jitter_polygon_vertices(
+    vertices: List[Tuple[float, float]],
+    *,
+    max_jitter: float = 1.5,
+    seed: int = 0,
+) -> List[Tuple[float, float]]:
+    """Apply small deterministic jitter to pixel-space polygon vertices.
+
+    The jitter is seeded so that the same vertex gets the same offset
+    on every call, ensuring deterministic output.  The magnitude is
+    small enough (1–2 px) that topology is not distorted but perfectly
+    straight sub-face edges are broken up.
+
+    Parameters
+    ----------
+    vertices : list of (float, float)
+        Polygon vertices in pixel coordinates.
+    max_jitter : float
+        Maximum displacement in pixels (each axis).  Default 1.5 px.
+    seed : int
+        Noise seed — combined with vertex position hash for determinism.
+
+    Returns
+    -------
+    list of (float, float)
+        Jittered vertices.
+    """
+    rng = np.random.RandomState(seed)
+    result: List[Tuple[float, float]] = []
+    for vx, vy in vertices:
+        # Hash the vertex position to get a per-vertex seed component
+        h = hash((round(vx, 4), round(vy, 4)))
+        rng_v = np.random.RandomState((seed + h) & 0x7FFFFFFF)
+        dx = rng_v.uniform(-max_jitter, max_jitter)
+        dy = rng_v.uniform(-max_jitter, max_jitter)
+        result.append((vx + dx, vy + dy))
+    return result
+
+
+# ── 16D.2 — Pixel-level noise overlay ──────────────────────────
+
+def apply_noise_overlay(
+    pixels: np.ndarray,
+    *,
+    frequency: float = 0.05,
+    amplitude: float = 0.05,
+    seed: int = 0,
+) -> np.ndarray:
+    """Apply a high-frequency noise layer to an RGB pixel array.
+
+    Adds micro-variation that breaks up the uniform colour within each
+    sub-face and masks the regular grid pattern.
+
+    The noise field is deterministic (same seed → same perturbation).
+
+    Parameters
+    ----------
+    pixels : np.ndarray, shape (H, W, 3), uint8
+        The tile image.
+    frequency : float
+        Spatial frequency of the noise in cycles per pixel.
+        Default 0.05 (one cycle per 20 pixels).
+    amplitude : float
+        Maximum colour shift as a fraction of the base value.
+        Default 0.05 (±5 %).
+    seed : int
+        Noise seed.
+
+    Returns
+    -------
+    np.ndarray, shape (H, W, 3), uint8
+        The modified image.
+    """
+    from .noise import fbm
+
+    h, w = pixels.shape[:2]
+    result = pixels.astype(np.float64)
+
+    # Build a 2D noise field in one pass (vectorised via numpy broadcast).
+    # We sample fbm at each pixel — but fbm is a pure-Python call,
+    # so we vectorise the RNG part: pre-build the noise grid.
+    noise_grid = np.empty((h, w), dtype=np.float64)
+    for row in range(h):
+        for col in range(w):
+            n = fbm(
+                col * frequency, row * frequency,
+                octaves=3, lacunarity=2.0, persistence=0.5,
+                frequency=1.0, seed=seed,
+            )
+            # n ∈ approx [-1, 1] — scale to [-amplitude, +amplitude]
+            noise_grid[row, col] = n * amplitude
+
+    # Apply as multiplicative brightness shift: pixel * (1 + noise)
+    noise_3d = 1.0 + noise_grid[:, :, np.newaxis]  # (H, W, 1)
+    result *= noise_3d
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+# ── 16D.3 — Sub-face colour dithering ──────────────────────────
+
+def apply_colour_dithering(
+    pixels: np.ndarray,
+    centroid_pixels: np.ndarray,
+    colour_arr: np.ndarray,
+    *,
+    blend_radius: float = 6.0,
+    k_neighbours: int = 4,
+) -> np.ndarray:
+    """Soften hard sub-face boundaries by blending toward neighbours.
+
+    For each pixel, the existing polygon-rendered colour is blended
+    with the IDW-weighted average of the K nearest sub-face colours.
+    Pixels near their own centroid keep the face colour (blend_t ≈ 0);
+    pixels near a sub-face edge get more blending (blend_t up to ~0.5).
+
+    This is applied *before* the IDW background fill, so only polygon-
+    covered pixels are affected.
+
+    Parameters
+    ----------
+    pixels : np.ndarray, shape (H, W, 3), uint8
+        Current tile pixels (polygon-rasterised, may contain sentinel).
+    centroid_pixels : np.ndarray, shape (F, 2), float64
+        Sub-face centroid positions in pixel coords.
+    colour_arr : np.ndarray, shape (F, 3), float64
+        Per-face colours (0–255 range).
+    blend_radius : float
+        Distance in pixels over which blending ramps up.  Pixels
+        closer than ``blend_radius`` to their nearest centroid get
+        linearly increasing blend; beyond ``blend_radius`` blend_t
+        saturates at 0.5.
+    k_neighbours : int
+        Number of nearest centroids for the IDW colour estimate.
+
+    Returns
+    -------
+    np.ndarray, shape (H, W, 3), uint8
+    """
+    from scipy.spatial import KDTree
+
+    if len(centroid_pixels) < 2:
+        return pixels
+
+    h, w = pixels.shape[:2]
+    tree = KDTree(centroid_pixels)
+
+    # Only dither non-sentinel pixels
+    is_sentinel = (
+        (pixels[:, :, 0] == _BG_SENTINEL[0]) &
+        (pixels[:, :, 1] == _BG_SENTINEL[1]) &
+        (pixels[:, :, 2] == _BG_SENTINEL[2])
+    )
+
+    # Get all non-sentinel pixel coordinates
+    rows, cols = np.where(~is_sentinel)
+    if len(rows) == 0:
+        return pixels
+
+    pts = np.column_stack([cols.astype(np.float64), rows.astype(np.float64)])
+
+    # Query K nearest centroids for every non-sentinel pixel
+    k_actual = min(k_neighbours, len(centroid_pixels))
+    dists, idxs = tree.query(pts, k=k_actual, workers=-1)
+
+    if k_actual == 1:
+        dists = dists[:, np.newaxis]
+        idxs = idxs[:, np.newaxis]
+
+    # IDW-weighted average colour from neighbours
+    eps = 1e-12
+    weights = 1.0 / np.maximum(dists, eps)       # (M, K)
+    w_sum = weights.sum(axis=1, keepdims=True)    # (M, 1)
+    norm_w = weights / w_sum                       # (M, K)
+    neighbour_colours = colour_arr[idxs]           # (M, K, 3)
+    idw_colour = (norm_w[:, :, np.newaxis] * neighbour_colours).sum(axis=1)  # (M, 3)
+
+    # Blend factor based on distance to *nearest* centroid:
+    # near centroid → blend_t ≈ 0 (keep face colour)
+    # near edge → blend_t → 0.5 (half-blend with IDW average)
+    nearest_dist = dists[:, 0]
+    blend_t = np.clip(nearest_dist / max(blend_radius, eps), 0.0, 1.0) * 0.5
+
+    # Blend original pixel colour with IDW colour
+    result = pixels.copy()
+    orig = pixels[rows, cols].astype(np.float64)  # (M, 3)
+    blended = orig * (1.0 - blend_t[:, np.newaxis]) + idw_colour * blend_t[:, np.newaxis]
+    result[rows, cols] = np.clip(blended, 0, 255).astype(np.uint8)
 
     return result
