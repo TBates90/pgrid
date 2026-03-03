@@ -716,3 +716,153 @@ coastline mask.
 | 18A–C (Tile Fidelity) | None (extends existing detail grid + texture infra) |
 | 18D (Texture Export) | Optional: `pyktx` or `pygltflib` for KTX2/glTF export |
 | 19 (Coastlines) | None (uses existing PIL + numpy + noise infra) |
+| 20 (Polygon-Aligned Textures) | None (extends existing atlas + UV infra) |
+
+---
+
+## Phase 20 — Polygon-Aligned Texture Rendering
+
+**Goal:** Eliminate the visible tile seam artefacts on the 3D globe by
+ensuring the rendered texture content is **aligned to the actual polygon
+UV coordinates** that the 3D mesh samples from.
+
+### Root Cause Analysis
+
+The current pipeline has a fundamental coordinate-system mismatch:
+
+1. **Rendering side:** `render_detail_texture_apron()` renders the apron
+   grid's sub-faces into a square image using the grid's 2D Tutte-embedding
+   coordinates.  The bounding box of those 2D positions defines the mapping
+   from world → pixel.
+
+2. **Mesh side:** `GoldbergTile.uv_vertices` are computed by projecting the
+   tile's 3D polygon vertices onto the tile's tangent/bitangent plane, then
+   normalising to [0,1].  `compute_tile_uvs()` linearly maps these into the
+   atlas slot rectangle.
+
+3. **The disconnect:** These two coordinate systems are **different
+   projections**.  The apron grid's Tutte embedding positions and the
+   GoldbergTile's tangent-plane projection produce different spatial
+   layouts.  So when the 3D mesh samples the atlas using the polygon UVs,
+   the texture content at the polygon boundary doesn't match what the
+   *neighbouring* tile has at its matching boundary → **visible seams**.
+
+Additionally, the square atlas slots waste space on the corners that lie
+outside the polygon footprint, and the gutter fill (edge-pixel clamping)
+doesn't produce meaningful data for the 3D mesh vertices that sample
+near polygon edges.
+
+### Solution Strategy
+
+Re-render each tile's texture using the **same projection** that
+`GoldbergTile.uv_vertices` uses — i.e. project the detail sub-faces
+onto the tile's tangent/bitangent basis, normalise to [0,1], and
+rasterise into the square atlas slot.  This way the texture and the mesh
+UVs are in perfect agreement.
+
+Additionally, render apron/neighbour sub-faces into the gutter zone so
+that bilinear sampling at polygon edges sees correct adjacent-tile data
+instead of clamped edge pixels.
+
+### Phase 20A — UV-Aligned Tile Rasteriser
+
+**New function** `render_tile_uv_aligned()` in a new module
+`src/polygrid/uv_texture.py`:
+
+- [🔲] **20A.1** — `project_subfaces_to_tile_uv(detail_grid, store,
+  globe_tile)`:  For each sub-face in the detail grid, project its vertex
+  positions (3D → tile's tangent-plane 2D → normalised [0,1]) using the
+  same `projected_vertices` + `normalize_uvs` transform that the models
+  library uses for `GoldbergTile.uv_vertices`.  Returns a mapping of
+  `{sub_face_id: [(u,v), ...]}` pixel-space polygon vertices.
+
+- [🔲] **20A.2** — `render_tile_uv_aligned(detail_grid, store,
+  globe_tile, *, tile_size, biome_config)`:  Rasterise each sub-face
+  polygon (in UV-aligned coordinates) into a `tile_size × tile_size`
+  image.  The polygon footprint of the tile itself maps to the full
+  [0,1]×[0,1] square — so every pixel within the hex/pent boundary
+  contains correct terrain data, and every pixel outside is in the
+  gutter zone.
+
+- [🔲] **20A.3** — Handle apron sub-faces: project *neighbour* apron
+  sub-faces into the same UV space.  They will naturally land outside the
+  [0,1] polygon boundary, filling the gutter zone with real terrain data
+  from the adjacent tile.
+
+- [🔲] **20A.4** — Tests:
+  - UV projection matches `GoldbergTile.uv_vertices` for polygon vertices
+  - Rasterised image has non-sentinel pixels inside the polygon footprint
+  - Gutter zone filled with neighbour data (not black / not clamped)
+  - Pentagon and hexagon tiles both work correctly
+
+### Phase 20B — Atlas Assembly with UV-Aligned Tiles
+
+Replace the current atlas builder's rendering step with the UV-aligned
+rasteriser.
+
+- [🔲] **20B.1** — `build_uv_aligned_atlas(collection, globe_grid, *,
+  biome_renderers, biome_type_map, ...)`:  New atlas builder that uses
+  `render_tile_uv_aligned()` instead of `render_detail_texture_apron()`.
+  The atlas layout (slot grid, gutter, UV coordinates) stays the same —
+  only the per-tile rendering changes.
+
+- [🔲] **20B.2** — Biome overlays:  Apply `ForestRenderer` / `OceanRenderer`
+  to the UV-aligned ground images (same as current Phase 18C flow).
+
+- [🔲] **20B.3** — Coastline integration:  Phase 19 coastline masks work
+  in pixel space within each tile, so they continue to work unchanged on
+  the UV-aligned tiles.
+
+- [🔲] **20B.4** — Tests:
+  - Atlas UV layout unchanged (backward compatible with mesh builder)
+  - Visual: boundary pixels between adjacent tiles are colour-coherent
+  - Biome overlays render correctly on UV-aligned base
+  - Coastlines still blend properly
+
+### Phase 20C — Cross-Tile Boundary Stitching
+
+Ensure adjacent tiles share identical pixel values along their shared
+polygon edge.
+
+- [🔲] **20C.1** — `stitch_tile_boundaries(tile_images, globe_tiles,
+  uv_layout)`:  For each pair of adjacent tiles, sample both textures
+  along their shared polygon edge and average/blend the values.  Write
+  the blended strip back into both tiles.  This guarantees zero-seam
+  continuity even under bilinear interpolation.
+
+- [🔲] **20C.2** — Gutter coherence:  Ensure the gutter zone of each tile
+  contains the same data that the adjacent tile's interior has.  With
+  UV-aligned apron rendering (20A.3) this should be automatic, but verify
+  and add a fallback: copy a narrow strip from the neighbour's rendered
+  tile into the current tile's gutter at the shared edge.
+
+- [🔲] **20C.3** — Tests:
+  - Shared-edge pixel identity (sample both tiles along edge → values match)
+  - Gutter zone = adjacent tile interior along shared edges
+  - No visible seams in 3D viewer (visual regression baseline)
+
+### Phase 20D — Demo & Visual Validation
+
+- [🔲] **20D.1** — Update `demo_coastline.py` (or new `demo_phase20.py`)
+  to use the UV-aligned atlas.  Side-by-side comparison: old square-slot
+  atlas vs new UV-aligned atlas on the 3D globe.
+
+- [🔲] **20D.2** — Add `--uv-aligned` flag to the demo to toggle between
+  old and new pipelines for A/B comparison.
+
+- [🔲] **20D.3** — Performance: UV-aligned rendering should be similar
+  cost to current apron rendering (same number of sub-faces, same
+  rasterisation).  Benchmark and document any difference.
+
+- [🔲] **20D.4** — Export compatibility:  Ensure Phase 18D exports
+  (KTX2, ORM, glTF) still work with the new atlas (same UV layout,
+  just better pixel content).
+
+### Summary — Phase 20 Implementation Order
+
+| Step | Module | Depends on | Delivers | Complexity |
+|------|--------|-----------|----------|------------|
+| **20A** | New: `uv_texture.py` | models lib (GoldbergTile), apron_grid | UV-aligned tile rasteriser | High |
+| **20B** | `uv_texture.py`, `apron_texture.py` | 20A + 18C (biome overlays) | UV-aligned atlas builder | Medium |
+| **20C** | `uv_texture.py` | 20A–B | Cross-tile boundary stitching | Medium |
+| **20D** | demo + tuning | 20A–C | Visual validation, performance | Low |
