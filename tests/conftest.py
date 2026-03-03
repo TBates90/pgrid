@@ -57,6 +57,11 @@ _FILE_TIER: dict[str, str] = {
     # Phase 12-13 — medium
     "test_globe_renderer_v2.py": "medium",
     "test_phase13_rendering.py": "medium",
+    # Phase 14 — biome features
+    "test_biome_scatter.py": "medium",
+    "test_biome_render.py": "fast",
+    "test_biome_pipeline.py": "medium",
+    "test_biome_continuity.py": "medium",
 }
 
 

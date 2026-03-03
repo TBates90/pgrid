@@ -254,9 +254,42 @@ from .terrain_patches import (
     MOUNTAINOUS,
     ARCHIPELAGO,
     PANGAEA,
+    FOREST_WORLD,
+    DEEP_FOREST,
     generate_terrain_patches,
     apply_terrain_patches,
     generate_patched_terrain,
+)
+from .biome_scatter import (
+    FeatureInstance,
+    poisson_disk_sample,
+    scatter_features_on_tile,
+    compute_density_field,
+    collect_margin_features,
+)
+from .biome_render import (
+    ForestFeatureConfig,
+    FOREST_PRESETS,
+    TEMPERATE_FOREST,
+    TROPICAL_FOREST,
+    BOREAL_FOREST,
+    SPARSE_WOODLAND,
+    render_canopy,
+    render_undergrowth,
+    render_forest_tile,
+    render_forest_on_ground,
+)
+from .biome_pipeline import (
+    BiomeRenderer,
+    ForestRenderer,
+    identify_forest_tiles,
+    build_feature_atlas,
+)
+from .biome_continuity import (
+    build_biome_density_map,
+    get_tile_margin_features,
+    compute_biome_transition_mask,
+    stitch_feature_boundary,
 )
 from .region_stitch import (
     FaceMapping,
@@ -524,9 +557,38 @@ __all__ = [
     "MOUNTAINOUS",
     "ARCHIPELAGO",
     "PANGAEA",
+    "FOREST_WORLD",
+    "DEEP_FOREST",
     "generate_terrain_patches",
     "apply_terrain_patches",
     "generate_patched_terrain",
+    # Biome scatter (Phase 14A)
+    "FeatureInstance",
+    "poisson_disk_sample",
+    "scatter_features_on_tile",
+    "compute_density_field",
+    "collect_margin_features",
+    # Biome render (Phase 14B)
+    "ForestFeatureConfig",
+    "FOREST_PRESETS",
+    "TEMPERATE_FOREST",
+    "TROPICAL_FOREST",
+    "BOREAL_FOREST",
+    "SPARSE_WOODLAND",
+    "render_canopy",
+    "render_undergrowth",
+    "render_forest_tile",
+    "render_forest_on_ground",
+    # Biome continuity (Phase 14C)
+    "build_biome_density_map",
+    "get_tile_margin_features",
+    "compute_biome_transition_mask",
+    "stitch_feature_boundary",
+    # Biome pipeline (Phase 14D)
+    "BiomeRenderer",
+    "ForestRenderer",
+    "identify_forest_tiles",
+    "build_feature_atlas",
     # Region stitch (Phase 11C)
     "FaceMapping",
     "stitch_detail_grids",

@@ -98,6 +98,13 @@ GROUPS: list[tuple[str, list[str], str]] = [
         "test_globe_renderer_v2.py",
         "test_phase13_rendering.py",
     ], "medium"),
+
+    ("Phase 14 — Biome Features", [
+        "test_biome_scatter.py",
+        "test_biome_render.py",
+        "test_biome_pipeline.py",
+        "test_biome_continuity.py",
+    ], "medium"),
 ]
 
 # Build reverse lookup: filename → (group_name, tier)

@@ -258,11 +258,30 @@ PANGAEA = TerrainDistribution(
     },
 )
 
+FOREST_WORLD = TerrainDistribution(
+    name="forest_world",
+    weights={
+        "forest": 0.80,
+        "hills": 0.05,
+        "plains": 0.05,
+        "ocean": 0.10,
+    },
+)
+
+DEEP_FOREST = TerrainDistribution(
+    name="deep_forest",
+    weights={
+        "forest": 1.0,
+    },
+)
+
 TERRAIN_PRESETS: Dict[str, TerrainDistribution] = {
     "earthlike": EARTHLIKE,
     "mountainous": MOUNTAINOUS,
     "archipelago": ARCHIPELAGO,
     "pangaea": PANGAEA,
+    "forest_world": FOREST_WORLD,
+    "deep_forest": DEEP_FOREST,
 }
 
 
