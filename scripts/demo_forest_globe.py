@@ -76,6 +76,7 @@ def _build_feature_atlas(
     seed: int,
     tile_size: int,
     output_dir: Path,
+    soft_blend: bool = False,
 ):
     """Build detail grids + feature atlas with forest overlays."""
     from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
@@ -133,12 +134,13 @@ def _build_feature_atlas(
         raise ValueError(
             f"Unknown forest preset '{forest_preset}'. Available: {avail}"
         )
-    renderer = ForestRenderer(config=forest_config)
+    renderer = ForestRenderer(config=forest_config, fullslot=soft_blend)
 
     # Build feature atlas
     t0 = time.perf_counter()
+    blend_label = " + soft-blend" if soft_blend else ""
     print(f"Building feature atlas (tile_size={tile_size}, "
-          f"forest={forest_preset})...")
+          f"forest={forest_preset}{blend_label})...")
     atlas_path, uv_layout = build_feature_atlas(
         coll, globe_grid=grid,
         biome_renderers={"forest": renderer},
@@ -146,6 +148,7 @@ def _build_feature_atlas(
         output_dir=output_dir / "tiles",
         tile_size=tile_size,
         noise_seed=seed,
+        soft_blend=soft_blend,
     )
     print(f"  → atlas saved to {atlas_path} in "
           f"{time.perf_counter() - t0:.2f}s")
@@ -189,6 +192,10 @@ def main():
         "--view", action="store_true",
         help="Launch interactive 3D viewer after generation",
     )
+    parser.add_argument(
+        "--soft-blend", action="store_true", default=False,
+        help="Enable Phase 16 soft tile-edge blending (fullslot + 16B-D)",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -207,6 +214,7 @@ def main():
         seed=args.seed,
         tile_size=args.tile_size,
         output_dir=output_dir,
+        soft_blend=args.soft_blend,
     )
 
     # Save UV layout

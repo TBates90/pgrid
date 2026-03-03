@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # ═══════════════════════════════════════════════════════════════════
 
 def _build_terrain(frequency: int, detail_rings: int, seed: int,
-                   preset: str, tile_size: int):
+                   preset: str, tile_size: int, soft_blend: bool = False):
     """Run the full Phase 11 terrain pipeline and return everything
     the viewer needs: atlas path, UV layout, normal-map atlas, colour
     map, water tile map.
@@ -62,6 +62,7 @@ def _build_terrain(frequency: int, detail_rings: int, seed: int,
         TERRAIN_PRESETS, generate_terrain_patches, apply_terrain_patches,
     )
     from polygrid.texture_pipeline import build_detail_atlas
+    from polygrid.biome_pipeline import build_feature_atlas
     from polygrid.detail_render import BiomeConfig
     from polygrid.render_enhanced import compute_all_normal_maps
     from polygrid.globe_renderer_v2 import (
@@ -107,10 +108,20 @@ def _build_terrain(frequency: int, detail_rings: int, seed: int,
 
     biome = BiomeConfig()
     print("  Rendering colour atlas...")
-    atlas_path, uv_layout = build_detail_atlas(
-        coll, biome, out_dir / "tiles",
-        tile_size=tile_size, noise_seed=seed,
-    )
+    if soft_blend:
+        print("    (soft-blend mode: fullslot + 16B blend + 16C scatter + 16D softening)")
+        atlas_path, uv_layout = build_feature_atlas(
+            coll, grid,
+            biome_config=biome,
+            output_dir=out_dir / "tiles",
+            tile_size=tile_size, noise_seed=seed,
+            soft_blend=True,
+        )
+    else:
+        atlas_path, uv_layout = build_detail_atlas(
+            coll, biome, out_dir / "tiles",
+            tile_size=tile_size, noise_seed=seed,
+        )
     print(f"    → {atlas_path}")
 
     # ── Normal-map atlas ────────────────────────────────────────────
@@ -820,6 +831,8 @@ def main():
                         help="Disable atmosphere shell")
     parser.add_argument("--no-water", action="store_true",
                         help="Disable water detection")
+    parser.add_argument("--soft-blend", action="store_true", default=False,
+                        help="Enable Phase 16 soft tile-edge blending (fullslot + 16B-D)")
     parser.add_argument("-W", "--width", type=int, default=1100)
     parser.add_argument("-H", "--height", type=int, default=850)
     args = parser.parse_args()
@@ -830,6 +843,7 @@ def main():
         seed=args.seed,
         preset=args.preset,
         tile_size=args.tile_size,
+        soft_blend=args.soft_blend,
     )
 
     launch_viewer(

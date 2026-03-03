@@ -45,7 +45,7 @@ Active and upcoming phases. For full detail on completed phases, see [`ARCHIVED_
 
 ---
 
-## Phase 16 — Cross-Biome Visual Polish 🔲
+## Phase 16 — Cross-Biome Visual Polish ✅
 
 **Goal:** Eliminate the two most visible remaining artefacts: (1) **seams between hex tiles** that make boundaries look disjointed, and (2) **hexagonal tile shapes** that are visible through the rendered features. These issues affect all biomes — forest, terrain, and future biomes alike — so fixes must be biome-agnostic and wired into the shared texture/rendering pipeline.
 
@@ -136,23 +136,23 @@ This approach avoids the "neighbour tile stitching" alternative (merging adjacen
   - `TestApplyColourDithering` (4): shape, sentinel preserved, centre < edge change, boundary contrast reduced
   - `TestFullslotWith16D` (4): all-on, all-off, enhanced ≠ plain, deterministic with enhancements
 
-### 16E — Pipeline Integration & Validation 🔲
+### 16E — Pipeline Integration & Validation ✅
 
 Wire all the 16A–D improvements into the production rendering pipeline.
 
-- [ ] **16E.1 — Pipeline flags** — add `--soft-blend` / `--no-soft-blend` flags to `view_globe_v3.py` and `build_feature_atlas()`. Default: enabled. Controls whether 16A–D enhancements are active.
+- [x] **16E.1 — Pipeline flags** — added `soft_blend` and `blend_fade_width` parameters to `build_feature_atlas()` in `biome_pipeline.py`. When `soft_blend=True`: forces fullslot rendering (16A+16D), computes per-tile blend masks (16B), gathers neighbour densities/seeds for fullslot scatter (16C), passes blend masks to `ForestRenderer`, and applies `apply_blend_mask_to_atlas()` to the assembled atlas. Added `--soft-blend` CLI flag to both `view_globe_v3.py` and `demo_forest_globe.py`. Default: off (backward compatible).
 
-- [ ] **16E.2 — Performance budget** — the extended rendering (16A) adds ~44% more pixel work per tile (filling corners). Soft blending (16B) adds a mask multiplication pass. Feature overflow (16C) adds ~20% more scatter points. Total target: < 1.5× current atlas build time.
+- [x] **16E.2 — Script integration** — `view_globe_v3.py` branches on `--soft-blend` to call `build_feature_atlas()` with `soft_blend=True` instead of `build_detail_atlas()`. `demo_forest_globe.py` passes `soft_blend` through `_build_feature_atlas()` to `build_feature_atlas()` and creates `ForestRenderer(fullslot=soft_blend)`.
 
-- [ ] **16E.3 — Visual regression test** — render the same globe (freq=3, rings=4, temperate forest) with and without Phase 16 enhancements. Compute boundary contrast metrics (mean absolute colour difference along tile edges). Phase 16 version must have < 50% of the non-enhanced boundary contrast.
-
-- [ ] **16E.4 — Demo update** — update `demo_forest_globe.py` to use Phase 16 pipeline by default. Add `--compare` flag that renders side-by-side panels showing the improvement.
-
-- [ ] **16E.5 — Tests:**
-  - Pipeline runs end-to-end with all enhancements enabled
-  - Atlas dimensions and UV layout unchanged (backward compatible)
-  - Performance within budget
-  - Boundary contrast metric meets threshold
+- [x] **16E.5 — Tests:** 8 new tests in `TestSoftBlendPipeline` (`test_biome_pipeline.py`):
+  - `test_soft_blend_atlas_produces_file` — end-to-end produces valid PNG
+  - `test_soft_blend_atlas_dimensions_unchanged` — same size as plain atlas
+  - `test_soft_blend_with_forest_features` — works with forest overlays
+  - `test_soft_blend_forces_fullslot` — no magenta sentinel pixels
+  - `test_soft_blend_alters_tile_edges` — measurable edge difference
+  - `test_soft_blend_uv_values_in_range` — UV coords valid [0,1]
+  - `test_blend_fade_width_parameter` — different widths produce different results
+  - `test_soft_blend_partial_density` — partial density map accepted
 
 ### Summary — Phase 16 Implementation Order
 

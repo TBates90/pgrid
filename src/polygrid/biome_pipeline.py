@@ -174,6 +174,8 @@ def build_feature_atlas(
     noise_seed: int = 0,
     gutter: int = 4,
     fullslot: bool = False,
+    soft_blend: bool = False,
+    blend_fade_width: int = 16,
 ) -> Tuple[Path, Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas with biome feature overlays.
 
@@ -202,8 +204,17 @@ def build_feature_atlas(
     gutter : int
     fullslot : bool
         When *True*, use the Phase 16A full-slot renderer that fills
-        every pixel with coherent terrain (no flat-fill background).
+        every pixel with coherent terrain (no flat-fill background)
+        and enables 16D hex-shape softening.
         Default *False* for backward compatibility.
+    soft_blend : bool
+        When *True*, enable the full Phase 16 pipeline: fullslot
+        ground rendering (16A), soft tile-edge blending (16B),
+        fullslot feature scatter (16C), and hex softening (16D).
+        Implies ``fullslot=True``.  Default *False*.
+    blend_fade_width : int
+        Pixel width of the soft blend zone at tile edges (16B).
+        Default 16.
 
     Returns
     -------
@@ -222,23 +233,49 @@ def build_feature_atlas(
     if density_map is None:
         density_map = {}
 
+    # soft_blend implies fullslot
+    if soft_blend:
+        fullslot = True
+
     if biome_renderers is None:
-        biome_renderers = {"forest": ForestRenderer()}
+        biome_renderers = {"forest": ForestRenderer(fullslot=soft_blend)}
 
     # Default renderer is the first one
     default_renderer = next(iter(biome_renderers.values())) if biome_renderers else None
 
-    # Optionally use full-slot renderer (Phase 16A)
+    # Optionally use full-slot renderer (Phase 16A + 16D)
     if fullslot:
         from .tile_texture import render_detail_texture_fullslot
         _render_ground = render_detail_texture_fullslot
     else:
         _render_ground = render_detail_texture_enhanced
 
+    # Pre-compute blend masks (16B) if soft_blend is enabled
+    _blend_masks: Dict[str, Any] = {}
+    if soft_blend:
+        import numpy as np
+        from .tile_texture import compute_tile_blend_mask, apply_blend_mask_to_atlas
+
+    # Build face adjacency for neighbour info (16C scatter overflow)
+    _adjacency: Dict[str, List[str]] = {}
+    if soft_blend and globe_grid is not None:
+        from .algorithms import get_face_adjacency
+        _adjacency = get_face_adjacency(globe_grid)
+
     face_ids = collection.face_ids
     n = len(face_ids)
     if n == 0:
         raise ValueError("No detail grids in the collection")
+
+    # Pre-compute blend masks for each tile (16B)
+    if soft_blend:
+        for fid in face_ids:
+            grid, _store = collection.get(fid)
+            _blend_masks[fid] = compute_tile_blend_mask(
+                grid,
+                tile_size=tile_size,
+                fade_width=blend_fade_width,
+            )
 
     # ── Render ground textures + apply biome overlays ───────────
     tile_paths: Dict[str, Path] = {}
@@ -269,12 +306,28 @@ def build_feature_atlas(
                 if face is not None:
                     center_3d = face_center_3d(globe_grid.vertices, face)
 
+            # Build neighbour density/seed maps for fullslot scatter (16C)
+            nbr_densities: Optional[Dict[str, float]] = None
+            nbr_seeds: Optional[Dict[str, int]] = None
+            if soft_blend and fid in _adjacency:
+                nbr_densities = {
+                    nid: density_map.get(nid, 0.0)
+                    for nid in _adjacency[fid]
+                }
+                nbr_seeds = {
+                    nid: noise_seed + hash(nid) % 100_000
+                    for nid in _adjacency[fid]
+                }
+
             featured_img = default_renderer.render(
                 ground_img,
                 fid,
                 tile_density,
                 seed=noise_seed + hash(fid) % 100_000,
                 globe_3d_center=center_3d,
+                blend_mask=_blend_masks.get(fid) if soft_blend else None,
+                neighbour_densities=nbr_densities,
+                neighbour_seeds=nbr_seeds,
             )
             # Save as RGB (atlas doesn't need alpha)
             featured_img.convert("RGB").save(str(ground_path))
@@ -318,6 +371,15 @@ def build_feature_atlas(
         v_min = 1.0 - (inner_y + tile_size) / atlas_h
         v_max = 1.0 - inner_y / atlas_h
         uv_layout[fid] = (u_min, v_min, u_max, v_max)
+
+    # ── Apply soft tile-edge blend to assembled atlas (16B) ─────
+    if soft_blend and _blend_masks:
+        atlas_arr = np.array(atlas)
+        atlas_arr = apply_blend_mask_to_atlas(
+            atlas_arr, _blend_masks, face_ids,
+            tile_size, gutter, columns,
+        )
+        atlas = Image.fromarray(atlas_arr)
 
     atlas_path = output_dir / "detail_atlas.png"
     atlas.save(str(atlas_path))

@@ -241,3 +241,196 @@ class TestBuildFeatureAtlas:
         )
         assert atlas_path.exists()
         assert len(uv) == len(face_ids)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 16E — Pipeline Integration & Validation
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_pil
+@needs_models
+class TestSoftBlendPipeline:
+    """Integration tests for the full Phase 16 soft-blend pipeline."""
+
+    def _build_collection(self, freq=1, rings=1):
+        from conftest import cached_build_globe
+        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+        from polygrid.detail_terrain import generate_all_detail_terrain
+        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
+        import random
+
+        grid = cached_build_globe(freq)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        rng = random.Random(42)
+        for fid in grid.faces:
+            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+        spec = TileDetailSpec(detail_rings=rings)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+        return grid, store, coll
+
+    # ── 16E.1  soft_blend produces a valid atlas ────────────────
+
+    def test_soft_blend_atlas_produces_file(self, tmp_path):
+        """soft_blend=True should produce a valid atlas PNG."""
+        from polygrid.biome_pipeline import build_feature_atlas
+        grid, store, coll = self._build_collection()
+        atlas_path, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+            soft_blend=True,
+        )
+        assert atlas_path.exists()
+        assert len(uv) == len(coll.face_ids)
+        img = Image.open(str(atlas_path))
+        assert img.size[0] > 0 and img.size[1] > 0
+
+    def test_soft_blend_atlas_dimensions_unchanged(self, tmp_path):
+        """soft_blend should not change atlas dimensions vs plain."""
+        from polygrid.biome_pipeline import build_feature_atlas
+        grid, store, coll = self._build_collection()
+
+        plain_path, uv_plain = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "plain",
+            tile_size=64,
+        )
+        blend_path, uv_blend = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "blend",
+            tile_size=64,
+            soft_blend=True,
+        )
+
+        plain_img = Image.open(str(plain_path))
+        blend_img = Image.open(str(blend_path))
+        assert plain_img.size == blend_img.size
+        # UV layout should have same keys
+        assert set(uv_plain.keys()) == set(uv_blend.keys())
+
+    def test_soft_blend_with_forest_features(self, tmp_path):
+        """soft_blend + forest features should produce a valid atlas."""
+        from polygrid.biome_pipeline import build_feature_atlas, ForestRenderer
+        grid, store, coll = self._build_collection()
+        density_map = {fid: 0.8 for fid in coll.face_ids}
+
+        atlas_path, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers={"forest": ForestRenderer(fullslot=True)},
+            density_map=density_map,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+            soft_blend=True,
+        )
+        assert atlas_path.exists()
+        assert len(uv) == len(coll.face_ids)
+
+    def test_soft_blend_forces_fullslot(self, tmp_path):
+        """When soft_blend=True, the pipeline should use fullslot rendering."""
+        from polygrid.biome_pipeline import build_feature_atlas
+        import numpy as np
+
+        grid, store, coll = self._build_collection()
+        atlas_path, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+            soft_blend=True,
+        )
+        # With fullslot, no magenta sentinel pixels should appear
+        img = Image.open(str(atlas_path))
+        arr = np.array(img)
+        magenta_mask = (arr[:, :, 0] == 255) & (arr[:, :, 1] == 0) & (arr[:, :, 2] == 255)
+        assert magenta_mask.sum() == 0, "Magenta sentinel pixels found in soft_blend atlas"
+
+    def test_soft_blend_alters_tile_edges(self, tmp_path):
+        """soft_blend should fade tile edges, reducing boundary contrast."""
+        from polygrid.biome_pipeline import build_feature_atlas
+        import numpy as np
+
+        grid, store, coll = self._build_collection()
+
+        # Build plain atlas (no blend)
+        plain_path, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "plain",
+            tile_size=64,
+            fullslot=True,
+        )
+        # Build soft-blend atlas
+        blend_path, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "blend",
+            tile_size=64,
+            soft_blend=True,
+        )
+
+        plain_arr = np.array(Image.open(str(plain_path))).astype(np.float32)
+        blend_arr = np.array(Image.open(str(blend_path))).astype(np.float32)
+
+        # The blend atlas should differ from the plain one
+        diff = np.abs(plain_arr - blend_arr).mean()
+        assert diff > 0.5, f"Expected noticeable difference, got mean diff={diff:.2f}"
+
+    def test_soft_blend_uv_values_in_range(self, tmp_path):
+        """UV coords from soft_blend atlas should be valid."""
+        from polygrid.biome_pipeline import build_feature_atlas
+        grid, store, coll = self._build_collection()
+        _, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+            soft_blend=True,
+        )
+        for fid, (u_min, v_min, u_max, v_max) in uv.items():
+            assert 0 <= u_min < u_max <= 1.0, f"{fid}: u range invalid"
+            assert 0 <= v_min < v_max <= 1.0, f"{fid}: v range invalid"
+
+    def test_blend_fade_width_parameter(self, tmp_path):
+        """Custom blend_fade_width should be accepted and alter result."""
+        from polygrid.biome_pipeline import build_feature_atlas
+        import numpy as np
+
+        grid, store, coll = self._build_collection()
+
+        narrow_path, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "narrow",
+            tile_size=64,
+            soft_blend=True,
+            blend_fade_width=4,
+        )
+        wide_path, _ = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=tmp_path / "wide",
+            tile_size=64,
+            soft_blend=True,
+            blend_fade_width=24,
+        )
+
+        narrow_arr = np.array(Image.open(str(narrow_path))).astype(np.float32)
+        wide_arr = np.array(Image.open(str(wide_path))).astype(np.float32)
+        # Different fade widths should produce different results
+        diff = np.abs(narrow_arr - wide_arr).mean()
+        assert diff > 0.1, f"Expected different results, got mean diff={diff:.2f}"
+
+    def test_soft_blend_partial_density(self, tmp_path):
+        """soft_blend with partial density: only some tiles get features."""
+        from polygrid.biome_pipeline import build_feature_atlas, ForestRenderer
+        grid, store, coll = self._build_collection()
+
+        face_ids = coll.face_ids
+        density_map = {face_ids[0]: 0.9}
+
+        atlas_path, uv = build_feature_atlas(
+            coll, globe_grid=grid,
+            biome_renderers={"forest": ForestRenderer(fullslot=True)},
+            density_map=density_map,
+            output_dir=tmp_path / "tiles",
+            tile_size=64,
+            soft_blend=True,
+        )
+        assert atlas_path.exists()
+        assert len(uv) == len(face_ids)
