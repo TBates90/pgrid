@@ -477,36 +477,44 @@ Update the texture pipeline to render apron grids instead of isolated tiles.
   - Atlas slot colours match individual tile renders
   - Adjacent tiles' overlap zones have similar pixel values (boundary continuity)
 
-### 18C — Polygrid-Driven Biome Features 🔲
+### 18C — Polygrid-Driven Biome Features ✅
 
 Refactor forest and ocean renderers to be topology-aware.
 
-- [ ] **18C.1 — Sub-face forest features** — each sub-face can host a tree:
-  - Tree placement: iterate sub-faces in density order, place trees at centroids with jittered positions
-  - Canopy size proportional to sub-face area (natural variation for hex vs pentagon sub-faces)
-  - Sub-face elevation drives tree species/colour (higher = sparser, more alpine)
-  - Shadow direction follows global light direction through the sub-face grid
-  - Replaces current random-scatter approach with structured, topology-aware placement
+- [x] **18C.1 — Sub-face forest features** — new `biome_topology.py` module:
+  - `scatter_trees_on_grid()`: places trees at sub-face centroids with jitter, density check via face-ID hash
+  - `SubfaceTree` dataclass: face_id, pixel coords, radius (proportional to sqrt(sub-face area)), elevation-driven colour
+  - Alpine thinning: trees thin out above configurable elevation threshold
+  - `render_topology_forest()`: shadow + canopy + highlight rendering (same visual style as existing, new placement logic)
+  - `TopologyForestRenderer` class: BiomeRenderer protocol with `set_grid_context()` for grid-aware rendering, pixel-based fallback
 
-- [ ] **18C.2 — Sub-face ocean features** — each sub-face carries ocean properties:
-  - Depth per sub-face (from detail terrain elevation) rather than per-tile depth
-  - Coastal sub-faces (those adjacent to land sub-faces) get foam/sand treatment
-  - Deep sub-faces get abyssal darkening
-  - Wave patterns follow sub-face grid axes (not pixel coordinates)
-  - This gives ocean tiles the same structured, organic look as terrain tiles
+- [x] **18C.2 — Sub-face ocean features** — per-sub-face ocean rendering:
+  - `compute_subface_ocean_depth()`: depth from `(water_level - elevation) / water_level` per sub-face
+  - `identify_coastal_subfaces()`: sub-faces underwater but adjacent to land sub-faces (via grid adjacency)
+  - `compute_ocean_subface_props()`: builds `SubfaceOceanProps` list with depth, coastal flag, pixel verts, centroid, area
+  - `render_topology_ocean()`: polygon-fills each sub-face with depth colour, coastal foam overlay on coastal faces, abyssal darkening
+  - `TopologyOceanRenderer` class: BiomeRenderer protocol with grid context, pixel-based fallback
 
-- [ ] **18C.3 — Hybrid rendering** — combine polygrid-driven features with pixel-level finishing:
-  - Step 1: Render sub-face polygons with biome-appropriate colours (topology pass)
-  - Step 2: Apply pixel-level noise overlay for micro-detail (existing 16D approach)
-  - Step 3: Apply biome feature compositing (trees, waves, foam) at polygon positions
-  - This layered approach gets the best of both worlds: structured topology + organic detail
+- [x] **18C.3 — Hybrid rendering** — `render_hybrid_biome()` function:
+  - Step 1: Ground texture (already rendered with terrain colours)
+  - Step 2: Topology pass — sub-face features (trees or ocean depth polygons)
+  - Step 3: Pixel noise overlay for micro-detail (existing `apply_noise_overlay`)
+  - Accepts `forest_config` / `ocean_config` for full parameter control
+  - Updated `build_apron_feature_atlas()` to call `set_grid_context()` on topology-aware renderers
 
-- [ ] **18C.4 — Tests:**
-  - Forest trees placed at sub-face centroids, not random pixel positions
-  - Ocean depth varies per sub-face within a tile
-  - Coastal sub-faces identified correctly (adjacent to land)
-  - Feature placement deterministic given same seed
-  - Visual comparison: topology-aware vs pixel-only rendering
+- [x] **18C.4 — Tests:** 33 tests in `test_biome_topology.py`:
+  - Trees placed at sub-face centroids (valid face_id references)
+  - Deterministic placement — same seed → same result
+  - Density controls tree count; zero density → no trees
+  - Radius bounded and proportional to area; depth-sorted
+  - Alpine thinning reduces trees at high elevation
+  - Forest rendering produces valid RGBA image, modifies ground
+  - Per-sub-face ocean depth: below water → positive, above → zero, per-face variation
+  - Coastal detection: all-ocean → no coastal; mixed → coastal found; coastal faces are underwater
+  - Ocean rendering produces valid RGB, modifies ground, coastal foam applied
+  - Hybrid rendering for forest and ocean; noise overlay adds variation
+  - Renderer classes work with and without grid context (fallback)
+  - Polygon area utility: unit square, triangle, degenerate
 
 ### 18D — Texture Export Pipeline 🔲
 

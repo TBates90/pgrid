@@ -326,6 +326,19 @@ from .ocean_render import (
     render_deep_ocean_features,
     render_ocean_tile,
 )
+from .biome_topology import (
+    SubfaceTree,
+    SubfaceOceanProps,
+    scatter_trees_on_grid,
+    render_topology_forest,
+    compute_subface_ocean_depth,
+    identify_coastal_subfaces,
+    compute_ocean_subface_props,
+    render_topology_ocean,
+    render_hybrid_biome,
+    TopologyForestRenderer,
+    TopologyOceanRenderer,
+)
 from .region_stitch import (
     FaceMapping,
     stitch_detail_grids,
@@ -664,6 +677,18 @@ __all__ = [
     "render_coastal_features",
     "render_deep_ocean_features",
     "render_ocean_tile",
+    # Biome topology (Phase 18C)
+    "SubfaceTree",
+    "SubfaceOceanProps",
+    "scatter_trees_on_grid",
+    "render_topology_forest",
+    "compute_subface_ocean_depth",
+    "identify_coastal_subfaces",
+    "compute_ocean_subface_props",
+    "render_topology_ocean",
+    "render_hybrid_biome",
+    "TopologyForestRenderer",
+    "TopologyOceanRenderer",
     # Biome pipeline (Phase 14D)
     "BiomeRenderer",
     "ForestRenderer",

@@ -550,6 +550,10 @@ def build_apron_feature_atlas(
             if face is not None:
                 center_3d = face_center_3d(globe_grid.vertices, face)
 
+            # Set grid context for topology-aware renderers (18C)
+            if hasattr(tile_renderer, "set_grid_context"):
+                tile_renderer.set_grid_context(ar.grid, ar.store)
+
             ground_img = tile_renderer.render(
                 ground_img,
                 fid,
