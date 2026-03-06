@@ -22,7 +22,6 @@ Functions
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
@@ -242,24 +241,286 @@ def project_and_normalize(
 # 20A.2 — Affine transform from detail-2D to tile-UV
 # ═══════════════════════════════════════════════════════════════════
 
-@dataclass(frozen=True)
 class UVTransform:
-    """Affine transform mapping detail-grid 2D positions to tile UV [0,1].
+    """Piecewise-linear polygon warp from detail-grid 2D to tile UV [0,1].
 
-    The transform is: ``uv = A @ [x, y] + t``
-    where A is 2×2 and t is 2×1.
+    The warp splits both the source polygon (detail-grid boundary) and
+    destination polygon (GoldbergTile UV polygon) into triangle fans
+    from their respective centroids.  For any interior point, we find
+    which source triangle it belongs to, compute barycentric coords,
+    and map to the corresponding destination triangle.
+
+    This gives **exact** boundary-vertex alignment (zero error at
+    polygon corners), unlike a global similarity transform.
     """
-    A: np.ndarray   # shape (2, 2)
-    t: np.ndarray   # shape (2,)
+
+    def __init__(
+        self,
+        src_centroid: np.ndarray,
+        src_corners: np.ndarray,
+        dst_centroid: np.ndarray,
+        dst_corners: np.ndarray,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        src_centroid : (2,) — detail-grid centroid
+        src_corners : (N, 2) — detail-grid boundary polygon vertices (ordered)
+        dst_centroid : (2,) — UV polygon centroid
+        dst_corners : (N, 2) — UV polygon vertices (same order, matched)
+        """
+        self.src_centroid = np.asarray(src_centroid, dtype=np.float64)
+        self.src_corners = np.asarray(src_corners, dtype=np.float64)
+        self.dst_centroid = np.asarray(dst_centroid, dtype=np.float64)
+        self.dst_corners = np.asarray(dst_corners, dtype=np.float64)
+        self.n = len(src_corners)
+        # Pre-compute per-sector affine transforms for speed
+        self._sector_A: List[np.ndarray] = []
+        self._sector_t: List[np.ndarray] = []
+        self._sector_angles: np.ndarray = np.zeros(self.n, dtype=np.float64)
+        for i in range(self.n):
+            j = (i + 1) % self.n
+            # Source triangle: centroid, corner[i], corner[j]
+            S = np.column_stack([
+                self.src_corners[i] - self.src_centroid,
+                self.src_corners[j] - self.src_centroid,
+            ])  # (2, 2)
+            # Destination triangle: centroid, corner[i], corner[j]
+            D = np.column_stack([
+                self.dst_corners[i] - self.dst_centroid,
+                self.dst_corners[j] - self.dst_centroid,
+            ])  # (2, 2)
+            det = S[0, 0] * S[1, 1] - S[0, 1] * S[1, 0]
+            if abs(det) > 1e-20:
+                S_inv = np.array([
+                    [S[1, 1], -S[0, 1]],
+                    [-S[1, 0], S[0, 0]],
+                ], dtype=np.float64) / det
+                A = D @ S_inv
+            else:
+                A = np.eye(2, dtype=np.float64)
+            t = self.dst_centroid - A @ self.src_centroid
+            self._sector_A.append(A)
+            self._sector_t.append(t)
+            # Angle of the bisector for sector classification
+            mid = (self.src_corners[i] + self.src_corners[j]) * 0.5
+            self._sector_angles[i] = math.atan2(
+                mid[1] - self.src_centroid[1],
+                mid[0] - self.src_centroid[0],
+            )
+
+    def _find_sector(self, x: float, y: float) -> int:
+        """Find which triangle-fan sector a point belongs to."""
+        angle = math.atan2(y - self.src_centroid[1], x - self.src_centroid[0])
+        # Find sector by checking which pair of adjacent corners the
+        # point's angle falls between.
+        for i in range(self.n):
+            j = (i + 1) % self.n
+            a0 = math.atan2(
+                self.src_corners[i][1] - self.src_centroid[1],
+                self.src_corners[i][0] - self.src_centroid[0],
+            )
+            a1 = math.atan2(
+                self.src_corners[j][1] - self.src_centroid[1],
+                self.src_corners[j][0] - self.src_centroid[0],
+            )
+            if _angle_between(a0, a1, angle):
+                return i
+        # Fallback: nearest sector by angle difference
+        best_i = 0
+        best_diff = float("inf")
+        for i in range(self.n):
+            diff = abs(math.atan2(
+                math.sin(angle - self._sector_angles[i]),
+                math.cos(angle - self._sector_angles[i]),
+            ))
+            if diff < best_diff:
+                best_diff = diff
+                best_i = i
+        return best_i
 
     def apply(self, x: float, y: float) -> Tuple[float, float]:
         """Transform a detail-grid 2D point to tile UV."""
-        p = self.A @ np.array([x, y]) + self.t
+        sector = self._find_sector(x, y)
+        A = self._sector_A[sector]
+        t = self._sector_t[sector]
+        p = A @ np.array([x, y]) + t
         return (float(p[0]), float(p[1]))
 
     def apply_array(self, points: np.ndarray) -> np.ndarray:
         """Transform an array of points (N, 2) to UV coordinates (N, 2)."""
-        return (points @ self.A.T) + self.t
+        pts = np.asarray(points, dtype=np.float64)
+        if pts.ndim == 1:
+            pts = pts.reshape(1, 2)
+        result = np.empty_like(pts)
+        # Vectorised sector assignment by angle
+        angles = np.arctan2(
+            pts[:, 1] - self.src_centroid[1],
+            pts[:, 0] - self.src_centroid[0],
+        )
+        # Pre-compute corner angles
+        corner_angles = np.arctan2(
+            self.src_corners[:, 1] - self.src_centroid[1],
+            self.src_corners[:, 0] - self.src_centroid[0],
+        )
+        # Assign sectors
+        sectors = np.zeros(len(pts), dtype=np.int32)
+        for k in range(len(pts)):
+            sectors[k] = self._find_sector(pts[k, 0], pts[k, 1])
+        # Apply per-sector transforms
+        for i in range(self.n):
+            mask = sectors == i
+            if not mask.any():
+                continue
+            A = self._sector_A[i]
+            t = self._sector_t[i]
+            sector_pts = pts[mask]
+            result[mask] = (sector_pts @ A.T) + t
+        return result
+
+
+def _angle_between(a0: float, a1: float, angle: float) -> bool:
+    """Check if *angle* lies in the arc from *a0* to *a1* (counter-clockwise)."""
+    # Normalise everything to [0, 2π)
+    def _norm(a: float) -> float:
+        return a % (2.0 * math.pi)
+    a0n = _norm(a0)
+    a1n = _norm(a1)
+    an = _norm(angle)
+    if a0n <= a1n:
+        return a0n <= an <= a1n
+    else:
+        # Wraps around 0
+        return an >= a0n or an <= a1n
+
+
+def _find_polygon_corners(detail_grid: PolyGrid) -> Tuple[np.ndarray, np.ndarray]:
+    """Extract the macro-polygon corner vertices from a detail grid.
+
+    The detail grid is a regular hex or pentagon grid.  Its outermost
+    vertices lie on a convex polygon.  We identify the polygon's
+    corners by clustering the outermost vertices by angle.
+
+    Returns
+    -------
+    (centroid, corners)
+        centroid : (2,) — mean of all vertices
+        corners : (N, 2) — polygon corners, counter-clockwise ordered
+    """
+    all_verts = []
+    for v in detail_grid.vertices.values():
+        if v.has_position():
+            all_verts.append(np.array([v.x, v.y], dtype=np.float64))
+
+    if len(all_verts) < 3:
+        return np.zeros(2), np.zeros((0, 2))
+
+    arr = np.array(all_verts)
+    centroid = arr.mean(axis=0)
+    dists = np.linalg.norm(arr - centroid, axis=1)
+    max_dist = dists.max()
+
+    if max_dist < 1e-12:
+        return centroid, np.zeros((0, 2))
+
+    # Determine the expected number of corners from the grid type.
+    face_type = detail_grid.metadata.get("parent_face_type")
+    if face_type is None:
+        # Infer from face count: pentagon grids have 5n²+5n+1 faces,
+        # hex grids have 3n²+3n+1.  Pentagon grids are smaller.
+        n_faces = len(detail_grid.faces)
+        parent_fid = detail_grid.metadata.get("parent_face_id", "")
+        parent_face = None
+        # Try to detect pent vs hex from the detail grid's structure
+        # A simpler heuristic: pentagon grids have 5-fold symmetry
+        # For now, use a threshold: if the number of faces is closer
+        # to the pentagon formula, it's pentagon.
+        # With rings=r: hex_faces = 3r²+3r+1, pent_faces = 5r²+5r+1
+        # Or just count outermost vertices and cluster.
+        pass
+
+    # Get the outermost ring of vertices (at max distance)
+    outer_threshold = max_dist * 0.999
+    outer_mask = dists >= outer_threshold
+    outer_verts = arr[outer_mask]
+
+    if len(outer_verts) < 3:
+        # Relax threshold
+        outer_threshold = max_dist * 0.98
+        outer_mask = dists >= outer_threshold
+        outer_verts = arr[outer_mask]
+
+    if len(outer_verts) < 3:
+        return centroid, np.zeros((0, 2))
+
+    # Compute angles from centroid
+    outer_angles = np.arctan2(
+        outer_verts[:, 1] - centroid[1],
+        outer_verts[:, 0] - centroid[0],
+    )
+
+    # Sort by angle
+    order = np.argsort(outer_angles)
+    outer_verts = outer_verts[order]
+    outer_angles = outer_angles[order]
+
+    # Cluster by angular proximity.  True polygon corners have
+    # neighbouring vertices very close in angle, while there are
+    # large angular gaps between different corners.
+    # Find gap sizes between consecutive angles
+    n_outer = len(outer_angles)
+    gaps = np.empty(n_outer, dtype=np.float64)
+    for i in range(n_outer):
+        j = (i + 1) % n_outer
+        gap = outer_angles[j] - outer_angles[i]
+        if j == 0:
+            gap += 2.0 * math.pi
+        gaps[i] = gap
+
+    # The large gaps separate clusters.  We expect 5 or 6 corners.
+    # Try both and pick whichever gives cleaner clusters.
+    for n_expected in (6, 5):
+        if n_outer < n_expected:
+            continue
+
+        # Find the n_expected largest gaps
+        gap_order = np.argsort(gaps)[::-1]
+        split_indices = sorted(gap_order[:n_expected])
+
+        # Build clusters: each cluster starts after a split gap
+        clusters = []
+        for c in range(n_expected):
+            start = (split_indices[c] + 1) % n_outer
+            end = split_indices[(c + 1) % n_expected]
+            # Collect indices from start to end (inclusive), wrapping
+            indices = []
+            idx = start
+            while True:
+                indices.append(idx)
+                if idx == end:
+                    break
+                idx = (idx + 1) % n_outer
+            clusters.append(indices)
+
+        # Verify: each cluster should have similar number of vertices
+        cluster_sizes = [len(c) for c in clusters]
+        if max(cluster_sizes) <= 3 * min(max(cluster_sizes), 1):
+            # Compute corner as the mean of each cluster
+            corners = np.empty((n_expected, 2), dtype=np.float64)
+            for c_idx, cluster in enumerate(clusters):
+                cluster_verts = outer_verts[cluster]
+                corners[c_idx] = cluster_verts.mean(axis=0)
+
+            # Sort by angle
+            c_angles = np.arctan2(
+                corners[:, 1] - centroid[1],
+                corners[:, 0] - centroid[0],
+            )
+            corners = corners[np.argsort(c_angles)]
+            return centroid, corners
+
+    # Fallback: just use the outer vertices as-is
+    return centroid, outer_verts
 
 
 def compute_detail_to_uv_transform(
@@ -271,16 +532,16 @@ def compute_detail_to_uv_transform(
     bitangent: np.ndarray,
     uv_bounds: Tuple[float, float, float, float],
 ) -> UVTransform:
-    """Compute the affine transform from detail-grid 2D to tile UV [0,1].
+    """Compute the piecewise-linear warp from detail-grid 2D to tile UV [0,1].
 
     Strategy
     --------
-    When the models library is available, we use the **authoritative**
-    ``GoldbergTile.uv_vertices`` — these are the exact UV polygon that
-    the 3D mesh builder samples.  We match these UV vertices to the
-    detail grid's outermost boundary vertices by angle from centroid,
-    then solve a least-squares similarity transform (4 DOF: scale,
-    rotation, translation).
+    The detail grid's boundary forms a regular polygon (hex or pent)
+    in 2D Tutte-embedding space.  The GoldbergTile's ``uv_vertices``
+    define the UV polygon that the 3D mesh samples.  We construct a
+    triangle-fan warp that maps each sector of the source polygon to
+    the corresponding sector of the UV polygon, giving **exact**
+    boundary vertex alignment.
 
     Parameters
     ----------
@@ -295,98 +556,142 @@ def compute_detail_to_uv_transform(
     UVTransform
     """
     # ── UV positions of the tile polygon vertices ───────────────
-    # Use the authoritative uv_vertices from the GoldbergTile when
-    # available — these are what the mesh builder uses.
     if _HAS_MODELS:
         uv_verts = get_tile_uv_vertices(globe_grid, face_id)
-        uv_poly = [np.array(uv, dtype=np.float64) for uv in uv_verts]
+        uv_poly = np.array(uv_verts, dtype=np.float64)
     else:
-        # Fallback: derive from globe_grid vertices
         face = globe_grid.faces[face_id]
-        uv_poly = []
+        uv_list = []
         for vid in face.vertex_ids:
             v = globe_grid.vertices[vid]
             pt3 = np.array([v.x, v.y, v.z], dtype=np.float64)
             uv = project_and_normalize(pt3, center, tangent, bitangent, uv_bounds)
-            uv_poly.append(np.array(uv, dtype=np.float64))
+            uv_list.append(np.array(uv, dtype=np.float64))
+        uv_poly = np.array(uv_list)
 
-    uv_arr = np.array(uv_poly)
-    uv_centroid = uv_arr.mean(axis=0)
-
-    # ── Corresponding 2D positions from the detail grid ─────────
-    # Collect all vertex positions
-    all_detail_verts = []
-    for v in detail_grid.vertices.values():
-        if v.has_position():
-            all_detail_verts.append(np.array([v.x, v.y], dtype=np.float64))
-
-    if len(all_detail_verts) < 3:
-        return UVTransform(A=np.eye(2), t=np.zeros(2))
-
-    all_detail_verts_arr = np.array(all_detail_verts)
-    detail_centroid = all_detail_verts_arr.mean(axis=0)
-    dists = np.linalg.norm(all_detail_verts_arr - detail_centroid, axis=1)
-    max_dist = dists.max()
-
-    if max_dist < 1e-12:
-        return UVTransform(A=np.eye(2), t=np.zeros(2))
-
-    # The boundary vertices are those at (approximately) the maximum
-    # distance.  For a regular hex/pent grid they sit on the outer ring.
-    boundary_threshold = max_dist * 0.85
-    boundary_mask = dists >= boundary_threshold
-    boundary_verts = all_detail_verts_arr[boundary_mask]
-
-    # ── Match polygon UV vertices to boundary detail vertices ───
+    uv_centroid = uv_poly.mean(axis=0)
     n_poly = len(uv_poly)
-    uv_angles = np.arctan2(uv_arr[:, 1] - uv_centroid[1],
-                           uv_arr[:, 0] - uv_centroid[0])
-    boundary_angles = np.arctan2(boundary_verts[:, 1] - detail_centroid[1],
-                                 boundary_verts[:, 0] - detail_centroid[0])
 
-    src_points = []  # detail-2D
-    dst_points = []  # UV [0,1]
+    # ── Find the detail grid's polygon corners ──────────────────
+    detail_centroid, detail_corners = _find_polygon_corners(detail_grid)
 
-    for i in range(n_poly):
-        target_angle = uv_angles[i]
-        angle_diffs = np.abs(np.arctan2(
-            np.sin(boundary_angles - target_angle),
-            np.cos(boundary_angles - target_angle),
-        ))
-        best_idx = np.argmin(angle_diffs)
-        src_points.append(boundary_verts[best_idx])
-        dst_points.append(uv_arr[i])
+    if len(detail_corners) < 3:
+        # Degenerate — return identity-ish transform
+        return UVTransform(
+            src_centroid=np.zeros(2), src_corners=uv_poly,
+            dst_centroid=uv_centroid, dst_corners=uv_poly,
+        )
 
-    src_pts = np.array(src_points)  # (N, 2)
-    dst_pts = np.array(dst_points)  # (N, 2)
+    # ── Match corners by angle ──────────────────────────────────
+    # The detail grid and UV polygon may have the same or different
+    # numbers of corners.  We need to match them 1:1.
+    n_detail = len(detail_corners)
 
-    # Solve for similarity transform: [u, v] = [a, -b; b, a] * [x, y] + [tx, ty]
-    # This is a constrained affine (rotation + uniform scale + translation).
-    # We centre both point sets first, then solve for rotation+scale.
+    if n_detail == n_poly:
+        # Same number — match by angle from centroid
+        uv_angles = np.arctan2(
+            uv_poly[:, 1] - uv_centroid[1],
+            uv_poly[:, 0] - uv_centroid[0],
+        )
+        detail_angles = np.arctan2(
+            detail_corners[:, 1] - detail_centroid[1],
+            detail_corners[:, 0] - detail_centroid[0],
+        )
+        # For each UV vertex, find the closest detail corner by angle
+        matched_detail = np.empty_like(uv_poly)
+        used = set()
+        # Sort UV by angle for consistent matching
+        uv_order = np.argsort(uv_angles)
+        detail_order = np.argsort(detail_angles)
+        # The detail corners and UV corners should have the same
+        # angular ordering.  Find the best rotational offset.
+        best_offset = 0
+        best_score = float("inf")
+        for offset in range(n_poly):
+            score = 0.0
+            for k in range(n_poly):
+                dk = detail_order[(k + offset) % n_poly]
+                uk = uv_order[k]
+                diff = math.atan2(
+                    math.sin(detail_angles[dk] - uv_angles[uk]),
+                    math.cos(detail_angles[dk] - uv_angles[uk]),
+                )
+                score += diff * diff
+            if score < best_score:
+                best_score = score
+                best_offset = offset
 
-    src_c = src_pts.mean(axis=0)
-    dst_c = dst_pts.mean(axis=0)
+        # Build matched arrays in UV polygon order
+        src_corners_ordered = np.empty((n_poly, 2), dtype=np.float64)
+        dst_corners_ordered = np.empty((n_poly, 2), dtype=np.float64)
+        for k in range(n_poly):
+            uk = uv_order[k]
+            dk = detail_order[(k + best_offset) % n_poly]
+            src_corners_ordered[k] = detail_corners[dk]
+            dst_corners_ordered[k] = uv_poly[uk]
 
-    src_rel = src_pts - src_c
-    dst_rel = dst_pts - dst_c
+        # Re-sort both by the source angle for consistent sector ordering
+        src_angles_final = np.arctan2(
+            src_corners_ordered[:, 1] - detail_centroid[1],
+            src_corners_ordered[:, 0] - detail_centroid[0],
+        )
+        final_order = np.argsort(src_angles_final)
+        src_corners_ordered = src_corners_ordered[final_order]
+        dst_corners_ordered = dst_corners_ordered[final_order]
 
-    # Least-squares similarity: minimise ||dst_rel - R*s * src_rel||²
-    # where R*s = [[a, -b], [b, a]]
-    # Normal equations:
-    #   a = Σ(sx*dx + sy*dy) / Σ(sx² + sy²)
-    #   b = Σ(sx*dy - sy*dx) / Σ(sx² + sy²)
-    ss = np.sum(src_rel[:, 0]**2 + src_rel[:, 1]**2)
-    if ss < 1e-20:
-        # Degenerate
-        return UVTransform(A=np.eye(2), t=dst_c - src_c)
+    else:
+        # Different numbers of corners — fall back to similarity
+        # transform fitted to the available corners, then construct
+        # a UVTransform from the UV polygon mapped back.
+        # This shouldn't happen for well-formed globe grids.
+        all_verts = []
+        for v in detail_grid.vertices.values():
+            if v.has_position():
+                all_verts.append(np.array([v.x, v.y], dtype=np.float64))
+        arr = np.array(all_verts)
+        dc = arr.mean(axis=0)
+        dists = np.linalg.norm(arr - dc, axis=1)
+        boundary = arr[dists >= dists.max() * 0.85]
+        boundary_angles = np.arctan2(boundary[:, 1] - dc[1], boundary[:, 0] - dc[0])
+        uv_angles = np.arctan2(uv_poly[:, 1] - uv_centroid[1],
+                               uv_poly[:, 0] - uv_centroid[0])
+        src_pts, dst_pts = [], []
+        for i in range(n_poly):
+            diffs = np.abs(np.arctan2(
+                np.sin(boundary_angles - uv_angles[i]),
+                np.cos(boundary_angles - uv_angles[i]),
+            ))
+            src_pts.append(boundary[np.argmin(diffs)])
+            dst_pts.append(uv_poly[i])
+        src_pts = np.array(src_pts)
+        dst_pts = np.array(dst_pts)
+        # Use UV polygon as both src and dst corners, with a global
+        # affine fitted to boundary points
+        src_c = src_pts.mean(axis=0)
+        dst_c = dst_pts.mean(axis=0)
+        src_rel = src_pts - src_c
+        dst_rel = dst_pts - dst_c
+        ss = np.sum(src_rel[:, 0]**2 + src_rel[:, 1]**2)
+        if ss > 1e-20:
+            a = np.sum(src_rel[:, 0] * dst_rel[:, 0] + src_rel[:, 1] * dst_rel[:, 1]) / ss
+            b = np.sum(src_rel[:, 0] * dst_rel[:, 1] - src_rel[:, 1] * dst_rel[:, 0]) / ss
+            A_mat = np.array([[a, -b], [b, a]], dtype=np.float64)
+        else:
+            A_mat = np.eye(2)
+        # Map detail corners to UV space via the affine
+        mapped = (detail_corners @ A_mat.T) + (dst_c - A_mat @ src_c)
+        src_angles_f = np.arctan2(detail_corners[:, 1] - detail_centroid[1],
+                                  detail_corners[:, 0] - detail_centroid[0])
+        order = np.argsort(src_angles_f)
+        src_corners_ordered = detail_corners[order]
+        dst_corners_ordered = mapped[order]
 
-    a = np.sum(src_rel[:, 0] * dst_rel[:, 0] + src_rel[:, 1] * dst_rel[:, 1]) / ss
-    b = np.sum(src_rel[:, 0] * dst_rel[:, 1] - src_rel[:, 1] * dst_rel[:, 0]) / ss
-
-    A = np.array([[a, -b], [b, a]], dtype=np.float64)
-    t = dst_c - A @ src_c
-
-    return UVTransform(A=A, t=t)
+    return UVTransform(
+        src_centroid=detail_centroid,
+        src_corners=src_corners_ordered,
+        dst_centroid=uv_centroid,
+        dst_corners=dst_corners_ordered,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════

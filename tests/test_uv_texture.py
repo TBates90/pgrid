@@ -273,52 +273,88 @@ class TestAuthoritativeBasis:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestUVTransform:
-    def test_identity_transform(self):
-        xf = UVTransform(A=np.eye(2), t=np.zeros(2))
-        u, v = xf.apply(3.0, 4.0)
-        assert abs(u - 3.0) < 1e-10
-        assert abs(v - 4.0) < 1e-10
+    """Test the piecewise-linear polygon-warp UVTransform."""
 
-    def test_translation_only(self):
-        xf = UVTransform(A=np.eye(2), t=np.array([1.0, 2.0]))
+    def _make_hex_warp(self, offset=(0.0, 0.0), scale=1.0):
+        """Create a UVTransform that warps a regular hex to a shifted hex."""
+        # Regular hexagon corners centered at origin
+        src_corners = np.array([
+            [scale * math.cos(a), scale * math.sin(a)]
+            for a in (math.radians(d) for d in range(0, 360, 60))
+        ])
+        dst_corners = src_corners + np.array(offset)
+        return UVTransform(
+            src_centroid=np.array([0.0, 0.0]),
+            src_corners=src_corners,
+            dst_centroid=np.array(offset),
+            dst_corners=dst_corners,
+        )
+
+    def test_identity_transform(self):
+        xf = self._make_hex_warp()
+        u, v = xf.apply(0.0, 0.0)
+        assert abs(u) < 1e-10
+        assert abs(v) < 1e-10
+
+    def test_translation(self):
+        xf = self._make_hex_warp(offset=(1.0, 2.0))
         u, v = xf.apply(0.0, 0.0)
         assert abs(u - 1.0) < 1e-10
         assert abs(v - 2.0) < 1e-10
 
-    def test_scale_transform(self):
-        xf = UVTransform(A=np.array([[2.0, 0.0], [0.0, 3.0]]), t=np.zeros(2))
-        u, v = xf.apply(1.0, 1.0)
-        assert abs(u - 2.0) < 1e-10
-        assert abs(v - 3.0) < 1e-10
-
-    def test_rotation_90(self):
-        xf = UVTransform(A=np.array([[0.0, -1.0], [1.0, 0.0]]), t=np.zeros(2))
-        u, v = xf.apply(1.0, 0.0)
-        assert abs(u) < 1e-10
-        assert abs(v - 1.0) < 1e-10
+    def test_corners_map_exactly(self):
+        src_corners = np.array([
+            [1.0, 0.0], [0.5, 0.866], [-0.5, 0.866],
+            [-1.0, 0.0], [-0.5, -0.866], [0.5, -0.866],
+        ])
+        dst_corners = np.array([
+            [2.0, 1.0], [1.5, 1.866], [0.5, 1.866],
+            [0.0, 1.0], [0.5, 0.134], [1.5, 0.134],
+        ])
+        xf = UVTransform(
+            src_centroid=np.zeros(2),
+            src_corners=src_corners,
+            dst_centroid=np.array([1.0, 1.0]),
+            dst_corners=dst_corners,
+        )
+        for i in range(6):
+            u, v = xf.apply(src_corners[i, 0], src_corners[i, 1])
+            np.testing.assert_allclose([u, v], dst_corners[i], atol=1e-10)
 
     def test_apply_array(self):
-        xf = UVTransform(A=np.array([[2.0, 0.0], [0.0, 3.0]]), t=np.array([1.0, 2.0]))
-        pts = np.array([[1.0, 1.0], [0.0, 0.0], [0.5, 0.5]])
+        xf = self._make_hex_warp(offset=(1.0, 2.0))
+        pts = np.array([[0.0, 0.0], [0.5, 0.0], [-0.3, 0.2]])
         result = xf.apply_array(pts)
         assert result.shape == (3, 2)
-        np.testing.assert_allclose(result[0], [3.0, 5.0], atol=1e-10)
-        np.testing.assert_allclose(result[1], [1.0, 2.0], atol=1e-10)
-        np.testing.assert_allclose(result[2], [2.0, 3.5], atol=1e-10)
+        for i in range(3):
+            u, v = xf.apply(pts[i, 0], pts[i, 1])
+            np.testing.assert_allclose(result[i], [u, v], atol=1e-10)
 
     def test_apply_array_matches_apply(self):
-        A = np.array([[1.5, -0.3], [0.3, 1.5]])
-        t = np.array([0.1, 0.2])
-        xf = UVTransform(A=A, t=t)
-        pts = np.array([[1.0, 2.0], [-1.0, 3.0], [0.5, -0.5]])
+        # Non-trivial warp: regular hex → irregular hex
+        src_corners = np.array([
+            [1.0, 0.0], [0.5, 0.866], [-0.5, 0.866],
+            [-1.0, 0.0], [-0.5, -0.866], [0.5, -0.866],
+        ])
+        dst_corners = np.array([
+            [0.8, 0.0], [0.3, 1.0], [-0.7, 0.9],
+            [-1.1, -0.1], [-0.4, -0.9], [0.6, -0.8],
+        ])
+        xf = UVTransform(
+            src_centroid=np.zeros(2),
+            src_corners=src_corners,
+            dst_centroid=np.array([0.0, 0.0]),
+            dst_corners=dst_corners,
+        )
+        pts = np.array([[0.0, 0.0], [0.5, 0.3], [-0.2, 0.5], [0.3, -0.4]])
         result = xf.apply_array(pts)
-        for i in range(3):
+        for i in range(len(pts)):
             u, v = xf.apply(pts[i, 0], pts[i, 1])
             np.testing.assert_allclose(result[i], [u, v], atol=1e-10)
 
 
 class TestComputeDetailToUVTransform:
-    """Test the affine transform using a real globe grid."""
+    """Test the polygon warp using a real globe grid."""
 
     def test_hex_transform_maps_center_near_uv_center(self, real_globe_f3):
         fid = "t5"  # a hex tile
@@ -357,21 +393,8 @@ class TestComputeDetailToUVTransform:
         assert 0.1 < u < 0.9, f"u={u} too far from center"
         assert 0.1 < v < 0.9, f"v={v} too far from center"
 
-    def test_transform_is_similarity(self, real_globe_f3):
-        fid = "t5"
-        center, normal, tangent, bitangent = compute_tile_basis(real_globe_f3, fid)
-        uv_bounds = compute_tile_uv_bounds(real_globe_f3, fid, center, tangent, bitangent)
-
-        detail = _make_detail_grid_2d(n_sides=6, rings=2)
-        xf = compute_detail_to_uv_transform(
-            real_globe_f3, fid, detail, center, tangent, bitangent, uv_bounds,
-        )
-
-        A = xf.A
-        assert abs(A[0, 0] - A[1, 1]) < 1e-6, f"A[0,0]={A[0,0]} != A[1,1]={A[1,1]}"
-        assert abs(A[0, 1] + A[1, 0]) < 1e-6, f"A[0,1]={A[0,1]} != -A[1,0]={A[1,0]}"
-
-    def test_scale_is_positive(self, real_globe_f3):
+    def test_polygon_corners_map_exactly(self, real_globe_f3):
+        """Polygon warp must give zero error at polygon corners."""
         fid = "t5"
         center, normal, tangent, bitangent = compute_tile_basis(real_globe_f3, fid)
         uv_bounds = compute_tile_uv_bounds(real_globe_f3, fid, center, tangent, bitangent)
@@ -381,9 +404,25 @@ class TestComputeDetailToUVTransform:
             real_globe_f3, fid, detail, center, tangent, bitangent, uv_bounds,
         )
 
-        a, b = xf.A[0, 0], xf.A[1, 0]
-        scale = math.sqrt(a * a + b * b)
-        assert scale > 1e-6, f"Scale too small: {scale}"
+        for i in range(len(xf.src_corners)):
+            src = xf.src_corners[i]
+            expected = xf.dst_corners[i]
+            actual = np.array(xf.apply(src[0], src[1]))
+            np.testing.assert_allclose(actual, expected, atol=1e-8)
+
+    def test_centroid_maps_to_uv_centroid(self, real_globe_f3):
+        """Polygon warp centroid should map to UV centroid."""
+        fid = "t5"
+        center, normal, tangent, bitangent = compute_tile_basis(real_globe_f3, fid)
+        uv_bounds = compute_tile_uv_bounds(real_globe_f3, fid, center, tangent, bitangent)
+
+        detail = _make_detail_grid_2d(n_sides=6, rings=3)
+        xf = compute_detail_to_uv_transform(
+            real_globe_f3, fid, detail, center, tangent, bitangent, uv_bounds,
+        )
+
+        u, v = xf.apply(xf.src_centroid[0], xf.src_centroid[1])
+        np.testing.assert_allclose([u, v], xf.dst_centroid, atol=1e-8)
 
     def test_boundary_vertices_map_inside_01(self, real_globe_f3):
         fid = "t5"
