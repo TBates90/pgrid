@@ -15,7 +15,10 @@ dev = ["pytest>=7.4"]
 render = ["matplotlib>=3.8"]
 embed = ["numpy>=1.26", "scipy>=1.12"]
 terrain = ["opensimplex>=0.4", "numpy>=1.26", "scipy>=1.12", "Pillow>=10"]
-globe = ["models>=0.1.1"]
+# NOTE: the 'models' library (Goldberg polyhedra) is a local sibling package
+# installed via `pip install -e ../models`.  It is NOT on PyPI, so it must
+# not appear in [project.optional-dependencies].
+globe = []
 demo = ["pyglet>=2.0"]
 
 [project.scripts]
