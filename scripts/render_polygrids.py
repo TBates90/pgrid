@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Render per-tile polygrid PNGs for every Goldberg tile on a globe.
 
+By default, produces polygon-cut UV-aligned tile textures with a packed
+texture atlas ready for 3D globe rendering. All metadata needed by
+``render_globe_from_tiles.py`` is exported alongside the tiles.
+
 Usage
 -----
 ::
 
-    # Basic (frequency 3, detail_rings 4):
+    # Basic (frequency 3, detail_rings 4, polygon-cut atlas):
     python scripts/render_polygrids.py
 
     # Higher resolution:
@@ -14,14 +18,8 @@ Usage
     # Show grid edges overlaid on terrain:
     python scripts/render_polygrids.py --edges
 
-    # Stitched: tile + full neighbours as one merged grid:
-    python scripts/render_polygrids.py --stitched
-
-    # Stitched with edges:
-    python scripts/render_polygrids.py --stitched --edges
-
-    # Show neighbour border faces around each tile (legacy):
-    python scripts/render_polygrids.py --with-neighbour-edges
+    # Disable polygon-cut (plain stitched tiles):
+    python scripts/render_polygrids.py --no-polygon-cut --stitched
 
     # Custom output directory:
     python scripts/render_polygrids.py -o exports/my_polygrids
@@ -29,7 +27,8 @@ Usage
     # Different terrain preset:
     python scripts/render_polygrids.py --preset alpine_peaks
 
-Outputs one PNG per tile to ``exports/polygrids/`` (or custom dir).
+Outputs one PNG per tile plus ``atlas.png``, ``uv_layout.json``,
+``globe_payload.json``, and ``metadata.json`` to the output directory.
 """
 
 from __future__ import annotations
@@ -442,15 +441,21 @@ def main():
              "as a single merged polygrid (no gaps)",
     )
     parser.add_argument(
-        "--polygon-cut", action="store_true",
-        help="Produce polygon-cut, UV-aligned tile textures from "
-             "stitched renders (implies --stitched). Generates an "
-             "atlas ready for 3D globe mapping.",
+        "--no-polygon-cut", action="store_true",
+        help="Disable polygon-cut rendering. By default, polygon-cut "
+             "UV-aligned tile textures are produced from stitched "
+             "renders, generating an atlas ready for 3D globe mapping.",
     )
     parser.add_argument(
         "--debug-labels", action="store_true",
         help="Draw tile-ID and per-edge neighbour labels on each "
-             "polygon-cut tile (requires --polygon-cut).",
+             "polygon-cut tile.",
+    )
+    parser.add_argument(
+        "--polygon-mask", action="store_true",
+        help="Apply black masking to pixels outside the UV polygon "
+             "in polygon-cut tiles. Off by default; useful for "
+             "debugging to visualise the polygon boundary.",
     )
     parser.add_argument(
         "--with-neighbour-edges", action="store_true",
@@ -482,7 +487,10 @@ def main():
     biome = BiomeConfig()
     face_ids = coll.face_ids
 
-    if args.polygon_cut:
+    # Derive effective polygon_cut flag (default on, unless --no-polygon-cut)
+    polygon_cut = not args.no_polygon_cut
+
+    if polygon_cut:
         from polygrid.tile_detail import build_tile_with_neighbours, find_polygon_corners
         from polygrid.tile_uv_align import (
             compute_tile_view_limits,
@@ -533,6 +541,7 @@ def main():
             tile_images, composites, detail_grids, grid, face_ids,
             tile_size=args.tile_size,
             gutter=gutter,
+            mask_outside=args.polygon_mask,
             debug_labels=args.debug_labels,
             output_dir=debug_dir,
         )
@@ -545,6 +554,25 @@ def main():
         uv_path = output_dir / "uv_layout.json"
         uv_path.write_text(json.dumps(uv_layout, indent=2))
         print(f"  → UV layout: {uv_path}")
+
+        # Phase 3: export globe payload + metadata for render_globe_from_tiles
+        from polygrid.globe_export import export_globe_payload
+
+        payload = export_globe_payload(grid, store, ramp="satellite")
+        payload_path = output_dir / "globe_payload.json"
+        payload_path.write_text(json.dumps(payload, indent=2))
+        print(f"  → Payload: {payload_path}")
+
+        metadata = {
+            "frequency": args.frequency,
+            "seed": args.seed,
+            "preset": args.preset,
+            "detail_rings": args.detail_rings,
+            "tile_size": args.tile_size,
+        }
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2))
+        print(f"  → Metadata: {metadata_path}")
 
     elif args.stitched:
         from polygrid.tile_detail import build_tile_with_neighbours

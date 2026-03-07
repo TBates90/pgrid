@@ -7,7 +7,7 @@ A **topology-first polygon grid toolkit** for building, composing, and running a
 - **Builds** pure hex grids and pentagon-centred Goldberg grids with correct topology and optimised 2D embeddings.
 - **Composes** grids into assemblies — stitching multiple grids along shared macro-edges into a single unified mesh.
 - **Generates terrain** — noise-based heightmaps, mountain ranges, rivers, biome-aware colouring, boundary-continuous sub-tile detail grids.
-- **Renders globes** — GPU-accelerated Goldberg polyhedron rendering with texture atlases, PBR lighting, normal maps, water effects, atmosphere, bloom, and view-dependent adaptive LOD.
+- **Renders globes** — GPU-accelerated Goldberg polyhedron rendering with polygon-cut texture atlases, PBR lighting, normal maps, water effects, atmosphere, bloom, and view-dependent adaptive LOD.
 - **Runs algorithms** on grids — Voronoi duals, angular partitioning, flood-fill, noise-perturbed boundaries.
 - **Visualises** grids and overlays with multi-panel composite renders (exploded, stitched, overlay views).
 
@@ -23,6 +23,89 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and [`doc
 # Install (editable, with all optional deps)
 pip install -e ".[dev,render,embed]"
 
+# Run tests
+pytest
+```
+
+## Generating globe textures
+
+The texture pipeline uses **polygon-cut** rendering: each Goldberg tile
+is rendered as a stitched 2D polygrid (with its neighbours for seamless
+boundaries), then warped into the tile's UV polygon space and packed
+into a texture atlas. This atlas is consumed directly by the 3D globe
+renderer.
+
+### Step 1 — Generate tile textures
+
+```bash
+python scripts/render_polygrids.py -f 3 --seed 42 -o exports/my_globe
+```
+
+This produces an output directory containing:
+- `atlas.png` — the packed texture atlas
+- `uv_layout.json` — per-tile UV coordinates in the atlas
+- `globe_payload.json` — globe geometry for the 3D viewer
+- `metadata.json` — frequency, seed, preset (consumed by Step 2)
+- `t0.png`, `t1.png`, … — individual stitched tile renders
+- `warped/` — individual UV-warped tiles (for inspection)
+
+#### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f`, `--frequency` | `3` | Goldberg polyhedron frequency (number of tiles scales as `10f² + 2`) |
+| `--detail-rings` | `4` | Sub-tile detail grid ring count (higher = finer terrain) |
+| `--preset` | `mountain_range` | Terrain preset: `mountain_range`, `alpine_peaks`, `rolling_hills` |
+| `--seed` | `42` | Random seed for reproducible terrain |
+| `--tile-size` | `512` | Tile image size in pixels |
+| `-o`, `--output-dir` | `exports/polygrids/` | Output directory |
+| `--no-polygon-cut` | off | Disable polygon-cut atlas (plain tile PNGs only) |
+
+#### Debug flags
+
+| Flag | Description |
+|------|-------------|
+| `--debug-labels` | Draw tile-ID and per-edge neighbour labels on each tile |
+| `--polygon-mask` | Black-fill pixels outside the UV polygon (visualise polygon boundary) |
+| `--edges` | Show grid edges overlaid on terrain colouring |
+
+Example with debug overlays:
+
+```bash
+python scripts/render_polygrids.py --debug-labels --polygon-mask \
+    -f 3 --seed 42 --tile-size 256 -o exports/debug_globe
+```
+
+### Step 2 — View the 3D globe
+
+```bash
+python scripts/render_globe_from_tiles.py exports/my_globe --v2
+```
+
+This loads the pre-generated atlas and metadata from the export
+directory and launches an interactive 3D viewer with PBR lighting,
+water, atmosphere, and bloom. No need to re-specify frequency or seed —
+they are read automatically from `metadata.json`.
+
+#### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--v2` | off | Use the v2 renderer (recommended — better sphere projection) |
+| `--subdivisions` | `3` | Triangle subdivision level (higher = smoother sphere) |
+| `--width` / `--height` | `900` / `700` | Window dimensions |
+| `--no-view` | off | Build atlas/payload only, don't launch the viewer |
+| `--no-polygon-cut` | off | Pack a fresh atlas from raw tile PNGs instead of using the pre-built one |
+| `-f`, `--frequency` | from metadata | Override the Goldberg frequency |
+| `--seed` | from metadata | Override the random seed |
+| `--preset` | from metadata | Override the terrain preset |
+| `--payload` | — | Path to an existing `globe_payload.json` (skip globe generation) |
+
+### Topology-only quick start
+
+For working with grids outside of the globe pipeline:
+
+```bash
 # Build a pentagon-centred grid
 polygrid build-pent --rings 3 --out pent.json --render-out pent.png
 
@@ -31,9 +114,6 @@ polygrid build-hex --rings 3 --out hex.json --render-out hex.png
 
 # Build a pent+hex assembly with visualisation
 polygrid assembly --rings 3 --out exports/assembly.png
-
-# Run tests
-pytest
 ```
 
 ### Terrain partitioning
@@ -52,68 +132,6 @@ python scripts/demo_regions.py --rings 3 --regions 6 --out exports/regions.png
 Other partitioning algorithms are available — `partition_angular`,
 `partition_flood_fill`, and `partition_noise` (organic boundaries).
 See [`docs/MODULE_REFERENCE.md`](docs/MODULE_REFERENCE.md) for details.
-
-### Globe terrain with sub-tile detail (Phase 10)
-
-Generate a Goldberg polyhedron globe with high-resolution detail
-textures:
-
-```bash
-# End-to-end: globe → mountains → detail grids → texture atlas
-python scripts/demo_detail_globe.py -f 3 --detail-rings 4 --preset mountain_range
-
-# Fast renderer (PIL, ~5× faster than matplotlib):
-python scripts/demo_detail_globe.py -f 3 --detail-rings 4 --fast
-
-# Interactive 3D viewer with detail textures (requires pyglet):
-python scripts/demo_detail_globe.py -f 3 --detail-rings 4 --view
-
-# Side-by-side comparison at multiple detail levels:
-python scripts/demo_detail_globe.py --compare
-
-# Flat-colour 3D viewer (original mode):
-python scripts/view_globe.py -f 3 -p alpine_peaks
-
-# Textured 3D viewer:
-python scripts/view_globe.py -f 3 --textured --detail-rings 4
-```
-
-The detail pipeline expands each Goldberg tile into a local sub-grid
-(61 sub-faces at `detail_rings=4`), generates boundary-continuous
-terrain, renders satellite-style textures, and packs them into a
-texture atlas for GPU rendering.
-
-### Cohesive 3D globe (Phases 11–13)
-
-The full rendering pipeline produces a seamless, PBR-lit globe:
-
-```bash
-# Full Phase 13 viewer — PBR + water + atmosphere + bloom:
-python scripts/view_globe_v3.py
-
-# Options:
-python scripts/view_globe_v3.py -f 3 --detail-rings 4 --preset earthlike
-python scripts/view_globe_v3.py --no-bloom --no-atmosphere  # simpler rendering
-python scripts/view_globe_v3.py --subdivisions 5            # higher mesh quality
-
-# Cohesive globe (legacy v2 shaders):
-python scripts/demo_cohesive_globe.py --view
-
-# 3D terrain with elevation displacement
-python scripts/demo_globe_3d.py -f 3 --detail-rings 4 --preset mountain_range
-```
-
-The Phase 12–13 rendering pipeline includes:
-- **Flood-fill textures** (12A) — terrain-coloured backgrounds eliminate black seams
-- **Sphere subdivision** (12B) — smooth curvature instead of flat facets
-- **Batched draw** (12C) — single VBO + draw call for entire globe
-- **Atlas gutters** (13B) — prevent bilinear bleed at tile boundaries
-- **UV inset clamping** (13C) — safety net for UV edge cases
-- **Colour harmonisation** (13D) — smooth biome transitions between tiles
-- **Normal-mapped PBR lighting** (13E) — tangent-space normal maps with Fresnel specular and Reinhard tone mapping
-- **Water rendering** (13H) — depth-based colour (shallow turquoise → deep navy), animated waves, coastline foam via screen-space derivatives
-- **Atmosphere** (13G) — Fresnel limb haze shell, radial background gradient, 3-pass bloom post-processing
-- **Adaptive LOD** (13F) — per-tile subdivision level based on screen-space size (`LOD_LEVELS = (1, 2, 3, 5)`), backface culling, LOD boundary stitching
 
 ## Package layout
 
@@ -161,6 +179,8 @@ src/polygrid/
     detail_render.py       # Satellite-style detail textures
     detail_perf.py         # Parallel gen, fast render, caching
     texture_pipeline.py    # Texture atlas + UV mapping
+    uv_texture.py          # GoldbergTile UV extraction
+    tile_uv_align.py       # Polygon-cut warp, atlas builder
 
     # ── GPU rendering ──────────────────────────────────────────
     globe_renderer.py      # OpenGL renderer v1 (flat + textured modes)
@@ -197,7 +217,7 @@ Strict layering with clear separation of concerns:
 | **Terrain** | `noise`, `heightmap`, `mountains`, `rivers`, `pipeline`, `terrain_render`, `terrain_patches` | Procedural terrain generation |
 | **Globe** | `globe`, `globe_terrain`, `globe_export`, `globe_mesh` | Globe-scale topology & terrain |
 | **Detail** | `detail_grid`, `tile_detail`, `detail_terrain`, `detail_terrain_3d`, `detail_render`, `detail_perf` | Sub-tile detail grids & textures |
-| **Texture** | `texture_pipeline` | Texture atlas, UV mapping |
+| **Texture** | `texture_pipeline`, `uv_texture`, `tile_uv_align` | Polygon-cut warp, texture atlas, UV mapping |
 | **Rendering** | `globe_renderer`, `globe_renderer_v2`, `globe_render`, `render_enhanced`, `visualize` | GPU rendering, PBR, LOD |
 
 The core layer has **zero rendering dependencies**. All algorithm work operates on abstract graph topology.

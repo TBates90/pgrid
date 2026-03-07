@@ -991,7 +991,7 @@ def build_polygon_cut_atlas(
     *,
     tile_size: int = 256,
     gutter: int = 4,
-    mask_outside: bool = True,
+    mask_outside: bool = False,
     mask_colour: Tuple[int, int, int] = (0, 0, 0),
     debug_labels: bool = False,
     output_dir: Optional[Path] = None,
@@ -1024,9 +1024,9 @@ def build_polygon_cut_atlas(
     tile_size : int
     gutter : int
     mask_outside : bool
-        If True (default), pixels outside the UV polygon are filled
-        with ``mask_colour``.  This makes it easy to validate that
-        only polygon content appears on the 3D globe.
+        If True, pixels outside the UV polygon are filled with
+        ``mask_colour``.  Useful for debugging; off by default
+        because the 3D renderer only samples inside the polygon.
     mask_colour : (R, G, B)
         Fill colour for outside-polygon pixels.  Default black.
     debug_labels : bool
