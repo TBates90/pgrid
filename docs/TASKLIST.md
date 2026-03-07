@@ -55,7 +55,7 @@ Make `models` and `pgrid` proper, independently installable Python packages so `
 ### 30C — `playground` dependency wiring
 
 - [x] **30C.1** — Replace `requirements.txt` entries: swap `-e ../hexgrid` for `-e ../pgrid[globe,terrain]` and keep `-e ../models`. ✅
-- [ ] **30C.2** — Remove the `hexgrid` dependency entirely (adapter, texture baker, and any other references). pgrid replaces this.
+- [x] **30C.2** — Remove the `hexgrid` dependency entirely (adapter, texture baker, and any other references). pgrid replaces this. ✅
 - [x] **30C.3** — Verify `playground` can `import polygrid` and `import models` after the editable installs. ✅
 - [x] **30C.4** — Update `.env` / `.vscode/settings.json` if `PYTHONPATH` hacks existed for the old layout. ✅ (none found — editable installs are sufficient)
 
@@ -95,15 +95,15 @@ Prune dead code and outdated approaches from playground so the pgrid integration
 
 ### 32A — Remove hexgrid dependency
 
-- [ ] **32A.1** — Delete `controllers/hexgrid_adapter.py`.
-- [ ] **32A.2** — Delete `controllers/hexgrid_texture_baker.py`.
-- [ ] **32A.3** — Delete `controllers/hexgrid_spec_sequence.py`.
-- [ ] **32A.4** — Delete `controllers/hexgrid_region_stitching.py`.
-- [ ] **32A.5** — Delete `controllers/planet_hexgrid_service.py`.
-- [ ] **32A.6** — Delete `controllers/region_hexgrid_service.py`.
-- [ ] **32A.7** — Remove `-e ../hexgrid` from `requirements.txt`.
-- [ ] **32A.8** — Grep the entire playground tree for remaining `hexgrid` references and remove/replace them. Update any tests that exercised hexgrid paths.
-- [ ] **32A.9** — Remove the hexgrid UV rotation slider and related code from `DebugInfoPanel`.
+- [x] **32A.1** — Delete `controllers/hexgrid_adapter.py`. ✅
+- [x] **32A.2** — Delete `controllers/hexgrid_texture_baker.py`. ✅
+- [x] **32A.3** — Delete `controllers/hexgrid_spec_sequence.py`. ✅
+- [x] **32A.4** — Delete `controllers/hexgrid_region_stitching.py`. ✅
+- [x] **32A.5** — Delete `controllers/planet_hexgrid_service.py`. ✅
+- [x] **32A.6** — Delete `controllers/region_hexgrid_service.py`. ✅
+- [x] **32A.7** — Remove `-e ../hexgrid` from `requirements.txt`. ✅
+- [x] **32A.8** — Grep the entire playground tree for remaining `hexgrid` references and remove/replace them. Update any tests that exercised hexgrid paths. ✅
+- [x] **32A.9** — Remove the hexgrid UV rotation slider and related code from `DebugInfoPanel`. ✅
 
 ### 32B — Remove graph-seeded tile geometry path
 
