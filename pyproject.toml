@@ -14,10 +14,16 @@ dependencies = []
 dev = ["pytest>=7.4"]
 render = ["matplotlib>=3.8"]
 embed = ["numpy>=1.26", "scipy>=1.12"]
+terrain = ["opensimplex>=0.4", "numpy>=1.26", "scipy>=1.12", "Pillow>=10"]
 globe = ["models>=0.1.1"]
+demo = ["pyglet>=2.0"]
 
 [project.scripts]
 polygrid = "polygrid.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["polygrid*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
