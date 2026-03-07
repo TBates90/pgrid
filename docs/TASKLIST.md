@@ -717,6 +717,7 @@ coastline mask.
 | 18D (Texture Export) | Optional: `pyktx` or `pygltflib` for KTX2/glTF export |
 | 19 (Coastlines) | None (uses existing PIL + numpy + noise infra) |
 | 20 (Polygon-Aligned Textures) | None (extends existing atlas + UV infra) |
+| 21 (Stitched Polygon-Cut Textures) | None (uses existing PIL + numpy + affine warp infra) |
 
 ---
 
@@ -865,3 +866,182 @@ polygon edge.
 | **20B** | `uv_texture.py`, `apron_texture.py` | 20A + 18C (biome overlays) | UV-aligned atlas builder | Medium |
 | **20C** | `uv_texture.py` | 20A–B | Cross-tile boundary stitching | Medium |
 | **20D** | demo + tuning | 20A–C | Visual validation, performance | Low |
+
+---
+
+## Phase 21 — Stitched Polygon-Cut Textures for 3D Globe �
+
+**Goal:** Take the stitched polygrid tile images (from `render_polygrids.py --stitched`) and produce **polygon-shaped, UV-aligned textures** that map correctly onto the 3D Goldberg globe with seamless inter-tile continuity.
+
+See [`TILE_TEXTURE_MAPPING.md`](TILE_TEXTURE_MAPPING.md) for the full design document covering coordinate systems, orientation analysis, and the polygon-cut approach.
+
+### Problem Analysis
+
+The stitched tile PNGs contain the centre tile **plus all neighbours** as a single merged polygrid image.  This gives us the terrain data we need for seamless inter-tile continuity — the neighbouring terrain that bleeds beyond the polygon boundary provides natural gutter content.  However, the current pipeline treats these as square images, which creates:
+
+1. **Orientation mismatch** — each tile's polygrid is oriented according to the 2D Tutte embedding.  The 3D globe's UV polygon for each tile is oriented according to the tangent-plane projection, which differs per tile.  Without per-tile rotation, the terrain texture is misaligned on the globe.
+
+2. **No polygon masking** — the square image includes matplotlib background colour in the corners outside the polygon.  When the atlas packs these, the gutter region gets background colour instead of terrain.
+
+3. **Pentagon irregularity** — the 12 pentagon tiles have a different boundary shape and less regular Tutte embedding.  Their UV polygon is also non-regular due to independent X/Y normalisation.
+
+### Sub-phases
+
+#### 21A — Polygon Extraction & Masking ✅
+
+Extract the polygon boundary from each stitched image and mask it.
+
+- [✅] **21A.1 — `extract_polygon_boundary()`** — given a detail grid and
+  its rendered image dimensions, compute the polygon corners in pixel
+  coordinates.  Uses `find_polygon_corners()` mapped through the same
+  axis transform that `_render_stitched_tile()` uses (xlim/ylim → pixel).
+  Returns list of `(px, py)` corner tuples.
+  *Implemented as `compute_polygon_corners_px()` and `compute_tile_view_limits()` in `tile_uv_align.py`.*
+
+- [✅] **21A.2 — `mask_to_polygon()`** — apply a polygon mask to a tile
+  PNG.  Pixels inside the polygon retain full alpha; pixels outside
+  become transparent.  Uses PIL `ImageDraw.polygon()` with a binary
+  alpha mask.  Optional: anti-aliased edge (2× render + downsample).
+  *Implemented in `tile_uv_align.py`.*
+
+- [✅] **21A.3 — `--polygon-cut` flag** in `render_polygrids.py` — new
+  output mode that renders the stitched grid, then masks to the centre
+  tile's polygon shape.  Output is RGBA PNG with transparent corners.
+  The full stitched extent is preserved (neighbour terrain visible
+  beyond the polygon for gutter purposes).
+  *`--polygon-cut` flag added; renders stitched tiles + builds UV-aligned atlas in one pass.*
+
+- [🔲] **21A.4 — Tests:**
+  - Corner count matches n_sides (5 or 6)
+  - Corners lie on the image boundary region
+  - Masked image has transparent corners, opaque centre
+  - Pentagon and hex both produce correct polygon shapes
+
+#### 21B — Per-Tile UV Orientation Alignment ✅
+
+Rotate/warp each polygon-cut image to match the GoldbergTile's UV polygon.
+
+- [✅] **21B.1 — `compute_polygrid_to_uv_affine()`** — given the polygrid
+  polygon corners (from 21A.1) and the GoldbergTile UV polygon corners
+  (from `tile.uv_vertices`), compute the best-fit affine transform
+  (rotation + non-uniform scale + translation) that maps polygrid
+  corners to UV polygon corners.  Uses least-squares on the N corner
+  correspondences.  Returns a 2×3 affine matrix.
+  *Implemented as `compute_grid_to_uv_affine()` and `compute_grid_to_px_affine()` in `tile_uv_align.py`.*
+
+- [✅] **21B.2 — `warp_tile_to_uv()`** — apply the affine transform to
+  the tile image.  Uses PIL `Image.transform(AFFINE)` or
+  `scipy.ndimage.affine_transform()`.  Output image is `tile_size × tile_size`
+  with the polygon centred and oriented to match the UV polygon.
+  *Implemented using PIL `Image.transform(AFFINE)` with composed pixel→grid→slot transforms.*
+
+- [✅] **21B.3 — Corner matching robustness** — implement rotational
+  offset search: try all N corner-to-corner alignments and pick the
+  one with the lowest total corner distance.  This handles the fact
+  that `find_polygon_corners()` and `tile.uv_vertices` may start from
+  different corners.  (The existing `UVTransform` constructor already
+  does this — adapt the algorithm.)
+  *Implemented as `_match_corners()` in `tile_uv_align.py`.*
+
+- [✅] **21B.4 — Pentagon-specific validation** — verify the affine
+  mapping works for all 12 pentagon tiles.  The pentagon UV polygon is
+  more irregular than hexes (independent X/Y normalisation stretches
+  differently).  If affine error exceeds a threshold, fall back to
+  piecewise `UVTransform` warp.
+  *Validated: all 12 pentagons have zero affine error (perfect fit). Max hex error is 0.042 (4.2% UV), within tolerance.*
+
+- [🔲] **21B.5 — Tests:**
+  - Affine transform maps corners to UV corners within 1 pixel
+  - Pentagon and hex tiles both produce valid transforms
+  - Rotational offset search finds correct alignment
+  - Output image has polygon in correct orientation
+
+#### 21C — Atlas Assembly from Oriented Polygon Tiles ✅
+
+Pack the UV-aligned polygon tiles into a texture atlas.
+
+- [✅] **21C.1 — `build_polygon_cut_atlas()`** — new atlas builder that:
+  1. Loads polygon-cut tile PNGs (or renders them on the fly)
+  2. Applies per-tile UV orientation affine warp (21B)
+  3. Packs into atlas grid with gutter
+  4. Uses the **full stitched extent** (beyond the polygon) as natural
+     gutter content — neighbour terrain instead of clamped edge pixels
+  5. Returns `(atlas_path, uv_layout)`
+  *Implemented in `tile_uv_align.py`. Tested end-to-end: 92 tiles → 2640×2640 atlas.*
+
+- [✅] **21C.2 — Natural gutter fill** — instead of `_fill_gutter()`
+  (clamping edge pixels), use the warped stitched image directly.
+  The neighbour terrain that extends beyond the polygon boundary lands
+  in the gutter zone, providing correct bilinear sampling data at
+  polygon edges.  Verify that the gutter width is sufficient (default
+  4 px should be enough).
+  *The warped stitched image naturally fills the full slot (including gutter). Fallback `_fill_gutter()` clamps any remaining boundary pixels.*
+
+- [✅] **21C.3 — Integration with `render_globe_from_tiles.py`** — add
+  `--polygon-cut` flag that uses `build_polygon_cut_atlas()` instead
+  of the simple `_pack_atlas()`.  Requires `--frequency` to rebuild
+  the globe grid for GoldbergTile UV data.
+  *`--polygon-cut` flag added; skips atlas packing and uses pre-built atlas.png + uv_layout.json.*
+
+- [🔲] **21C.4 — Tests:**
+  - Atlas has correct dimensions
+  - UV layout values in [0, 1]
+  - Gutter contains terrain data (not flat fill)
+  - Atlas matches expected format for both renderers
+
+#### 21D — Visual Validation & Demo �
+
+End-to-end validation on the 3D globe.
+
+- [✅] **21D.0 — `validate_polygon_cut.py`** — diagnostic script that
+  renders a single tile's polygon outline + warped image + affine
+  accuracy report.  Saves to `exports/polygon_cut_validation/`.
+
+- [🔲] **21D.1 — Side-by-side comparison** — render the globe with
+  (a) current square-packed atlas and (b) new polygon-cut atlas.
+  Screenshot both for visual comparison.
+
+- [🔲] **21D.2 — Pentagon tile close-up** — zoom into pentagon tiles
+  to verify correct orientation and boundary continuity.  The 12
+  pentagons are the hardest case.
+
+- [🔲] **21D.3 — Seam measurement** — sample pixel colours along
+  shared polygon edges on the atlas.  Compute average colour difference
+  between adjacent tiles.  Target: < 5 RGB units on average.
+
+- [🔲] **21D.4 — Performance benchmarks** — atlas build time for
+  freq=3 (92 tiles) and freq=4 (252 tiles).  The affine warp adds
+  ~10ms per tile; atlas build should be < 5s for freq=3.
+
+- [🔲] **21D.5 — Integration with existing renderers** — verify that
+  both `render_globe_v2` and `render_textured_globe_opengl` work
+  correctly with the new atlas.  No renderer changes should be needed.
+
+### Summary — Phase 21 Implementation Order
+
+| Step | Module | Depends on | Delivers | Status |
+|------|--------|-----------|----------|--------|
+| **21A** | `tile_uv_align.py`, `render_polygrids.py` | Existing stitched pipeline | Polygon corners + masking + `--polygon-cut` flag | ✅ |
+| **21B** | `tile_uv_align.py` | 21A + models lib (GoldbergTile) | Per-tile affine warp (max error 0.042 UV) | ✅ |
+| **21C** | `tile_uv_align.py`, `render_globe_from_tiles.py` | 21A–B | Polygon-cut atlas + UV layout + `--polygon-cut` flag | ✅ |
+| **21D** | `validate_polygon_cut.py`, demos | 21A–C | Visual validation, benchmarks | 🔶 |
+
+### Design Notes
+
+**Why not reuse Phase 20's `UVTransform` directly?**
+
+Phase 20's approach re-renders detail sub-faces in UV-aligned coordinates
+from scratch (rasterising polygons in UV space).  Phase 21 instead takes
+**pre-rendered images** (the stitched PNGs) and warps them via an affine
+transform.  This is fundamentally different: Phase 20 operates on vector
+geometry; Phase 21 operates on raster images.  The `UVTransform`'s
+corner-matching algorithm is reused, but the rendering path is new.
+
+**Why keep pointy-topped cells?**
+
+See the analysis in `TILE_TEXTURE_MAPPING.md`.  The grid boundary is
+already flat-topped (matching the UV polygon), and the cell orientation
+is invisible once terrain colouring is applied.  Switching to flat-topped
+cells would misalign the boundary and require compensating transforms.
+If flat-topped cells are desired for aesthetic reasons, it should be an
+optional parameter on the grid builder, not a global change.

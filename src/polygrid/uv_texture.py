@@ -1,4 +1,4 @@
-"""UV-aligned texture rendering — Phase 20A.
+"""UV-aligned texture rendering — Phase 20A+B.
 
 Renders tile textures using the **same projection** that the 3D mesh
 uses for UV mapping.  This eliminates the coordinate-system mismatch
@@ -11,12 +11,18 @@ from the models library to get per-tile ``uv_vertices`` (and the
 *exact same* GoldbergTile objects to derive the mapping from the
 detail grid's 2D positions into the mesh's UV space.
 
+Phase 20A — UV-aligned polygon warp (exact at corners, piecewise-linear).
+Phase 20B — Shared-edge stitching: after rendering each tile independently,
+            boundary pixels along shared Goldberg edges are averaged so that
+            adjacent atlas slots have identical content at every seam.  This
+            eliminates the visible tile disjointness on the 3D globe.
+
 Functions
 ---------
 - :func:`get_goldberg_tiles`             — cached access to GoldbergTile list
 - :func:`compute_detail_to_uv_transform` — affine mapping detail-2D → tile-UV
 - :func:`render_tile_uv_aligned`         — rasterise an apron grid in UV-aligned space
-- :func:`build_uv_aligned_atlas`         — full atlas pipeline with UV alignment
+- :func:`build_uv_aligned_atlas`         — full atlas pipeline with UV alignment + edge stitching
 """
 
 from __future__ import annotations
@@ -1112,7 +1118,213 @@ def render_tile_uv_aligned_full(
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 20B — UV-Aligned Atlas Builder
+# 20B.1 — Shared-edge stitching
+# ═══════════════════════════════════════════════════════════════════
+
+def _find_shared_edges(
+    globe_grid: PolyGrid,
+    face_ids: List[str],
+) -> List[Tuple[str, str, List[Tuple[int, int]]]]:
+    """Identify shared Goldberg edges between adjacent tiles.
+
+    Returns a list of ``(fid_a, fid_b, shared_vertex_pairs)`` where each
+    pair gives the vertex indices (in the GoldbergTile) that coincide.
+
+    Only edges where both tiles are in *face_ids* are returned.
+    """
+    if not _HAS_MODELS:
+        return []
+    from .algorithms import get_face_adjacency
+
+    freq = globe_grid.metadata.get("frequency", 3)
+    rad = globe_grid.metadata.get("radius", 1.0)
+    tiles_obj = get_goldberg_tiles(freq, rad)
+    fid_set = set(face_ids)
+    adj = get_face_adjacency(globe_grid)
+
+    seen: set = set()
+    edges: List[Tuple[str, str, List[Tuple[int, int]]]] = []
+
+    for fid_a in face_ids:
+        for fid_b in adj.get(fid_a, []):
+            if fid_b not in fid_set:
+                continue
+            pair_key = tuple(sorted([fid_a, fid_b]))
+            if pair_key in seen:
+                continue
+            seen.add(pair_key)
+
+            idx_a = int(fid_a.replace("t", ""))
+            idx_b = int(fid_b.replace("t", ""))
+            tile_a = tiles_obj[idx_a]
+            tile_b = tiles_obj[idx_b]
+
+            # Find shared 3D vertices
+            verts_a = [tuple(round(float(c), 8) for c in v) for v in tile_a.vertices]
+            verts_b = [tuple(round(float(c), 8) for c in v) for v in tile_b.vertices]
+
+            shared = []
+            for ia, va in enumerate(verts_a):
+                for ib, vb in enumerate(verts_b):
+                    if va == vb:
+                        shared.append((ia, ib))
+                        break
+
+            if len(shared) == 2:
+                edges.append((fid_a, fid_b, shared))
+
+    return edges
+
+
+def _stitch_tile_edges(
+    tile_images: Dict[str, "Image.Image"],
+    globe_grid: PolyGrid,
+    face_ids: List[str],
+    tile_size: int,
+    *,
+    stitch_width: int = 3,
+) -> None:
+    """Average boundary pixels between adjacent tiles so seams vanish.
+
+    For each shared Goldberg edge, rasterises a band of pixels along
+    the edge in both tile images and writes the average to both.
+    Uses vectorised numpy for performance.
+
+    Parameters
+    ----------
+    tile_images : dict
+        ``{face_id: PIL.Image.Image}`` — modified in-place.
+    globe_grid : PolyGrid
+    face_ids : list of str
+    tile_size : int
+    stitch_width : int
+        Half-width of the blend band in pixels.
+    """
+    from PIL import Image
+
+    if not _HAS_MODELS:
+        return
+
+    freq = globe_grid.metadata.get("frequency", 3)
+    rad = globe_grid.metadata.get("radius", 1.0)
+    tiles_obj = get_goldberg_tiles(freq, rad)
+
+    shared_edges = _find_shared_edges(globe_grid, face_ids)
+    if not shared_edges:
+        return
+
+    # Convert all images to float arrays
+    pix_arrays: Dict[str, np.ndarray] = {}
+    for fid in face_ids:
+        if fid in tile_images:
+            img = tile_images[fid].convert("RGB")
+            pix_arrays[fid] = np.array(img, dtype=np.float64)
+
+    ts = tile_size  # shorthand
+    ts1 = max(ts - 1, 1)  # for mapping [0,1] → [0, ts-1]
+
+    for fid_a, fid_b, shared_verts in shared_edges:
+        pix_a = pix_arrays.get(fid_a)
+        pix_b = pix_arrays.get(fid_b)
+        if pix_a is None or pix_b is None:
+            continue
+
+        idx_a = int(fid_a.replace("t", ""))
+        idx_b = int(fid_b.replace("t", ""))
+        tile_a = tiles_obj[idx_a]
+        tile_b = tiles_obj[idx_b]
+
+        (ia0, ib0), (ia1, ib1) = shared_verts
+
+        uv_a0 = np.array(tile_a.uv_vertices[ia0], dtype=np.float64)
+        uv_a1 = np.array(tile_a.uv_vertices[ia1], dtype=np.float64)
+        uv_b0 = np.array(tile_b.uv_vertices[ib0], dtype=np.float64)
+        uv_b1 = np.array(tile_b.uv_vertices[ib1], dtype=np.float64)
+
+        # Perpendicular (inward-pointing) for each tile
+        edge_a = uv_a1 - uv_a0
+        perp_a = np.array([-edge_a[1], edge_a[0]])
+        n_a = np.linalg.norm(perp_a)
+        if n_a > 1e-12:
+            perp_a /= n_a
+        uv_c_a = np.mean([np.array(uv) for uv in tile_a.uv_vertices], axis=0)
+        if np.dot(perp_a, uv_c_a - (uv_a0 + uv_a1) * 0.5) < 0:
+            perp_a = -perp_a
+
+        edge_b = uv_b1 - uv_b0
+        perp_b = np.array([-edge_b[1], edge_b[0]])
+        n_b = np.linalg.norm(perp_b)
+        if n_b > 1e-12:
+            perp_b /= n_b
+        uv_c_b = np.mean([np.array(uv) for uv in tile_b.uv_vertices], axis=0)
+        if np.dot(perp_b, uv_c_b - (uv_b0 + uv_b1) * 0.5) < 0:
+            perp_b = -perp_b
+
+        # Vectorised: generate all (t, w) sample points
+        n_along = max(ts * 6, 512)
+        t_vals = np.linspace(0.0, 1.0, n_along)  # (n_along,)
+        w_vals = np.arange(-stitch_width, stitch_width + 1, dtype=np.float64)
+        px_uv = 1.0 / ts
+
+        # UV positions: (n_along, n_w, 2)
+        base_a = (1.0 - t_vals[:, None]) * uv_a0[None, :] + t_vals[:, None] * uv_a1[None, :]
+        base_b = (1.0 - t_vals[:, None]) * uv_b0[None, :] + t_vals[:, None] * uv_b1[None, :]
+
+        # Add perpendicular offsets
+        offsets_a = w_vals[None, :, None] * px_uv * perp_a[None, None, :]  # (1, n_w, 2)
+        offsets_b = w_vals[None, :, None] * px_uv * perp_b[None, None, :]
+
+        uv_a_all = base_a[:, None, :] + offsets_a  # (n_along, n_w, 2)
+        uv_b_all = base_b[:, None, :] + offsets_b
+
+        # UV → pixel: map [0,1] → [0, ts-1]
+        px_a = np.round(uv_a_all[:, :, 0] * ts1).astype(np.int32)
+        py_a = np.round((1.0 - uv_a_all[:, :, 1]) * ts1).astype(np.int32)
+        px_b = np.round(uv_b_all[:, :, 0] * ts1).astype(np.int32)
+        py_b = np.round((1.0 - uv_b_all[:, :, 1]) * ts1).astype(np.int32)
+
+        # Validity mask
+        valid = (
+            (px_a >= 0) & (px_a < ts) & (py_a >= 0) & (py_a < ts) &
+            (px_b >= 0) & (px_b < ts) & (py_b >= 0) & (py_b < ts)
+        )
+
+        v_idx = np.where(valid)
+        if len(v_idx[0]) == 0:
+            continue
+
+        ixa = px_a[v_idx]
+        iya = py_a[v_idx]
+        ixb = px_b[v_idx]
+        iyb = py_b[v_idx]
+
+        # De-duplicate pixel pairs to avoid double-averaging
+        # Use a set of (ya, xa, yb, xb) tuples
+        pairs = np.column_stack([iya, ixa, iyb, ixb])
+        _, unique_idx = np.unique(pairs, axis=0, return_index=True)
+        ixa = ixa[unique_idx]
+        iya = iya[unique_idx]
+        ixb = ixb[unique_idx]
+        iyb = iyb[unique_idx]
+
+        # Average and write back
+        ca = pix_a[iya, ixa]  # (N, 3)
+        cb = pix_b[iyb, ixb]
+        avg = (ca + cb) * 0.5
+
+        pix_a[iya, ixa] = avg
+        pix_b[iyb, ixb] = avg
+
+    # Write back to Image objects
+    for fid in face_ids:
+        if fid in pix_arrays:
+            tile_images[fid] = Image.fromarray(
+                np.clip(pix_arrays[fid], 0, 255).astype(np.uint8), "RGB",
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 20B.2 — UV-Aligned Atlas Builder
 # ═══════════════════════════════════════════════════════════════════
 
 def build_uv_aligned_atlas(
@@ -1341,9 +1553,18 @@ def build_uv_aligned_atlas(
 
         tile_images[fid] = ground_img
 
-        # Save individual tile
+    # ── Shared-edge stitching (Phase 20B) ───────────────────────
+    # Average boundary pixels between adjacent tiles so that the 3D
+    # mesh sees identical texel content on both sides of every seam.
+    _stitch_tile_edges(
+        tile_images, globe_grid, face_ids, tile_size,
+        stitch_width=3,
+    )
+
+    # Save individual tiles (after stitching)
+    for fid in face_ids:
         tile_path = output_dir / f"tile_{fid}.png"
-        ground_img.convert("RGB").save(str(tile_path))
+        tile_images[fid].convert("RGB").save(str(tile_path))
 
     # ── Assemble atlas ──────────────────────────────────────────
     if columns <= 0:

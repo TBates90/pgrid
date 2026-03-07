@@ -231,6 +231,11 @@ from .tile_detail import (
     TileDetailSpec,
     build_all_detail_grids,
     DetailGridCollection,
+    NeighbourBorderFace,
+    find_polygon_corners,
+    get_neighbour_border_faces,
+    get_neighbour_border_grid,
+    build_tile_with_neighbours,
 )
 from .detail_terrain import (
     compute_boundary_elevations,
@@ -463,6 +468,19 @@ from .uv_texture import (
     build_uv_aligned_atlas,
 )
 
+# ── Polygon-Cut UV Alignment (Phase 21) ─────────────────────────────
+from .tile_uv_align import (
+    compute_polygon_corners_px,
+    compute_tile_view_limits,
+    mask_to_polygon,
+    uv_polygon_px,
+    mask_warped_to_uv_polygon,
+    compute_grid_to_uv_affine,
+    compute_grid_to_px_affine,
+    warp_tile_to_uv,
+    build_polygon_cut_atlas,
+)
+
 # ── Diagnostics ─────────────────────────────────────────────────────
 from .diagnostics import (
     ring_diagnostics,
@@ -648,6 +666,11 @@ __all__ = [
     "TileDetailSpec",
     "build_all_detail_grids",
     "DetailGridCollection",
+    "NeighbourBorderFace",
+    "find_polygon_corners",
+    "get_neighbour_border_faces",
+    "get_neighbour_border_grid",
+    "build_tile_with_neighbours",
     # Detail terrain (Phase 10B)
     "compute_boundary_elevations",
     "classify_detail_faces",
