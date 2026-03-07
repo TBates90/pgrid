@@ -282,6 +282,59 @@ Final cleanup pass across all three repos after integration is complete.
 
 ---
 
+## Phase 38 — Pentagon Tile Rendering Fix
+
+Fix the visual distortion on pentagon tiles in the rendered globe.  Hex tiles currently look correct and **must not regress**.  See `docs/TILE_TEXTURE_MAPPING.md` § "Pentagon Distortion Problem" for full diagnosis.
+
+### Context
+
+The 12 pentagon tiles on the Goldberg polyhedron show visible warping/stretching of terrain texture.  The root cause is `normalize_uvs()` in `models/core/geometry.py`, which normalises U and V axes **independently** — stretching the UV polygon to fill [0,1]² even when the tangent-plane projection is non-square.  Pentagons have a bounding-box aspect ratio of ~1.0 : 0.81, giving ~23% anisotropic distortion (hexes are ~13%, barely visible).
+
+### 38A — Uniform UV normalisation (primary fix)
+
+> **Scope:** `models` repo.  Affects both pgrid texture rendering and playground's 3D mesh UVs.
+
+- [ ] **38A.1** — In `models/core/geometry.py`, change `normalize_uvs()` to use **uniform scaling**: compute `span = max(span_x, span_y)` and divide both axes by `span`.  Centre the shorter axis within [0, 1] (i.e. offset by `(1 - shorter_span/span) / 2`).
+- [ ] **38A.2** — Audit all callers of `normalize_uvs()` across models, pgrid, and playground.  Confirm that none assume the UV polygon fills [0,1]² exactly.  Key callers:
+  - `models/objects/goldberg/generator.py` → `generate_goldberg_tiles()` — produces `GoldbergTile.uv_vertices`
+  - `playground/opengl/rendering/icosahedron/geometry.py` — builds mesh UVs
+  - `pgrid/src/polygrid/uv_texture.py` → `compute_tile_uv_bounds()` — derives UV bounds from tile vertices
+- [ ] **38A.3** — Update `compute_tile_uv_bounds()` in pgrid's `uv_texture.py` to handle UV polygons that no longer span [0,1]² exactly (the bounds will be tighter on one axis).
+- [ ] **38A.4** — Run `render_polygrids.py -f 3 --detail-rings 3 -o exports/f3_test` and visually verify:
+  - Pentagon tiles no longer show visible warping
+  - Hex tiles look identical to before (no regression)
+  - Edge stitching between hex↔pent and pent↔hex tiles is seamless
+- [ ] **38A.5** — Run pgrid's test suite (`pytest tests/`) — fix any tests that assert on specific UV coordinate values that change under uniform scaling.
+- [ ] **38A.6** — Run models' test suite (`pytest tests/`) — fix any tests broken by the UV change.
+- [ ] **38A.7** — Run playground's test suite to check for regressions.
+- [ ] **38A.8** — Render the globe at freq=3 and freq=4 (`render_globe_from_tiles.py --v2`) and visually confirm both pentagon and hex tiles look correct.
+
+### 38B — Exact pentagon corner detection (secondary fix)
+
+> **Scope:** `pgrid` repo.  Makes the UVTransform corner-matching deterministic for pentagon grids.
+
+- [ ] **38B.1** — In `goldberg_topology.py`, the `goldberg_topology()` function already returns `corner_ids` (the 5 sector-corner vertex IDs).  Verify this works correctly for rings ≥ 1.
+- [ ] **38B.2** — In `builders.py` → `build_pentagon_centered_grid()`, propagate `corner_ids` into the returned PolyGrid's metadata: `grid.metadata["corner_vertex_ids"] = corner_ids`.
+- [ ] **38B.3** — In `detail_grid.py` → `build_detail_grid()`, for pentagon tiles, copy `corner_vertex_ids` from the detail grid into the metadata so downstream code can use it.
+- [ ] **38B.4** — In `uv_texture.py` → `_find_polygon_corners()`, add an early-return path: if the detail grid's metadata contains `corner_vertex_ids`, look up those vertex positions directly instead of running the threshold-based clustering heuristic.
+- [ ] **38B.5** — Add a test that verifies `_find_polygon_corners()` returns the correct 5 corners for a pentagon grid with rings=2, 3, and 4 — both via the metadata fast-path and the clustering fallback.
+
+### 38C — Robust corner-to-corner matching (tertiary fix)
+
+> **Scope:** `pgrid` repo.  Prevents rotational mismatch on pentagon tiles.
+
+- [ ] **38C.1** — In `compute_detail_to_uv_transform()`, after finding the best rotational offset by angular scoring, add a **validation step**: compute the edge-length ratios of adjacent source corners vs adjacent destination corners for the chosen offset.  If the ratios differ by more than a threshold, try the next-best offset.
+- [ ] **38C.2** — Add a test with a synthetic pentagon grid + UV polygon that has been deliberately rotated by 72° (one sector) to verify the matching recovers the correct alignment.
+- [ ] **38C.3** — Log a warning when the matching falls back to a non-optimal offset, to aid future debugging.
+
+### 38D — Visual validation
+
+- [ ] **38D.1** — After all fixes, render side-by-side comparison images (before vs after) for at least 3 pentagon tiles at freq=3 and freq=4.
+- [ ] **38D.2** — Verify that the 3D globe looks correct at multiple zoom levels — close-up on a pentagon tile, medium zoom showing hex/pent boundary, and full globe.
+- [ ] **38D.3** — Commit all changes across models and pgrid.  Update `TILE_TEXTURE_MAPPING.md` to mark the Pentagon Distortion Problem as resolved.
+
+---
+
 ## Phase Summary
 
 | Phase | Scope | Description |
@@ -294,3 +347,4 @@ Final cleanup pass across all three repos after integration is complete.
 | **35** | Playground | Feature preservation — verify tile selection, region painting, glow, sizing all still work |
 | **36** | Playground | Tile debug panel — rich per-tile debug info from models + pgrid + playground |
 | **37** | All repos | Polish — design docs, tests, linting, final cleanup |
+| **38** | models + pgrid | Pentagon tile rendering fix — uniform UV scaling, exact corner detection, robust matching |

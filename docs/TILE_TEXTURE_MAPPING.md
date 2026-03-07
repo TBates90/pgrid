@@ -56,6 +56,7 @@ hex/pent-shaped region from the square tile slot.  This works, but:
   produces a slightly irregular boundary.  The 3D pentagon UV polygon
   is also irregular (non-uniform `normalize_uvs` scaling).  Matching
   the two requires the per-tile UVTransform warp, not a simple rotation.
+  See **Pentagon Distortion Problem** section below for full analysis.
 
 ---
 
@@ -83,14 +84,26 @@ from the first polygon edge.  The 3D polygon vertices are projected
 onto this basis, then `normalize_uvs()` maps to [0, 1] × [0, 1] by
 independently scaling X and Y.
 
+⚠️ **Anisotropic scaling problem:** `normalize_uvs()` (in
+`models/core/geometry.py`) computes `span_x` and `span_y` independently
+and normalises each axis to [0, 1].  When the tangent-plane projection
+of a tile is not square (i.e. `span_x ≠ span_y`), this introduces
+**non-uniform distortion** — the UV polygon is stretched along one axis
+to fill the unit square.
+
 - **Hex UV polygons:** roughly flat-topped, but the independent X/Y
   scaling makes them slightly irregular.  The angular spacing between
   vertices varies from ~48° to ~72° (vs the ideal 60°).  **Every tile
   has a different UV polygon shape** because each tile's tangent basis
-  is different.
+  is different.  However, a regular hexagon's bounding box is close to
+  square (width:height ≈ 1.0 : 0.87), so the anisotropic scaling is
+  only ~13% — visually acceptable.
 
 - **Pentagon UV polygons:** bottom edge flat (vertices at y ≈ 0), top
-  vertex at y ≈ 1.  Similar independent X/Y scaling irregularity.
+  vertex at y ≈ 1.  A regular pentagon has width:height ≈ 1.0 : 0.81,
+  so the anisotropic scaling is ~23% — **visually noticeable** as
+  warped/stretched terrain texture.  See **Pentagon Distortion Problem**
+  below.
 
 ### 3. Atlas pixel space
 
@@ -272,7 +285,9 @@ handle this correctly for all 92 tiles (freq=3) or 642 tiles (freq=5).
 4. **Irregular UV polygons** — `normalize_uvs()` independently scales X
    and Y, producing slightly non-regular hexagons.  The angular spacing
    varies 48°–72°.  A simple rotation won't match these — need at least
-   an affine transform.  🔶 Needs implementation.
+   an affine transform.  The distortion is **much worse for pentagons**
+   (~23% anisotropy vs ~13% for hexes).  🔶 See Phase 38 in TASKLIST.md
+   for the fix plan.
 
 5. **Edge alignment continuity** — adjacent tiles on the globe share a
    polygon edge.  In the stitched PNG, the centre tile and its neighbour
@@ -317,6 +332,99 @@ handle this correctly for all 92 tiles (freq=3) or 642 tiles (freq=5).
     │  (render_globe_v2)          │
     └─────────────────────────────┘
 ```
+
+---
+
+## Pentagon Distortion Problem
+
+**Status:** Diagnosed (March 2026).  Fix tracked in TASKLIST.md Phase 38.
+
+### Symptoms
+
+When viewing the rendered globe at close range, hexagon tiles look
+correct — clean, undistorted terrain texture.  Pentagon tiles (12 tiles
+on a Goldberg polyhedron) show visible **warping/stretching** of the
+terrain texture.  Edge stitching between tiles is fine (debug labels
+confirm correct adjacency); the problem is within the tile's interior.
+
+### Root cause: anisotropic `normalize_uvs()`
+
+The primary cause is the `normalize_uvs()` function in
+`models/core/geometry.py`.  It normalises the tangent-plane-projected
+polygon vertices to [0, 1] × [0, 1] by **independently** scaling U and
+V:
+
+```python
+span_x = max(max_x - min_x, 1e-6)
+span_y = max(max_y - min_y, 1e-6)
+# U and V are divided by DIFFERENT spans
+```
+
+This means a tile whose tangent-plane projection is wider than tall gets
+**vertically stretched** to fill the unit square (and vice versa).
+
+- **Hexagons** have a bounding-box aspect ratio ≈ 1.0 : 0.87
+  (width : height).  The anisotropic scaling is ~13% — barely visible.
+- **Pentagons** have a bounding-box aspect ratio ≈ 1.0 : 0.81.
+  The anisotropic scaling is ~23% — **clearly visible** as distorted
+  terrain.
+
+Both the texture rasteriser (pgrid) and the 3D mesh UV coordinates
+(models) go through `normalize_uvs()`, so the distortion is consistent
+between the two — the texture doesn't *slide* on the mesh — but the
+terrain *content itself* is stretched, which is the visual artefact.
+
+### Contributing factors
+
+Two additional issues make pentagon rendering less robust, though they
+are secondary to the anisotropic scaling:
+
+1. **Corner detection fragility** — `_find_polygon_corners()` in
+   `uv_texture.py` detects the detail grid's boundary corners by
+   clustering outermost vertices by angular gaps.  For pentagon grids,
+   the Tutte embedding places boundary vertices on a regular pentagon,
+   but the corners (at the pentagon's tips) are at `outer_radius` while
+   mid-edge vertices are at `outer_radius × cos(π/5) ≈ 0.81 ×
+   outer_radius`.  The tight `max_dist * 0.999` threshold may only
+   capture the 5 tip vertices, making each "cluster" a single point.
+   This still works but is fragile — better to use the known corner IDs
+   from the Goldberg topology builder.
+
+2. **Corner matching ambiguity** — `compute_detail_to_uv_transform()`
+   matches detail-grid corners to UV-polygon corners by finding the best
+   rotational offset.  For pentagons (5 corners at 72° intervals), a
+   small perturbation can shift the offset by one sector, causing a 72°
+   rotational mismatch.  This would map each triangle-fan sector to the
+   wrong destination, producing a visually incorrect (but
+   topologically valid) warp.
+
+### Fix strategy
+
+**Primary fix (Phase 38A):** Change `normalize_uvs()` in models to use
+**uniform scaling** — `max(span_x, span_y)` for both axes.  This
+preserves aspect ratio and eliminates the anisotropic distortion.  The
+UV polygon will no longer fill [0,1]² exactly (one axis will be shorter),
+but the texture-to-mesh alignment remains correct because both sides use
+the same function.  Hex tiles are barely affected (~13% was already
+small); pentagon tiles see the biggest improvement.
+
+**Secondary fix (Phase 38B):** Store the Goldberg topology builder's
+`corner_ids` in detail grid metadata so `_find_polygon_corners()` can
+use exact positions instead of threshold-based clustering.
+
+**Tertiary fix (Phase 38C):** Improve the rotational-offset matching
+in `compute_detail_to_uv_transform()` to use edge-length ratios as a
+tiebreaker, preventing the 72° ambiguity on pentagons.
+
+### Files involved
+
+| File | Repo | Role |
+|------|------|------|
+| `models/core/geometry.py` | models | `normalize_uvs()` — source of anisotropic scaling |
+| `pgrid/src/polygrid/uv_texture.py` | pgrid | `UVTransform`, `_find_polygon_corners()`, `compute_detail_to_uv_transform()` |
+| `pgrid/src/polygrid/goldberg_topology.py` | pgrid | Returns `corner_ids` for pentagon grids |
+| `pgrid/src/polygrid/detail_grid.py` | pgrid | `build_detail_grid()` — should propagate corner IDs |
+| `pgrid/src/polygrid/builders.py` | pgrid | `build_pentagon_centered_grid()` calls `build_goldberg_grid()` |
 
 ---
 
