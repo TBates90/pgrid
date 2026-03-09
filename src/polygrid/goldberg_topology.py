@@ -391,17 +391,18 @@ def goldberg_optimise(
     Uses scipy least_squares with fully vectorised numpy residuals.
     Penalises edge-length deviation, angle deviation, and area inversion.
 
-    Only the 5 sector-corner vertices (from *corner_ids*) and the
-    pentagon vertices are held fixed, so that boundary hexagons can
-    relax outward into their natural shape.
+    Only the pentagon vertices are held fixed.  Sector-corner vertices
+    are free to move so the optimiser can relax corner hex-faces toward
+    regular angles instead of being squeezed by the fixed 108° pentagon
+    corners of the Tutte boundary.
     """
     from scipy.optimize import least_squares
     import numpy as np
 
-    # Identify fixed vertices: 5 corners + pentagon
+    # Identify fixed vertices: only pentagon face vertices.
+    # Corner vertices are deliberately left movable so the outer-ring
+    # hexagons at the 5 sector corners can relax to regular shapes.
     fixed_vids: set[str] = set()
-    if corner_ids:
-        fixed_vids.update(corner_ids)
     pent = next((f for f in faces if f.face_type == "pent"), None)
     if pent:
         fixed_vids.update(pent.vertex_ids)
@@ -572,7 +573,11 @@ def build_goldberg_grid(
         edges = _edges_from_faces(faces)
         return PolyGrid(
             positioned.values(), edges, faces,
-            metadata={"generator": "goldberg", "rings": rings},
+            metadata={
+                "generator": "goldberg",
+                "rings": rings,
+                "corner_vertex_ids": corner_ids,
+            },
         )
 
     # Tutte embed → fix winding → optimise → fix winding again
@@ -590,7 +595,11 @@ def build_goldberg_grid(
 
     return PolyGrid(
         positioned.values(), edges, faces,
-        metadata={"generator": "goldberg", "rings": rings},
+        metadata={
+            "generator": "goldberg",
+            "rings": rings,
+            "corner_vertex_ids": corner_ids,
+        },
     )
 
 

@@ -781,6 +781,47 @@ def get_neighbour_border_grid(
 # Tile + full-neighbour stitching
 # ═══════════════════════════════════════════════════════════════════
 
+
+def _find_closest_macro_edge_pair(
+    g1: PolyGrid,
+    g2: PolyGrid,
+    *,
+    exclude_g1: Optional[int] = None,
+    exclude_g2: Optional[int] = None,
+) -> Tuple[int, int]:
+    """Find the pair of macro edges (one from each grid) that overlap.
+
+    After positioning, two adjacent neighbour grids share exactly one
+    macro edge geometrically.  This function identifies that pair by
+    comparing edge midpoints, excluding the stitch edges that connect
+    each grid to the centre tile.
+
+    Returns ``(edge_id_g1, edge_id_g2)``.
+    """
+    best_dist = float("inf")
+    best_pair = (-1, -1)
+
+    for me1 in g1.macro_edges:
+        if me1.id == exclude_g1:
+            continue
+        v0 = g1.vertices[me1.vertex_ids[0]]
+        v1 = g1.vertices[me1.vertex_ids[-1]]
+        mid1 = np.array([(v0.x + v1.x) / 2, (v0.y + v1.y) / 2])
+
+        for me2 in g2.macro_edges:
+            if me2.id == exclude_g2:
+                continue
+            u0 = g2.vertices[me2.vertex_ids[0]]
+            u1 = g2.vertices[me2.vertex_ids[-1]]
+            mid2 = np.array([(u0.x + u1.x) / 2, (u0.y + u1.y) / 2])
+
+            d = float(np.linalg.norm(mid1 - mid2))
+            if d < best_dist:
+                best_dist = d
+                best_pair = (me1.id, me2.id)
+
+    return best_pair
+
 def build_tile_with_neighbours(
     coll: "DetailGridCollection",
     face_id: str,
@@ -817,11 +858,22 @@ def build_tile_with_neighbours(
     from .composite import CompositeGrid, StitchSpec, stitch_grids
     from .detail_terrain import compute_neighbor_edge_mapping
     from .models import Vertex
+    from .tile_uv_align import compute_pg_to_macro_edge_map
 
     # ── Centre grid ────────────────────────────────────────────────
     n_sides = len(globe_grid.faces[face_id].vertex_ids)
     dg_center, _ = coll.get(face_id)
-    dg_center.compute_macro_edges(n_sides=n_sides)
+    dg_center.compute_macro_edges(
+        n_sides=n_sides,
+        corner_ids=dg_center.metadata.get("corner_vertex_ids"),
+    )
+
+    # PG vertex_ids edge index → detail-grid macro-edge index.
+    # These differ because the Tutte boundary walk can have different
+    # winding than the PolyGrid vertex_ids ordering.
+    pg_to_macro_center = compute_pg_to_macro_edge_map(
+        globe_grid, face_id, dg_center,
+    )
 
     neigh_map = compute_neighbor_edge_mapping(globe_grid, face_id)
 
@@ -829,42 +881,70 @@ def build_tile_with_neighbours(
     stitches: List[StitchSpec] = []
 
     # ── Position each neighbour flush & add centre↔neighbour stitch ─
-    for nid, center_edge_idx in neigh_map.items():
+    for nid, center_pg_edge in neigh_map.items():
         n_sides_n = len(globe_grid.faces[nid].vertex_ids)
         dg_n, _ = coll.get(nid)
-        dg_n.compute_macro_edges(n_sides=n_sides_n)
+        dg_n.compute_macro_edges(
+            n_sides=n_sides_n,
+            corner_ids=dg_n.metadata.get("corner_vertex_ids"),
+        )
 
-        neigh_edge_idx = compute_neighbor_edge_mapping(
+        neigh_pg_edge = compute_neighbor_edge_mapping(
             globe_grid, nid
         )[face_id]
 
-        positioned = _position_hex_for_stitch(
-            dg_center, center_edge_idx, dg_n, neigh_edge_idx,
+        # Convert PG edge indices → macro-edge indices
+        center_macro_edge = pg_to_macro_center[center_pg_edge]
+        pg_to_macro_n = compute_pg_to_macro_edge_map(
+            globe_grid, nid, dg_n,
         )
-        positioned.compute_macro_edges(n_sides=n_sides_n)
+        neigh_macro_edge = pg_to_macro_n[neigh_pg_edge]
+
+        positioned = _position_hex_for_stitch(
+            dg_center, center_macro_edge, dg_n, neigh_macro_edge,
+        )
+        positioned.compute_macro_edges(
+            n_sides=n_sides_n,
+            corner_ids=positioned.metadata.get("corner_vertex_ids"),
+        )
 
         grids[nid] = positioned
         stitches.append(StitchSpec(
             grid_a=face_id,
-            edge_a=center_edge_idx,
+            edge_a=center_macro_edge,
             grid_b=nid,
-            edge_b=neigh_edge_idx,
+            edge_b=neigh_macro_edge,
             flip=True,
         ))
 
     # ── Discover neighbour↔neighbour adjacencies ──────────────────
+    # The PG→macro mapping was computed on *original* grids, but the
+    # positioned grids may have been reflected/rotated, which changes
+    # which geometric edge a given macro-edge ID refers to.  Instead
+    # of trying to map through PG→macro indices, we detect shared
+    # edges by geometric proximity on the already-positioned grids.
     neighbours = list(neigh_map.keys())
     outer_pairs: List[Tuple[str, int, str, int]] = []  # (n1, e1, n2, e2)
+
+    # Track which macro-edge on each neighbour was used for the
+    # centre↔neighbour stitch so we can exclude it from candidates.
+    stitch_edge_ids: Dict[str, int] = {}
+    for s in stitches:
+        stitch_edge_ids[s.grid_b] = s.edge_b
 
     for i, n1 in enumerate(neighbours):
         n1_all_neighs = compute_neighbor_edge_mapping(globe_grid, n1)
         for n2 in neighbours[i + 1:]:
-            if n2 in n1_all_neighs:
-                e_on_n1 = n1_all_neighs[n2]
-                e_on_n2 = compute_neighbor_edge_mapping(
-                    globe_grid, n2
-                )[n1]
-                outer_pairs.append((n1, e_on_n1, n2, e_on_n2))
+            if n2 not in n1_all_neighs:
+                continue
+            g1 = grids[n1]
+            g2 = grids[n2]
+            e1, e2 = _find_closest_macro_edge_pair(
+                g1, g2,
+                exclude_g1=stitch_edge_ids.get(n1),
+                exclude_g2=stitch_edge_ids.get(n2),
+            )
+            outer_pairs.append((n1, e1, n2, e2))
 
     # ── Snap outer boundary vertices to averaged positions ────────
     for n1, e1, n2, e2 in outer_pairs:
@@ -875,7 +955,17 @@ def build_tile_with_neighbours(
         me2 = next(m for m in g2.macro_edges if m.id == e2)
 
         vids_1 = list(me1.vertex_ids)
-        vids_2 = list(me2.vertex_ids)[::-1]  # flip for natural alignment
+        vids_2 = list(me2.vertex_ids)
+
+        # Determine whether the two edges run in the same or opposite
+        # direction by comparing the start vertex of each edge.
+        v1_start = g1.vertices[vids_1[0]]
+        v2_start = g2.vertices[vids_2[0]]
+        v2_end = g2.vertices[vids_2[-1]]
+        d_same = math.hypot(v1_start.x - v2_start.x, v1_start.y - v2_start.y)
+        d_flip = math.hypot(v1_start.x - v2_end.x, v1_start.y - v2_end.y)
+        if d_flip < d_same:
+            vids_2 = vids_2[::-1]
 
         for va_id, vb_id in zip(vids_1, vids_2):
             va = g1.vertices[va_id]

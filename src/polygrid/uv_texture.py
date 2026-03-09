@@ -234,13 +234,18 @@ def project_and_normalize(
     """Project a 3D point to normalised [0,1] tile UV space.
 
     This replicates the models library's ``projected_vertices`` +
-    ``normalize_uvs`` transform.
+    ``normalize_uvs`` transform.  Uses **uniform scaling** (same span
+    for both axes) with centering, matching the models library's
+    aspect-ratio-preserving normalisation.
     """
     u_raw, v_raw = project_point_to_tile_uv(point_3d, center, tangent, bitangent)
     u_min, v_min, u_max, v_max = uv_bounds
     u_span = max(u_max - u_min, 1e-12)
     v_span = max(v_max - v_min, 1e-12)
-    return ((u_raw - u_min) / u_span, (v_raw - v_min) / v_span)
+    span = max(u_span, v_span)
+    offset_u = (span - u_span) / (2.0 * span)
+    offset_v = (span - v_span) / (2.0 * span)
+    return ((u_raw - u_min) / span + offset_u, (v_raw - v_min) / span + offset_v)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -407,6 +412,10 @@ def _find_polygon_corners(detail_grid: PolyGrid) -> Tuple[np.ndarray, np.ndarray
     vertices lie on a convex polygon.  We identify the polygon's
     corners by clustering the outermost vertices by angle.
 
+    If the grid's metadata contains ``corner_vertex_ids`` (set by
+    ``build_goldberg_grid`` for pentagon grids), those vertex positions
+    are used directly — skipping the heuristic clustering entirely.
+
     Returns
     -------
     (centroid, corners)
@@ -423,6 +432,26 @@ def _find_polygon_corners(detail_grid: PolyGrid) -> Tuple[np.ndarray, np.ndarray
 
     arr = np.array(all_verts)
     centroid = arr.mean(axis=0)
+
+    # ── Fast path: exact corner IDs from topology ───────────────
+    corner_vids = detail_grid.metadata.get("corner_vertex_ids")
+    if corner_vids:
+        corner_positions = []
+        for vid in corner_vids:
+            v = detail_grid.vertices.get(vid)
+            if v is not None and v.has_position():
+                corner_positions.append(np.array([v.x, v.y], dtype=np.float64))
+        if len(corner_positions) >= 3:
+            corners = np.array(corner_positions, dtype=np.float64)
+            # Sort counter-clockwise by angle from centroid
+            angles = np.arctan2(
+                corners[:, 1] - centroid[1],
+                corners[:, 0] - centroid[0],
+            )
+            corners = corners[np.argsort(angles)]
+            return centroid, corners
+
+    # ── Clustering fallback ─────────────────────────────────────
     dists = np.linalg.norm(arr - centroid, axis=1)
     max_dist = dists.max()
 
@@ -611,8 +640,9 @@ def compute_detail_to_uv_transform(
         detail_order = np.argsort(detail_angles)
         # The detail corners and UV corners should have the same
         # angular ordering.  Find the best rotational offset.
-        best_offset = 0
-        best_score = float("inf")
+        # Score each offset by angular difference, then validate the
+        # winner using edge-length ratios (38C.1).
+        offset_scores: List[Tuple[float, int]] = []
         for offset in range(n_poly):
             score = 0.0
             for k in range(n_poly):
@@ -623,9 +653,57 @@ def compute_detail_to_uv_transform(
                     math.cos(detail_angles[dk] - uv_angles[uk]),
                 )
                 score += diff * diff
-            if score < best_score:
-                best_score = score
+            offset_scores.append((score, offset))
+        offset_scores.sort()
+
+        def _edge_length_ratio_valid(offset: int, threshold: float = 0.5) -> bool:
+            """Check that adjacent edge-length ratios are consistent.
+
+            For each pair of adjacent corners, compute the edge length
+            in both source (detail) and destination (UV) polygons.
+            If the ratio between corresponding edges varies too much
+            (i.e. one edge maps to a much longer/shorter one than its
+            neighbour), the offset is likely wrong.
+            """
+            src_lens = []
+            dst_lens = []
+            for k in range(n_poly):
+                k_next = (k + 1) % n_poly
+                dk = detail_order[(k + offset) % n_poly]
+                dk_next = detail_order[(k_next + offset) % n_poly]
+                uk = uv_order[k]
+                uk_next = uv_order[k_next]
+                src_lens.append(float(np.linalg.norm(
+                    detail_corners[dk] - detail_corners[dk_next]
+                )))
+                dst_lens.append(float(np.linalg.norm(
+                    uv_poly[uk] - uv_poly[uk_next]
+                )))
+            # Compute per-edge ratios (src/dst), check consistency
+            ratios = []
+            for sl, dl in zip(src_lens, dst_lens):
+                if dl < 1e-12 or sl < 1e-12:
+                    continue
+                ratios.append(sl / dl)
+            if len(ratios) < 2:
+                return True
+            min_r, max_r = min(ratios), max(ratios)
+            return (max_r - min_r) / max(max_r, 1e-12) < threshold
+
+        # Pick the best offset that also passes edge-length validation
+        best_offset = offset_scores[0][1]
+        for score, offset in offset_scores:
+            if _edge_length_ratio_valid(offset):
                 best_offset = offset
+                break
+        else:
+            # None passed validation — fall back to angular best and warn
+            import logging
+            logging.getLogger(__name__).warning(
+                "compute_detail_to_uv_transform: no rotational offset "
+                "passed edge-length validation for face %s; using "
+                "angular best (offset=%d)", face_id, best_offset,
+            )
 
         # Build matched arrays in UV polygon order
         src_corners_ordered = np.empty((n_poly, 2), dtype=np.float64)

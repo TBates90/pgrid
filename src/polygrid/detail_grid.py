@@ -44,6 +44,12 @@ def build_detail_grid(
     pentagon tiles, pure-hex for hexagonal tiles — whose metadata
     records its parent face.
 
+    After building, the grid is **uniformly scaled** so that its
+    average macro-edge length matches the globe tile's average 3-D
+    edge length.  This ensures that when neighbouring detail grids
+    are stitched together the sub-face densities are compatible and
+    no severe size mismatch appears at pentagon/hexagon boundaries.
+
     Parameters
     ----------
     globe_grid : PolyGrid (typically GlobeGrid)
@@ -71,9 +77,57 @@ def build_detail_grid(
     else:
         grid = build_pure_hex_grid(detail_rings, size=size)
 
+    # ── Scale to match globe edge length ────────────────────────
+    # Compute the globe tile's average 3-D edge length.
+    vids = face.vertex_ids
+    n = len(vids)
+    globe_edge_sum = 0.0
+    for i in range(n):
+        v0 = globe_grid.vertices[vids[i]]
+        v1 = globe_grid.vertices[vids[(i + 1) % n]]
+        dx = v1.x - v0.x
+        dy = v1.y - v0.y
+        dz = ((v1.z or 0.0) - (v0.z or 0.0))
+        globe_edge_sum += math.sqrt(dx * dx + dy * dy + dz * dz)
+    globe_avg_edge = globe_edge_sum / n if n else 1.0
+
+    # Compute the detail grid's average macro-edge endpoint distance.
+    grid.compute_macro_edges(
+        n_sides=n,
+        corner_ids=grid.metadata.get("corner_vertex_ids"),
+    )
+    if grid.macro_edges:
+        detail_edge_sum = 0.0
+        for me in grid.macro_edges:
+            mv0 = grid.vertices[me.vertex_ids[0]]
+            mv1 = grid.vertices[me.vertex_ids[-1]]
+            detail_edge_sum += math.hypot(mv1.x - mv0.x, mv1.y - mv0.y)
+        detail_avg_edge = detail_edge_sum / len(grid.macro_edges)
+    else:
+        detail_avg_edge = 1.0
+
+    if detail_avg_edge > 1e-12:
+        scale = globe_avg_edge / detail_avg_edge
+        if abs(scale - 1.0) > 1e-6:
+            from .assembly import scale_grid
+            grid = scale_grid(grid, scale, 0.0, 0.0)
+            # Recompute macro edges at the new scale.
+            grid.compute_macro_edges(
+                n_sides=n,
+                corner_ids=grid.metadata.get("corner_vertex_ids"),
+            )
+
     # ── Anchor metadata ─────────────────────────────────────────
     grid.metadata["parent_face_id"] = face_id
+    grid.metadata["parent_face_type"] = face.face_type
     grid.metadata["detail_rings"] = detail_rings
+
+    # For pentagon grids, propagate corner vertex IDs from the
+    # Goldberg topology so downstream UV matching can use exact
+    # corners instead of heuristic clustering.
+    if face.face_type == "pent" and "corner_vertex_ids" in grid.metadata:
+        # Already present from build_goldberg_grid — keep as-is.
+        pass
 
     # Copy parent face metadata if available
     if face.metadata:

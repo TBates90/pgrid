@@ -107,6 +107,7 @@ def align_uv_corners_to_polygrid(
     n = len(uv_corners)
     return [uv_corners[(i - offset) % n] for i in range(n)]
 
+
 def get_macro_edge_corners(
     grid: PolyGrid,
     n_sides: int,
@@ -138,6 +139,209 @@ def get_macro_edge_corners(
         v = grid.vertices[me.vertex_ids[0]]
         corners.append((v.x, v.y))
     return corners
+
+
+def compute_pg_to_macro_edge_map(
+    globe_grid: PolyGrid,
+    face_id: str,
+    detail_grid: PolyGrid,
+) -> Dict[int, int]:
+    """Map PolyGrid (vertex_ids) **edge** indices to macro-edge indices.
+
+    ``compute_neighbor_edge_mapping`` returns edge indices in
+    PolyGrid ``vertex_ids`` order — edge *k* connects ``vertex_ids[k]``
+    to ``vertex_ids[(k+1) % n]``.  The detail-grid macro-edges are
+    numbered by the Tutte boundary walk, which can have **opposite
+    winding** for hexagonal tiles (CW macro vs CCW PG).
+
+    This function first matches **corners** (macro corner → PG vertex)
+    by angular proximity, then determines whether the cyclic ordering
+    is preserved (rotation) or reversed (reflection).  For the
+    reflected case, each macro edge connects two PG vertices in the
+    *reverse* direction, so the edge mapping is shifted by one
+    relative to the corner mapping.
+
+    Parameters
+    ----------
+    globe_grid : PolyGrid
+        Globe grid with 3D vertices.
+    face_id : str
+        Tile face id, e.g. ``"t0"``.
+    detail_grid : PolyGrid
+        Detail grid with pre-computed macro-edges.
+
+    Returns
+    -------
+    dict
+        ``{pg_edge_index: macro_edge_index}`` — for every polygon
+        edge *k* (in ``vertex_ids`` numbering), the macro-edge id
+        that spans the **same pair of globe vertices**.
+    """
+    from .uv_texture import compute_tile_basis
+
+    face = globe_grid.faces[face_id]
+    n = len(face.vertex_ids)
+
+    # PG vertex angles on the tangent plane
+    center_3d, _, tangent, bitangent = compute_tile_basis(globe_grid, face_id)
+    pg_angles: List[float] = []
+    for vid in face.vertex_ids:
+        v = globe_grid.vertices[vid]
+        d = np.array([v.x, v.y, v.z], dtype=np.float64) - center_3d
+        pg_angles.append(math.atan2(float(np.dot(d, bitangent)),
+                                    float(np.dot(d, tangent))))
+
+    # Macro corner angles in Tutte 2D
+    corners = get_macro_edge_corners(detail_grid, n)
+    gc = np.array(corners, dtype=np.float64)
+    gc_center = gc.mean(axis=0)
+    macro_angles = [math.atan2(gc[k, 1] - gc_center[1],
+                               gc[k, 0] - gc_center[0]) for k in range(n)]
+
+    # Match each macro corner to closest PG vertex by angle
+    def _adiff(a: float, b: float) -> float:
+        d = abs(a - b) % (2 * math.pi)
+        return min(d, 2 * math.pi - d)
+
+    macro_corner_to_pg: Dict[int, int] = {}
+    for mk in range(n):
+        best_pk = min(range(n), key=lambda pk: _adiff(macro_angles[mk], pg_angles[pk]))
+        macro_corner_to_pg[mk] = best_pk
+
+    # Detect rotation vs reflection.
+    # Rotation: macro_corner_to_pg[k] = (k + offset) % n  (constant offset)
+    # Reflection: macro_corner_to_pg[k] = (R - k) % n     (constant sum)
+    offsets = [(macro_corner_to_pg[k] - k) % n for k in range(n)]
+    sums = [(macro_corner_to_pg[k] + k) % n for k in range(n)]
+    is_reflected = len(set(sums)) == 1 and len(set(offsets)) > 1
+
+    # Invert corner map: pg_vertex → macro_corner
+    pg_to_macro_corner: Dict[int, int] = {
+        pg: macro for macro, pg in macro_corner_to_pg.items()
+    }
+
+    if is_reflected:
+        # Reflected winding: macro edge M goes from macro_corner M to
+        # macro_corner (M+1)%n, which in PG terms is pg_vertex P to
+        # pg_vertex P' where P' is the PG vertex at angle BEFORE P
+        # (opposite direction).  PG edge k goes from pg_vertex k to
+        # pg_vertex (k+1)%n.  The macro edge sharing those same two
+        # globe vertices has its START corner at pg_vertex (k+1)%n.
+        pg_edge_to_macro: Dict[int, int] = {}
+        for k in range(n):
+            pg_end = (k + 1) % n  # end vertex of PG edge k
+            pg_edge_to_macro[k] = pg_to_macro_corner[pg_end]
+    else:
+        # Same winding: macro edge M starts at the same PG vertex as
+        # PG edge (corner_to_pg[M]), so pg_edge → macro is just the
+        # inverted corner map.
+        pg_edge_to_macro = dict(pg_to_macro_corner)
+
+    return pg_edge_to_macro
+
+
+def match_grid_corners_to_uv(
+    grid_corners: List[Tuple[float, float]],
+    globe_grid: PolyGrid,
+    face_id: str,
+) -> List[Tuple[float, float]]:
+    """Reorder *grid_corners* (macro-edge order) to match GoldbergTile UV order.
+
+    The 3D renderer pairs ``GoldbergTile.vertices[k]`` with
+    ``GoldbergTile.uv_vertices[k]`` — both in the generator's vertex
+    ordering.  The atlas piecewise warp needs ``grid_corners[k]`` to
+    pair with ``uv_corners[k]`` (also generator order).
+
+    Macro-edge corners live in 2D Tutte space and GoldbergTile vertices
+    live in 3D, but their cyclic angular order around the polygon
+    centre is the same (up to a rotation **and possibly a reflection**
+    due to the GoldbergPolyhedron layout pipeline flipping winding).
+
+    This function matches by angular proximity in a reflection-aware
+    way, producing a permutation that is guaranteed to be either a
+    cyclic rotation or a cyclic reflection.
+
+    Parameters
+    ----------
+    grid_corners : list of (x, y)
+        From :func:`get_macro_edge_corners` — macro-edge order in
+        Tutte 2D space.
+    globe_grid : PolyGrid
+        Globe grid with 3D vertices (from ``build_globe_grid``).
+    face_id : str
+        Tile face id, e.g. ``"t0"``.
+
+    Returns
+    -------
+    list of (x, y)
+        Grid corners reordered so that ``result[k]`` pairs with
+        ``uv_corners[k]`` (GoldbergTile / generator order).
+    """
+    from .uv_texture import get_goldberg_tiles, _match_tile_to_face, compute_tile_basis
+
+    n = len(grid_corners)
+    freq = globe_grid.metadata.get("frequency", 3)
+    rad = globe_grid.metadata.get("radius", 1.0)
+    tiles = get_goldberg_tiles(freq, rad)
+    tile = _match_tile_to_face(tiles, face_id)
+
+    center_3d, _, tangent_3d, bitangent_3d = compute_tile_basis(globe_grid, face_id)
+
+    # Angles of GoldbergTile vertices projected onto tangent plane
+    gt_angles = np.empty(n, dtype=np.float64)
+    for i, vtx in enumerate(tile.vertices):
+        rel = np.array(vtx, dtype=np.float64) - center_3d
+        u = float(np.dot(rel, tangent_3d))
+        v = float(np.dot(rel, bitangent_3d))
+        gt_angles[i] = math.atan2(v, u)
+
+    # Angles of macro-edge corners in Tutte 2D space
+    gc = np.array(grid_corners, dtype=np.float64)
+    centroid = gc.mean(axis=0)
+    macro_angles = np.arctan2(gc[:, 1] - centroid[1], gc[:, 0] - centroid[0])
+
+    # Try both non-reflected and reflected orderings.
+    # Non-reflected: macro_corner[k] → GT[(k + rot) % n]
+    # Reflected:     macro_corner[k] → GT[(R - k) % n]  for some R
+    # Pick the one with smallest total angular error.
+
+    def _angular_diff(a: float, b: float) -> float:
+        d = abs(a - b) % (2 * math.pi)
+        return min(d, 2 * math.pi - d)
+
+    # --- Non-reflected: find best rotation ---
+    best_rot_err = float("inf")
+    best_rot = 0
+    for rot in range(n):
+        err = sum(
+            _angular_diff(macro_angles[k], gt_angles[(k + rot) % n])
+            for k in range(n)
+        )
+        if err < best_rot_err:
+            best_rot_err = err
+            best_rot = rot
+
+    # --- Reflected: find best reflection ---
+    best_ref_err = float("inf")
+    best_ref = 0
+    for ref in range(n):
+        err = sum(
+            _angular_diff(macro_angles[k], gt_angles[(ref - k) % n])
+            for k in range(n)
+        )
+        if err < best_ref_err:
+            best_ref_err = err
+            best_ref = ref
+
+    if best_rot_err <= best_ref_err:
+        # Pure rotation: result[gt_k] = grid_corners[(gt_k - best_rot) % n]
+        # gt_k = (macro_k + best_rot) % n, so macro_k = (gt_k - best_rot) % n
+        return [grid_corners[(k - best_rot) % n] for k in range(n)]
+    else:
+        # Reflection: macro_corner[k] → GT[(best_ref - k) % n]
+        # For GT[gt_k], macro_k = (best_ref - gt_k) % n
+        return [grid_corners[(best_ref - k) % n] for k in range(n)]
+
 
 def compute_polygon_corners_px(
     corners_grid: List[Tuple[float, float]],
@@ -995,6 +1199,7 @@ def build_polygon_cut_atlas(
     mask_colour: Tuple[int, int, int] = (0, 0, 0),
     debug_labels: bool = False,
     output_dir: Optional[Path] = None,
+    pentagon_rotation_steps: int = 0,
 ) -> Tuple["Image.Image", Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas from stitched tile images, UV-aligned.
 
@@ -1035,6 +1240,10 @@ def build_polygon_cut_atlas(
         display the **same** edge index at the shared boundary.
     output_dir : Path, optional
         If given, saves individual masked tiles for debugging.
+    pentagon_rotation_steps : int
+        Extra rotation steps applied to pentagon tiles only.
+        Positive = clockwise.  Use to correct any residual
+        pentagon orientation mismatch (default 0).
 
     Returns
     -------
@@ -1069,29 +1278,26 @@ def build_polygon_cut_atlas(
 
         tile_img = tile_images[fid]
 
-        # Get polygon corners from macro edges (same ordering as
-        # compute_neighbor_edge_mapping / vertex_ids).
+        # Get polygon corners from macro edges.
         dg = detail_grids[fid]
         n_sides = len(globe_grid.faces[fid].vertex_ids)
-        dg.compute_macro_edges(n_sides=n_sides)
+        # Use metadata corner_vertex_ids when available (pentagons).
+        # Angle-based detection mis-identifies pentagon corners in the
+        # Tutte embedding because the boundary turns are less distinct
+        # than for hexagons.
+        corner_ids = dg.metadata.get("corner_vertex_ids")
+        dg.compute_macro_edges(n_sides=n_sides, corner_ids=corner_ids)
         grid_corners_raw = get_macro_edge_corners(dg, n_sides)
 
         # Get UV polygon from GoldbergTile (raw = GoldbergTile order).
         uv_corners_raw = get_tile_uv_vertices(globe_grid, fid)
 
-        # The PolyGrid vertex_ids and GoldbergTile vertices have a
-        # per-tile rotational offset.  grid_corners are in PolyGrid
-        # (vertex_ids) order; uv_corners are in GoldbergTile order.
-        # We rotate the GRID corners into GoldbergTile order so that
-        # grid_corners[k] pairs with uv_corners[k], and the atlas
-        # texture stays in raw GoldbergTile UV space (which the 3D
-        # renderer expects).
-        offset = compute_uv_to_polygrid_offset(globe_grid, fid)
-        # offset = (PG_idx - GT_idx) % n, so GT_idx = (PG_idx - offset) % n
-        # grid_corners_raw is in PG order.  We want GT order:
-        #   grid_corners_gt[gt_k] = grid_corners_raw[pg_k]
-        #   where pg_k = (gt_k + offset) % n
-        grid_corners = [grid_corners_raw[(k + offset) % n_sides] for k in range(n_sides)]
+        # Reorder grid corners into GoldbergTile (GT) order so that
+        # grid_corners[k] pairs with uv_corners[k].  The mapping
+        # can be a rotation (pentagons) or reflection (hexagons)
+        # because the Tutte boundary walk can have opposite winding
+        # to the PolyGrid vertex_ids ordering.
+        grid_corners = match_grid_corners_to_uv(grid_corners_raw, globe_grid, fid)
         uv_corners = uv_corners_raw
 
         # Compute view limits (same as the renderer used)
@@ -1130,11 +1336,10 @@ def build_polygon_cut_atlas(
             # GoldbergTile order (matching uv_corners) so the labels
             # appear at the correct UV edge.
             neigh_to_edge_pg = compute_neighbor_edge_mapping(globe_grid, fid)
-            # Rotate edge indices from PolyGrid → GoldbergTile order:
-            #   gt_edge = (pg_edge - offset) % n_sides
+            pg_gt_offset = compute_uv_to_polygrid_offset(globe_grid, fid)
             edge_to_neigh_gt = {}
             for nid, pg_eidx in neigh_to_edge_pg.items():
-                gt_eidx = (pg_eidx - offset) % n_sides
+                gt_eidx = (pg_eidx - pg_gt_offset) % n_sides
                 edge_to_neigh_gt[gt_eidx] = nid
             warped = draw_debug_labels(
                 warped, uv_corners, fid, edge_to_neigh_gt,

@@ -172,6 +172,13 @@ Each Goldberg tile is expanded into a local hex sub-grid:
 
 ## GPU Rendering (Phases 12–13)
 
+> **Note:** `globe_renderer.py` and `globe_renderer_v2.py` are **standalone
+> demo/diagnostic renderers** — they are NOT part of the library API.
+> `playground` has its own full OpenGL pipeline and does not import these
+> modules.  They exist so pgrid can be developed and tested independently
+> with a 3D viewer.  They are gated behind the `[demo]` / `[globe]` extras
+> and are only imported by scripts in `scripts/` and by their own test files.
+
 `globe_renderer_v2.py` is the main renderer (~2,300 lines), implementing:
 
 ### Phase 12 — Core rendering quality
@@ -228,6 +235,84 @@ Each Goldberg tile is expanded into a local hex sub-grid:
 - Partitioning: all 4 algorithms, validation, constraints
 
 Tests run in ~3 min with caching via `conftest.py` (globe grid + detail grid collection cached with `lru_cache`).
+
+---
+
+## Boundary Contract
+
+### What pgrid owns (library API)
+
+| Layer | Modules | Description |
+|-------|---------|-------------|
+| **Core topology** | `polygrid`, `models`, `algorithms`, `geometry`, `io` | PolyGrid container, vertices/edges/faces, adjacency, serialisation |
+| **Building** | `builders`, `goldberg_topology`, `composite`, `assembly` | Grid constructors, Goldberg embedding, stitching |
+| **Tile data** | `tile_data` | Per-tile key-value storage (`TileDataStore`) |
+| **Transforms** | `transforms`, `regions`, `region_stitch` | Overlays, partitioning, region stitching |
+| **Terrain** | `noise`, `heightmap`, `mountains`, `rivers`, `pipeline`, `terrain_patches` | Procedural terrain generation |
+| **Globe** | `globe`, `globe_terrain`, `globe_export` | Globe-scale topology, terrain, JSON export |
+| **Detail** | `detail_grid`, `tile_detail`, `detail_terrain`, `detail_terrain_3d`, `detail_render`, `detail_perf` | Sub-tile detail grids and terrain |
+| **Texture** | `tile_texture`, `uv_texture`, `tile_uv_align`, `texture_export`, `apron_grid`, `apron_texture` | Texture atlas building, UV alignment, polygon-cut, export |
+| **Biome** | `biome_scatter`, `biome_render`, `biome_pipeline`, `biome_continuity`, `biome_topology`, `coastline`, `ocean_render`, `render_enhanced` | Biome-aware terrain rendering |
+| **Visual QA** | `visual_cohesion`, `diagnostics` | Seam checks, quality gates |
+
+### What pgrid does NOT own
+
+| Concern | Owner |
+|---------|-------|
+| Goldberg polyhedron geometry (tiles, normals, tangents, mesh) | `models` |
+| Application UI, OpenGL pipeline, persistence | `playground` |
+| Region painting, world-building UX | `playground` |
+| Interactive 3D globe viewer (production) | `playground` |
+
+### Standalone demo/diagnostic modules (NOT library API)
+
+These modules are for pgrid's own development and testing. They are **not**
+imported by `playground`.
+
+| Module | Purpose |
+|--------|---------|
+| `globe_renderer.py` | v1 terrain-coloured OpenGL renderer (pyglet) |
+| `globe_renderer_v2.py` | v2 renderer: subdivision, batching, PBR, water, atmosphere, LOD, bloom |
+| `globe_mesh.py` | Builds `ShapeMesh` objects for the 3D renderers |
+| `texture_pipeline.py` | Builds textured globe meshes for the 3D renderers |
+| `globe_render.py` | Colour-map helpers for globe rendering |
+| `visualize.py` | 2D matplotlib rendering |
+
+These are gated behind optional extras (`[demo]`, `[globe]`, `[render]`)
+and are exposed in `__init__.py` via `try/except ImportError` blocks.
+
+### Data contracts with playground
+
+The primary integration point between pgrid and playground is the **globe
+export payload**.  See `schemas/globe.schema.json` and `docs/JSON_CONTRACT.md`
+for the full specification.
+
+| Artifact | Format | Producer | Consumer |
+|----------|--------|----------|----------|
+| Globe payload | JSON (`globe_export.py`) | pgrid | playground |
+| Texture atlas | PNG (`tile_uv_align.py`, `detail_perf.py`) | pgrid | playground |
+| UV layout | JSON `{ tile_id: [u_min, v_min, u_max, v_max] }` | pgrid | playground |
+| Normal map atlas | PNG (`render_enhanced.py`) | pgrid | playground |
+
+### Playground's expected pgrid imports
+
+When integration is complete, playground will import from these pgrid modules:
+
+- `polygrid.globe` — `build_globe_grid`, `GlobeGrid`
+- `polygrid.tile_data` — `TileDataStore`, `TileSchema`, `FieldDef`
+- `polygrid.globe_export` — `export_globe_payload`, `validate_globe_payload`
+- `polygrid.tile_detail` — `DetailGridCollection`, `TileDetailSpec`
+- `polygrid.detail_terrain` — `generate_all_detail_terrain`
+- `polygrid.detail_render` — `BiomeConfig`, `render_detail_texture_enhanced`
+- `polygrid.tile_uv_align` — `build_polygon_cut_atlas`
+- `polygrid.uv_texture` — `compute_tile_uv_bounds`, `UVTransform`
+- `polygrid.mountains` — `generate_mountains`, `MountainConfig`
+- `polygrid.noise` — `fbm`, `ridged_noise`
+- `polygrid.terrain_patches` — `TERRAIN_PRESETS`, `generate_patched_terrain`
+- `polygrid.coastline` — `CoastlineConfig`, `classify_all_tiles`
+
+Playground must **never** import pgrid rendering modules (`globe_renderer`,
+`globe_renderer_v2`, `globe_mesh`, `visualize`).
 
 ---
 

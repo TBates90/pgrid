@@ -38,7 +38,7 @@ renderer.
 ### Step 1 — Generate tile textures
 
 ```bash
-python scripts/render_polygrids.py -f 3 --seed 42 -o exports/my_globe
+python scripts/render_polygrids.py -f 3 --seed 42 -o exports/f3
 ```
 
 This produces an output directory containing:
@@ -68,18 +68,27 @@ This produces an output directory containing:
 | `--debug-labels` | Draw tile-ID and per-edge neighbour labels on each tile |
 | `--polygon-mask` | Black-fill pixels outside the UV polygon (visualise polygon boundary) |
 | `--edges` | Show grid edges overlaid on terrain colouring |
+| `--outline-tiles` | Draw thin outlines on every sub-face within each polygrid (synonym for `--edges`) |
+| `--colour-debug` | Skip terrain generation; colour each polygrid tile with a unique hue and a centre→edge gradient. Useful for inspecting stitching topology without terrain noise. No `--seed` needed. |
 
 Example with debug overlays:
 
 ```bash
 python scripts/render_polygrids.py --debug-labels --polygon-mask \
-    -f 3 --seed 42 --tile-size 256 -o exports/debug_globe
+    -f 3 --seed 142 --tile-size 256 -o exports/debug_f3
+```
+
+Example colour-debug (no terrain, just topology):
+
+```bash
+python scripts/render_polygrids.py --colour-debug --outline-tiles \
+    -f 3 --detail-rings 4 -o exports/colour_debug
 ```
 
 ### Step 2 — View the 3D globe
 
 ```bash
-python scripts/render_globe_from_tiles.py exports/my_globe --v2
+python scripts/render_globe_from_tiles.py exports/f3 --v2
 ```
 
 This loads the pre-generated atlas and metadata from the export

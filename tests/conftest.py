@@ -54,6 +54,9 @@ _FILE_TIER: dict[str, str] = {
     "test_region_stitch.py": "medium",
     "test_render_enhanced.py": "medium",
     "test_texture_pipeline.py": "medium",
+    # These files are long-running / perf-oriented — treat them as slow by default
+    "test_detail_perf.py": "slow",
+    "test_terrain_patches.py": "slow",
     # Phase 12-13 — medium
     "test_globe_renderer_v2.py": "medium",
     "test_phase13_rendering.py": "medium",

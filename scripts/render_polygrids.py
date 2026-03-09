@@ -246,6 +246,255 @@ def _render_stitched_tile(
     plt.close(fig)
 
 
+def _render_colour_debug_tile(
+    face_id: str,
+    composite,
+    output_path: Path,
+    *,
+    tile_size: int,
+    outline_tiles: bool,
+    tile_hues: dict[str, float],
+):
+    """Render a stitched tile with each component in a distinct colour.
+
+    Each component (centre tile + each neighbour) gets its own
+    globe-wide unique hue from *tile_hues*.  The centre component is
+    rendered brightly; neighbour components use their own globe-tile
+    hue but at reduced lightness so the centre stands out.
+
+    No terrain data is needed.
+    """
+    import colorsys
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon as MplPolygon
+    from matplotlib.collections import PatchCollection
+    from polygrid.geometry import face_center as _face_center
+
+    mg = composite.merged
+    center_prefix = composite.id_prefixes[face_id]
+
+    # Each component uses the globe-wide hue assigned to that tile.
+    comp_hues: dict[str, float] = {}
+    for name in composite.id_prefixes:
+        comp_hues[name] = tile_hues.get(name, 0.0)
+
+    # Pre-compute each component's centroid + max face-distance for
+    # the radial gradient.
+    comp_centroids: dict[str, tuple[float, float]] = {}
+    comp_max_dist: dict[str, float] = {}
+
+    for name, prefix in composite.id_prefixes.items():
+        xs, ys = [], []
+        for fid, face in mg.faces.items():
+            if not fid.startswith(prefix):
+                continue
+            c = _face_center(mg.vertices, face)
+            if c is not None:
+                xs.append(c[0])
+                ys.append(c[1])
+        if xs:
+            cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+            comp_centroids[name] = (cx, cy)
+            max_d = max(
+                ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+                for x, y in zip(xs, ys)
+            )
+            comp_max_dist[name] = max_d if max_d > 1e-9 else 1.0
+        else:
+            comp_centroids[name] = (0.0, 0.0)
+            comp_max_dist[name] = 1.0
+
+    # Build patches + colours
+    patches = []
+    colours = []
+
+    for fid, face in mg.faces.items():
+        verts = []
+        for vid in face.vertex_ids:
+            v = mg.vertices.get(vid)
+            if v is None or not v.has_position():
+                break
+            verts.append((v.x, v.y))
+        else:
+            if len(verts) < 3:
+                continue
+
+            # Identify which component this face belongs to.
+            comp_name = None
+            for name, prefix in composite.id_prefixes.items():
+                if fid.startswith(prefix):
+                    comp_name = name
+                    break
+            if comp_name is None:
+                continue
+
+            hue = comp_hues[comp_name]
+            cx, cy = comp_centroids[comp_name]
+            c = _face_center(mg.vertices, face)
+            fx, fy = c if c else (cx, cy)
+
+            # Normalised distance [0, 1] from component centroid
+            dist = ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5
+            t = min(dist / comp_max_dist[comp_name], 1.0)
+
+            # Same brightness for centre and neighbours so the
+            # stitched result looks cohesive on the globe.
+            lightness = 0.72 - 0.20 * t
+            saturation = 0.65 + 0.15 * t
+
+            r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+            patches.append(MplPolygon(verts, closed=True))
+            colours.append((r, g, b))
+
+    if not patches:
+        return
+
+    # Axis limits from centre tile
+    center_xs, center_ys = [], []
+    for fid, face in mg.faces.items():
+        if not fid.startswith(center_prefix):
+            continue
+        for vid in face.vertex_ids:
+            v = mg.vertices.get(vid)
+            if v is not None and v.has_position():
+                center_xs.append(v.x)
+                center_ys.append(v.y)
+
+    cx_range = max(center_xs) - min(center_xs) if center_xs else 1
+    cy_range = max(center_ys) - min(center_ys) if center_ys else 1
+    half_span = max(cx_range, cy_range) * 0.5 * 1.25
+    cx_mid = (min(center_xs) + max(center_xs)) * 0.5
+    cy_mid = (min(center_ys) + max(center_ys)) * 0.5
+    xlim = (cx_mid - half_span, cx_mid + half_span)
+    ylim = (cy_mid - half_span, cy_mid + half_span)
+
+    # Render
+    dpi = 100
+    fig_size = tile_size / dpi
+    fig, ax = plt.subplots(1, 1, figsize=(fig_size, fig_size), dpi=dpi)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+    edge_col = "#00000030" if outline_tiles else "none"
+    edge_lw = 0.4 if outline_tiles else 0
+    pc = PatchCollection(
+        patches, facecolors=colours,
+        edgecolors=edge_col, linewidths=edge_lw,
+    )
+    ax.add_collection(pc)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+
+    fig.savefig(
+        str(output_path), dpi=dpi, bbox_inches="tight", pad_inches=0,
+        facecolor=(0.12, 0.12, 0.12),
+    )
+    plt.close(fig)
+
+
+def _render_colour_debug_single(
+    face_id: str,
+    detail_grid,
+    output_path: Path,
+    *,
+    tile_size: int,
+    outline_tiles: bool,
+    hue: float,
+):
+    """Render a single detail grid (no stitching) in colour-debug style.
+
+    All sub-faces use the tile's unique *hue* with a radial gradient
+    from the grid centroid.  Produces a standalone PNG of just the
+    one polygrid tile.
+    """
+    import colorsys
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon as MplPolygon
+    from matplotlib.collections import PatchCollection
+    from polygrid.geometry import face_center as _face_center
+
+    # Centroid + max distance for radial gradient
+    xs, ys = [], []
+    for fid, face in detail_grid.faces.items():
+        c = _face_center(detail_grid.vertices, face)
+        if c is not None:
+            xs.append(c[0])
+            ys.append(c[1])
+    if not xs:
+        return
+    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+    max_d = max(
+        (((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in zip(xs, ys)),
+        default=1.0,
+    )
+    if max_d < 1e-9:
+        max_d = 1.0
+
+    patches = []
+    colours = []
+    all_xs, all_ys = [], []
+
+    for fid, face in detail_grid.faces.items():
+        verts = []
+        for vid in face.vertex_ids:
+            v = detail_grid.vertices.get(vid)
+            if v is None or not v.has_position():
+                break
+            verts.append((v.x, v.y))
+            all_xs.append(v.x)
+            all_ys.append(v.y)
+        else:
+            if len(verts) < 3:
+                continue
+            c = _face_center(detail_grid.vertices, face)
+            fx, fy = c if c else (cx, cy)
+            t = min(((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5 / max_d, 1.0)
+            lightness = 0.72 - 0.20 * t
+            saturation = 0.65 + 0.15 * t
+            r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+            patches.append(MplPolygon(verts, closed=True))
+            colours.append((r, g, b))
+
+    if not patches:
+        return
+
+    x_range = max(all_xs) - min(all_xs) if all_xs else 1
+    y_range = max(all_ys) - min(all_ys) if all_ys else 1
+    half_span = max(x_range, y_range) * 0.5 * 1.15
+    x_mid = (min(all_xs) + max(all_xs)) * 0.5
+    y_mid = (min(all_ys) + max(all_ys)) * 0.5
+
+    dpi = 100
+    fig_size = tile_size / dpi
+    fig, ax = plt.subplots(1, 1, figsize=(fig_size, fig_size), dpi=dpi)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+    edge_col = "#00000030" if outline_tiles else "none"
+    edge_lw = 0.4 if outline_tiles else 0
+    pc = PatchCollection(
+        patches, facecolors=colours,
+        edgecolors=edge_col, linewidths=edge_lw,
+    )
+    ax.add_collection(pc)
+    ax.set_xlim(x_mid - half_span, x_mid + half_span)
+    ax.set_ylim(y_mid - half_span, y_mid + half_span)
+
+    fig.savefig(
+        str(output_path), dpi=dpi, bbox_inches="tight", pad_inches=0,
+        facecolor=(0.12, 0.12, 0.12),
+    )
+    plt.close(fig)
+
+
 def _render_tile(
     face_id: str,
     detail_grid,
@@ -458,8 +707,25 @@ def main():
              "debugging to visualise the polygon boundary.",
     )
     parser.add_argument(
+        "--pent-rot", type=int, default=0, metavar="N",
+        help="Extra rotation steps for pentagon tiles (positive = CW). "
+             "Use to correct residual pentagon orientation mismatch.",
+    )
+    parser.add_argument(
         "--with-neighbour-edges", action="store_true",
         help="(Legacy) Show neighbour tile border faces around each tile",
+    )
+    parser.add_argument(
+        "--colour-debug", action="store_true",
+        help="Skip terrain generation and colour each polygrid tile "
+             "with a unique hue. Centre tile faces are lightest, "
+             "fading darker toward the edges. Useful for inspecting "
+             "stitching topology without terrain noise.",
+    )
+    parser.add_argument(
+        "--outline-tiles", action="store_true",
+        help="Draw thin outlines on every child polygon (sub-face) "
+             "within each polygrid tile.",
     )
     parser.add_argument(
         "-o", "--output-dir", type=str, default=None,
@@ -475,6 +741,150 @@ def main():
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Colour-debug mode: skip terrain, colour tiles by identity ──
+    if args.colour_debug:
+        import colorsys
+        import json
+
+        from PIL import Image
+
+        from polygrid.globe import build_globe_grid
+        from polygrid.tile_detail import (
+            TileDetailSpec,
+            DetailGridCollection,
+            build_tile_with_neighbours,
+        )
+        from polygrid.tile_uv_align import build_polygon_cut_atlas
+        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
+
+        print(f"Building globe (freq={args.frequency})...")
+        grid = build_globe_grid(args.frequency)
+        spec = TileDetailSpec(detail_rings=args.detail_rings)
+
+        t0 = time.perf_counter()
+        print(f"Building detail grids (rings={args.detail_rings})...")
+        coll = DetailGridCollection.build(grid, spec)
+        print(f"  → {coll.total_face_count} sub-faces in "
+              f"{time.perf_counter() - t0:.2f}s")
+
+        face_ids = coll.face_ids
+
+        # Pre-compute a unique hue for every globe tile (golden-ratio
+        # spacing gives perceptually even colours across the whole globe).
+        golden = 0.618033988749895
+        tile_hues: dict[str, float] = {}
+        for idx, fid in enumerate(face_ids):
+            tile_hues[fid] = (0.08 + idx * golden) % 1.0
+
+        # Phase 0: render standalone (un-stitched) polygrids
+        singles_dir = output_dir / "singles"
+        singles_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Rendering {len(face_ids)} standalone polygrids to {singles_dir}/...")
+        t0 = time.perf_counter()
+
+        for i, fid in enumerate(face_ids):
+            dg, _ = coll.get(fid)
+            out_path = singles_dir / f"{fid}.png"
+            _render_colour_debug_single(
+                fid, dg, out_path,
+                tile_size=args.tile_size,
+                outline_tiles=args.outline_tiles,
+                hue=tile_hues[fid],
+            )
+            if (i + 1) % 10 == 0 or i == 0:
+                print(f"  {i + 1}/{len(face_ids)}...")
+
+        elapsed = time.perf_counter() - t0
+        print(f"  → {len(face_ids)} singles in {elapsed:.2f}s")
+
+        mode = "colour-debug" + (" + outlines" if args.outline_tiles else "")
+        print(f"Rendering {len(face_ids)} tiles ({mode}) to {output_dir}/...")
+        t0 = time.perf_counter()
+
+        # Phase 1: render colour-debug tiles + collect data for atlas
+        tile_images: dict[str, Image.Image] = {}
+        composites: dict = {}
+        detail_grids: dict = {}
+
+        for i, fid in enumerate(face_ids):
+            composite = build_tile_with_neighbours(coll, fid, grid)
+            out_path = output_dir / f"{fid}.png"
+            _render_colour_debug_tile(
+                fid, composite, out_path,
+                tile_size=args.tile_size,
+                outline_tiles=args.outline_tiles,
+                tile_hues=tile_hues,
+            )
+            tile_images[fid] = Image.open(str(out_path)).convert("RGB")
+            composites[fid] = composite
+            detail_grids[fid] = coll.get(fid)[0]
+
+            if (i + 1) % 10 == 0 or i == 0:
+                print(f"  rendered {i + 1}/{len(face_ids)}...")
+
+        elapsed = time.perf_counter() - t0
+        print(f"  → {len(face_ids)} tiles rendered in {elapsed:.2f}s")
+
+        # Phase 2: build polygon-cut atlas
+        print("Building polygon-cut atlas (colour-debug)...")
+        gutter = 4
+        debug_dir = output_dir / "warped"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        atlas, uv_layout = build_polygon_cut_atlas(
+            tile_images, composites, detail_grids, grid, face_ids,
+            tile_size=args.tile_size,
+            gutter=gutter,
+            mask_outside=args.polygon_mask,
+            debug_labels=args.debug_labels,
+            output_dir=debug_dir,
+            pentagon_rotation_steps=args.pent_rot,
+        )
+
+        atlas_path = output_dir / "atlas.png"
+        atlas.save(str(atlas_path))
+        print(f"  → Atlas: {atlas_path}")
+
+        uv_path = output_dir / "uv_layout.json"
+        uv_path.write_text(json.dumps(uv_layout, indent=2))
+        print(f"  → UV layout: {uv_path}")
+
+        # Phase 3: export globe payload with colour-debug colours
+        # Build a dummy TileDataStore (elevation=0) since there's no terrain.
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        dummy_store = TileDataStore(grid=grid, schema=schema)
+
+        # Build the payload manually so we can inject the colour-debug
+        # hues instead of terrain colours.
+        from polygrid.globe_export import export_globe_payload
+
+        payload = export_globe_payload(grid, dummy_store, ramp="satellite")
+
+        # Override colours with the colour-debug hues (bright centre hue)
+        for tile_entry in payload["tiles"]:
+            tid = tile_entry["id"]
+            hue = tile_hues.get(tid, 0.0)
+            r, g, b = colorsys.hls_to_rgb(hue, 0.55, 0.70)
+            tile_entry["color"] = [round(r, 4), round(g, 4), round(b, 4)]
+
+        payload_path = output_dir / "globe_payload.json"
+        payload_path.write_text(json.dumps(payload, indent=2))
+        print(f"  → Payload: {payload_path}")
+
+        metadata = {
+            "frequency": args.frequency,
+            "seed": 0,
+            "preset": "colour_debug",
+            "detail_rings": args.detail_rings,
+            "tile_size": args.tile_size,
+        }
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2))
+        print(f"  → Metadata: {metadata_path}")
+
+        print(f"Output: {output_dir}/")
+        return
+
     # Build globe + terrain
     grid, store = _build_globe_and_terrain(
         args.frequency, args.preset, args.seed,
@@ -486,6 +896,9 @@ def main():
     # Render each tile
     biome = BiomeConfig()
     face_ids = coll.face_ids
+
+    # --outline-tiles is a synonym for --edges (both show sub-face outlines)
+    show_edges = args.edges or args.outline_tiles
 
     # Derive effective polygon_cut flag (default on, unless --no-polygon-cut)
     polygon_cut = not args.no_polygon_cut
@@ -502,7 +915,7 @@ def main():
         from polygrid.uv_texture import get_tile_uv_vertices
         from PIL import Image
 
-        mode = "polygon-cut" + (" + edges" if args.edges else "")
+        mode = "polygon-cut" + (" + edges" if show_edges else "")
         print(f"Rendering {len(face_ids)} tiles ({mode}) to {output_dir}/...")
         t0 = time.perf_counter()
 
@@ -520,7 +933,7 @@ def main():
                 fid, composite, stitched_store, out_path,
                 biome=biome,
                 tile_size=args.tile_size,
-                show_edges=args.edges,
+                show_edges=show_edges,
                 noise_seed=args.seed + i,
             )
 
@@ -544,6 +957,7 @@ def main():
             mask_outside=args.polygon_mask,
             debug_labels=args.debug_labels,
             output_dir=debug_dir,
+            pentagon_rotation_steps=args.pent_rot,
         )
 
         atlas_path = output_dir / "atlas.png"
@@ -577,7 +991,7 @@ def main():
     elif args.stitched:
         from polygrid.tile_detail import build_tile_with_neighbours
 
-        mode = "stitched" + (" + edges" if args.edges else "")
+        mode = "stitched" + (" + edges" if show_edges else "")
         print(f"Rendering {len(face_ids)} tiles ({mode}) to {output_dir}/...")
         t0 = time.perf_counter()
 
@@ -591,7 +1005,7 @@ def main():
                 fid, composite, stitched_store, out_path,
                 biome=biome,
                 tile_size=args.tile_size,
-                show_edges=args.edges,
+                show_edges=show_edges,
                 noise_seed=args.seed + i,
             )
             if (i + 1) % 10 == 0 or i == 0:
@@ -617,7 +1031,7 @@ def main():
                 fid, detail_grid, detail_store, out_path,
                 biome=biome,
                 tile_size=args.tile_size,
-                show_edges=args.edges,
+                show_edges=show_edges,
                 noise_seed=args.seed + i,
                 neighbour_grid=nbr_grid,
                 neighbour_store=nbr_store,
@@ -637,7 +1051,7 @@ def main():
                 fid, detail_grid, detail_store, out_path,
                 biome=biome,
                 tile_size=args.tile_size,
-                show_edges=args.edges,
+                show_edges=show_edges,
                 noise_seed=args.seed + i,
             )
 
