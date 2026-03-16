@@ -495,9 +495,9 @@ Three confirmed contributors (ranked by impact):
 
 5. ✅ **Analytical fill renderer** — Renders stitched terrain colours
    via point-in-polygon fill, bypassing matplotlib rasterisation.
-   Implemented as `_render_analytical_to_png()` in `render_polygrids.py`
-   with `--renderer analytical` CLI flag.  Prototyped and measured in
-   `notebooks/analytical_fill.ipynb`.
+   Implemented as `_render_analytical_to_png()` in `render_polygrids.py`.
+   **Now the default renderer** (`--renderer analytical`).  Prototyped
+   and measured in `notebooks/analytical_fill.ipynb`.
 
    **Results:** Vectorised fill runs in 0.07s per 512×512 tile (7× faster
    than matplotlib).  100% pixel coverage, deterministic (no anti-aliasing).

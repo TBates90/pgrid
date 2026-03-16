@@ -334,6 +334,7 @@ The 12 pentagon tiles on the Goldberg polyhedron show visible warping/stretching
 - [x] **38D.2** — Generated diagnostic comparison images: `38d_pent_vs_hex.png` (all 12 pentagons vs pent-adjacent and interior hex tiles), `38d_pipeline_compare.png` (t0 pent vs t5 hex through pipeline stages), `38d_singles_compare.png` (pre-warp single tiles). All show clean warping with no gaps or misalignment. ✅
 - [ ] **38D.3** — Commit all changes across models and pgrid.  Update `TILE_TEXTURE_MAPPING.md` to mark the Pentagon Distortion Problem as resolved.
 - [ ] **38D.4** — Verify globe at freq=4 (still needs rendering at higher frequency).
+- [x] **38D.5** — Made analytical fill the default renderer (`--renderer analytical`). Updated README with `--renderer` option. Cleaned up `analytical_fill.ipynb` (parameterised atlas paths, updated integration status). ✅
 
 ---
 
