@@ -40,7 +40,7 @@ renderer.
 ```bash
 python scripts/render_polygrids.py -f 3 --seed 42 -o exports/f3
 ```
-
+    
 This produces an output directory containing:
 - `atlas.png` — the packed texture atlas
 - `uv_layout.json` — per-tile UV coordinates in the atlas

@@ -678,23 +678,23 @@ def _equalise_sector_ratios(
     new_R = R_mean_src * (dst_R / R_mean_dst)
 
     # ── New grid corner angles: align to destination angles ──
-    # Use the destination's first sorted angle as the start so that
-    # the bulk rotation of the source polygon is corrected.  Without
-    # this, the Tutte embedding's residual rotational offset carries
-    # through to the warped tile, causing every texture to appear
-    # rotated by a few degrees.
+    # The destination pixel space has Y flipped relative to grid space
+    # (pixel y=0 is top, grid y increases upward).  Angles and angular
+    # spans computed in dst_px space must be negated when placing
+    # corners in grid space so the reconstructed polygon has the
+    # correct (non-reflected) orientation.
     dst_sorted_angles = np.arctan2(
         dst_sorted[:, 1] - dst_px_c[1],
         dst_sorted[:, 0] - dst_px_c[0],
     )
-    start_angle = dst_sorted_angles[0]
+    start_angle = -dst_sorted_angles[0]
 
     new_sorted = np.empty((n, 2), dtype=np.float64)
     angle = start_angle
     for i in range(n):
         new_sorted[i, 0] = gc_c[0] + new_R[i] * math.cos(angle)
         new_sorted[i, 1] = gc_c[1] + new_R[i] * math.sin(angle)
-        angle += dst_spans[i]
+        angle -= dst_spans[i]
 
     # ── Un-sort back to original index order ──
     result_arr = np.empty_like(gc)
@@ -1278,47 +1278,57 @@ def _compute_piecewise_warp_map(
         coordinate.  Suitable for ``scipy.ndimage.map_coordinates``
         or ``cv2.remap``.
     """
-    src = np.array(grid_corners, dtype=np.float64)
+    src_grid = np.array(grid_corners, dtype=np.float64)
     dst_uv = np.array(uv_corners, dtype=np.float64)
+    n = len(dst_uv)
 
-    # Corners are paired 1:1 by index (both use vertex_ids ordering).
+    # ── Convert grid corners → source-image pixel coordinates ────
+    # This keeps both sides of the affine in pixel space, eliminating
+    # the mixed-coordinate-system bug where a Y-flip in the
+    # grid→pixel conversion interacted badly with sector winding.
+    x_min, x_max = xlim
+    y_min, y_max = ylim
+    x_span = x_max - x_min
+    y_span = y_max - y_min
+
+    src_px = np.empty_like(src_grid)
+    for i in range(n):
+        gx, gy = src_grid[i]
+        src_px[i, 0] = (gx - x_min) / x_span * img_w
+        src_px[i, 1] = (1.0 - (gy - y_min) / y_span) * img_h
+
     if src_centroid_override is not None:
-        src_centroid = np.asarray(src_centroid_override, dtype=np.float64)
+        sc = np.asarray(src_centroid_override, dtype=np.float64)
+        src_px_centroid = np.array([
+            (sc[0] - x_min) / x_span * img_w,
+            (1.0 - (sc[1] - y_min) / y_span) * img_h,
+        ])
     else:
-        src_centroid = src.mean(axis=0)
-    dst_uv_centroid = dst_uv.mean(axis=0)
+        src_px_centroid = src_px.mean(axis=0)
 
-    # Destination: UV → slot pixel coordinates
+    # ── Convert UV corners → destination slot-pixel coordinates ──
     dst_px = np.empty_like(dst_uv)
-    for i in range(len(dst_uv)):
+    for i in range(n):
         u, v = dst_uv[i]
         dst_px[i, 0] = gutter + u * tile_size
         dst_px[i, 1] = gutter + (1.0 - v) * tile_size
     dst_px_centroid = dst_px.mean(axis=0)
 
     # Sort both arrays by *destination-pixel* angle from their
-    # centroid.  Using the destination angle ensures that sector
-    # assignment (which operates in output/slot-pixel space) lines
-    # up with the affine triangles.  Applying the SAME permutation
-    # to both src and dst preserves the 1:1 pairing.
+    # centroid.  Both arrays are now in pixel space (Y-down), so the
+    # sort puts them in the same angular order with matching winding.
     dst_angles = np.arctan2(
         dst_px[:, 1] - dst_px_centroid[1],
         dst_px[:, 0] - dst_px_centroid[0],
     )
     order = np.argsort(dst_angles)
-    src_ordered = src[order]
+    src_px_ordered = src_px[order]
     dst_px_ordered = dst_px[order]
 
-    src_centroid_ordered = src_centroid  # centroid is permutation-invariant
-
-    # Build per-sector affines: slot_pixel → grid_space (inverse direction)
-    # Forward: grid → slot_pixel
-    fwd_sectors = _build_sector_affines(
-        src_ordered, src_centroid_ordered, dst_px_ordered, dst_px_centroid,
-    )
-    # Inverse: slot_pixel → grid
+    # Build per-sector affines entirely in pixel space
+    # Inverse: slot_pixel → source_pixel
     inv_sectors = _build_sector_affines(
-        dst_px_ordered, dst_px_centroid, src_ordered, src_centroid_ordered,
+        dst_px_ordered, dst_px_centroid, src_px_ordered, src_px_centroid,
     )
 
     # Build output pixel grid
@@ -1329,12 +1339,7 @@ def _compute_piecewise_warp_map(
     # Assign each output pixel to a sector in dst_px space
     sector_ids = _assign_sectors(out_pts, dst_px_centroid, dst_px_ordered)
 
-    # Map output pixels → grid space → input pixels
-    x_min, x_max = xlim
-    y_min, y_max = ylim
-    x_span = x_max - x_min
-    y_span = y_max - y_min
-
+    # Map output pixels → source-image pixels directly
     map_x = np.full(len(out_pts), -1.0, dtype=np.float64)
     map_y = np.full(len(out_pts), -1.0, dtype=np.float64)
 
@@ -1344,15 +1349,9 @@ def _compute_piecewise_warp_map(
         if not mask.any():
             continue
         pts = out_pts[mask]
-        # slot_pixel → grid
-        grid_pts = (pts @ A_inv.T) + t_inv
-        # grid → input pixel
-        # px_x = (gx - x_min) / x_span * img_w
-        # px_y = (1 - (gy - y_min) / y_span) * img_h
-        src_px_x = (grid_pts[:, 0] - x_min) / x_span * img_w
-        src_px_y = (1.0 - (grid_pts[:, 1] - y_min) / y_span) * img_h
-        map_x[mask] = src_px_x
-        map_y[mask] = src_px_y
+        mapped = (pts @ A_inv.T) + t_inv
+        map_x[mask] = mapped[:, 0]
+        map_y[mask] = mapped[:, 1]
 
     map_x = map_x.reshape(output_size, output_size)
     map_y = map_y.reshape(output_size, output_size)
@@ -1743,18 +1742,20 @@ def build_polygon_cut_atlas(
 
         # ── Match grid corners → UV corners ──────────────────────
         # Use angular matching (handles both rotation and reflection
-        # between macro-edge and GoldbergTile orderings) then equalise
-        # sector ratios to correct the Tutte embedding's residual
-        # rotational offset and any irregular UV spacing.
+        # between macro-edge and GoldbergTile orderings).
         grid_corners_matched = match_grid_corners_to_uv(
             grid_corners_raw, globe_grid, fid,
         )
         uv_corners = uv_corners_raw
 
-        grid_corners, src_centroid = _equalise_sector_ratios(
-            grid_corners_matched, uv_corners,
-            tile_size=tile_size, gutter=gutter,
-        )
+        # Use the raw matched corners directly.  _equalise_sector_ratios
+        # moves corners away from the actual polygon boundary in the
+        # source image, which causes the warp to sample content from
+        # the wrong side of each edge — creating visible seams on the
+        # globe.  Skipping it trades minor piecewise-affine anisotropy
+        # for seamless tile boundaries.
+        grid_corners = grid_corners_matched
+        src_centroid = None
         if is_pentagon:
             grid_corners = _scale_corners_from_centroid(
                 grid_corners, _PENTAGON_GRID_SCALE,
