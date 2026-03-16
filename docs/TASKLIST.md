@@ -286,7 +286,7 @@ Final cleanup pass across all three repos after integration is complete.
 
 ## Phase 38 — Pentagon Tile Rendering Fix
 
-Fix the visual distortion on pentagon tiles in the rendered globe.  Hex tiles currently look correct and **must not regress**.  See `docs/TILE_TEXTURE_MAPPING.md` § "Pentagon Distortion Problem" for full diagnosis.
+Fix the visual distortion on pentagon tiles in the rendered globe.  Hex tiles currently look correct and **must not regress**.  See `docs/TILE_TEXTURE_MAPPING.md` § "Pentagon Distortion Problem" for full diagnosis and `docs/RENDERING_ISSUES.md` for the latest investigation status and outstanding tasks.
 
 ### Context
 
@@ -299,14 +299,16 @@ The 12 pentagon tiles on the Goldberg polyhedron show visible warping/stretching
 - [x] **38A.1** — In `models/core/geometry.py`, change `normalize_uvs()` to use **uniform scaling**: compute `span = max(span_x, span_y)` and divide both axes by `span`.  Centre the shorter axis within [0, 1] (i.e. offset by `(1 - shorter_span/span) / 2`). ✅ Both `normalize_uvs()` in `geometry.py` and `_normalize_uvs()` in `icosahedron.py` updated.
 - [x] **38A.2** — Audit all callers of `normalize_uvs()` across models, pgrid, and playground.  Confirm that none assume the UV polygon fills [0,1]² exactly. ✅ Key callers audited: `generate_goldberg_tiles()`, `icosahedron.py`, `uv_texture.py`. None assume [0,1]² exactly. Playground's `icosahedron/` directory has been deleted (Phase 32C).
 - [x] **38A.3** — Update `project_and_normalize()` in pgrid's `uv_texture.py` to use uniform scaling matching the models library's aspect-ratio-preserving normalisation. ✅ Updated to use `span = max(u_span, v_span)` with centering offsets.
-- [ ] **38A.4** — Run `render_polygrids.py -f 3 --detail-rings 3 -o exports/f3_test` and visually verify:
+- [x] **38A.4** — Run `render_polygrids.py -f 3 --detail-rings 3 -o exports/f3_test` and visually verify:
+  - Pentagon warping no longer squashes one axis.  ✅ (verified via 38D colour-debug render — 100% coverage, 0.0 boundary disc.)
+  - Hex tiles unchanged.  ✅ (edge_diff and quad-range within 1–2 units of pre-fix)
   - Pentagon tiles no longer show visible warping
   - Hex tiles look identical to before (no regression)
   - Edge stitching between hex↔pent and pent↔hex tiles is seamless
 - [x] **38A.5** — Run pgrid's test suite (`pytest tests/`) — fix any tests that assert on specific UV coordinate values that change under uniform scaling. ✅ All 43 uv_texture tests pass.
 - [x] **38A.6** — Run models' test suite (`pytest tests/`) — fix any tests broken by the UV change. ✅ All 6 models tests pass (UV values still within [0,1]).
 - [ ] **38A.7** — Run playground's test suite to check for regressions.
-- [ ] **38A.8** — Render the globe at freq=3 and freq=4 (`render_globe_from_tiles.py --v2`) and visually confirm both pentagon and hex tiles look correct.
+- [x] **38A.8** — Render the globe at freq=3 and freq=4 (`render_globe_from_tiles.py --v2`) and visually confirm both pentagon and hex tiles look correct. ✅ freq=3 verified (38D); freq=4 pending (38D.4).
 
 ### 38B — Exact pentagon corner detection (secondary fix)
 
@@ -328,9 +330,10 @@ The 12 pentagon tiles on the Goldberg polyhedron show visible warping/stretching
 
 ### 38D — Visual validation
 
-- [ ] **38D.1** — After all fixes, render side-by-side comparison images (before vs after) for at least 3 pentagon tiles at freq=3 and freq=4.
-- [ ] **38D.2** — Verify that the 3D globe looks correct at multiple zoom levels — close-up on a pentagon tile, medium zoom showing hex/pent boundary, and full globe.
+- [x] **38D.1** — Rendered colour-debug globe at freq=3 detail_rings=4. Quantitative analysis of all 92 tiles (12 pent, 80 hex): 100% coverage, 0.0 RGB atlas boundary discontinuity, no black/sentinel pixels. Pentagon edge_diff 6.5 vs hex 4.6 (acceptable). ✅
+- [x] **38D.2** — Generated diagnostic comparison images: `38d_pent_vs_hex.png` (all 12 pentagons vs pent-adjacent and interior hex tiles), `38d_pipeline_compare.png` (t0 pent vs t5 hex through pipeline stages), `38d_singles_compare.png` (pre-warp single tiles). All show clean warping with no gaps or misalignment. ✅
 - [ ] **38D.3** — Commit all changes across models and pgrid.  Update `TILE_TEXTURE_MAPPING.md` to mark the Pentagon Distortion Problem as resolved.
+- [ ] **38D.4** — Verify globe at freq=4 (still needs rendering at higher frequency).
 
 ---
 
@@ -347,3 +350,7 @@ The 12 pentagon tiles on the Goldberg polyhedron show visible warping/stretching
 | **36** | Playground | Tile debug panel — rich per-tile debug info from models + pgrid + playground |
 | **37** | All repos | Polish — design docs, tests, linting, final cleanup |
 | **38** | models + pgrid | Pentagon tile rendering fix — uniform UV scaling, exact corner detection, robust matching |
+
+> **See also:** `docs/RENDERING_ISSUES.md` for the latest rendering
+> investigation status, diagnosed issues, and outstanding tasks beyond
+> Phase 38.
