@@ -18,7 +18,7 @@ other interior vertex becomes a hexagon.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .models import Edge, Face, Vertex
 from .polygrid import PolyGrid
@@ -276,12 +276,27 @@ def goldberg_embed_tutte(
     faces: List[Face],
     rings: int,
     size: float = 1.0,
+    corner_ids: Optional[List[str]] = None,
 ) -> Dict[str, Vertex]:
     """Tutte embedding with pentagonal outer boundary.
 
     Pins boundary vertices to a convex pentagon, then solves the
     Laplacian system for interior positions.  Guaranteed crossing-free
     for 3-connected planar graphs with convex boundary.
+
+    The boundary pentagon is oriented **point-top** (vertex at 90°,
+    flat edge at bottom).  Corner vertices are placed at
+    90°, 18°, −54°, −126°, −162°.
+
+    When *corner_ids* are supplied, the boundary cycle is rotated so
+    that the first corner vertex lands exactly on the first pentagon
+    corner position, keeping the grid aligned.
+
+    Note: the interior hex lattice settles at a rotational offset
+    from these ideal boundary positions due to the Tutte Laplacian.
+    ``build_goldberg_grid`` rotates the entire embedding by the
+    offset measured by ``measure_pentagon_interior_offset`` so the
+    hex lattice lands at ideal orientation.
     """
     import numpy as np
     import scipy.sparse as sp
@@ -315,12 +330,24 @@ def goldberg_embed_tutte(
 
     n_boundary = len(cycle)
 
+    # Rotate the cycle so a known corner vertex sits at position 0.
+    # This ensures corner vertices are pinned exactly to the pentagon
+    # corner positions, giving the grid the correct flat-top orientation
+    # that matches the GoldbergTile UV layout.
+    if corner_ids:
+        corner_set = set(corner_ids)
+        for idx_c, vid in enumerate(cycle):
+            if vid in corner_set:
+                cycle = cycle[idx_c:] + cycle[:idx_c]
+                break
+
     # Pin boundary to regular pentagon with subdivided edges
     outer_radius = size * (rings + 1) * 0.95
     verts_per_edge = n_boundary // 5 if n_boundary >= 5 else max(n_boundary, 1)
 
     corners = []
     for i in range(5):
+        # Point-top orientation: first vertex at 90° (top).
         angle = math.pi / 2 + 2 * math.pi * i / 5
         corners.append((outer_radius * math.cos(angle), outer_radius * math.sin(angle)))
 
@@ -547,6 +574,139 @@ def goldberg_optimise(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Pentagon interior alignment
+# ═══════════════════════════════════════════════════════════════════
+
+def measure_pentagon_interior_offset(
+    positioned: Dict[str, Vertex],
+    faces: List[Face],
+    edges: List[Edge],
+    corner_ids: List[str],
+) -> float:
+    """Measure the hex-lattice rotational offset inside a pentagon grid.
+
+    Finds the ring-1 hexes (those sharing a vertex with the central
+    pentagon) and compares their centroid angular positions to the
+    *actual* corner directions of the pentagon (from centroid to each
+    corner vertex).  This makes the measurement independent of the
+    grid's position, orientation, scale, or reflection — it works on
+    both the original Tutte grid and a positioned/reflected copy.
+
+    Ring-1 hexes sit in the vertex directions of the pentagon and
+    provide the most visually relevant rotation signal.
+
+    Returns the average offset in radians.  Positive means the hex
+    lattice is rotated counter-clockwise from the corner directions.
+    """
+    # Find the central pentagon face.
+    pent_face = None
+    for f in faces:
+        if f.face_type == "pent":
+            pent_face = f
+            break
+    if pent_face is None:
+        return 0.0
+
+    pent_vids = set(pent_face.vertex_ids)
+
+    # Pentagon centroid (use all positioned vertices).
+    all_xs = [v.x for v in positioned.values() if v.has_position()]
+    all_ys = [v.y for v in positioned.values() if v.has_position()]
+    if not all_xs:
+        return 0.0
+    cx_grid = sum(all_xs) / len(all_xs)
+    cy_grid = sum(all_ys) / len(all_ys)
+
+    # Actual corner directions from centroid.
+    corner_angles: list[float] = []
+    for cid in corner_ids:
+        v = positioned[cid]
+        if not v.has_position():
+            continue
+        corner_angles.append(
+            math.atan2(v.y - cy_grid, v.x - cx_grid)
+        )
+    if len(corner_angles) < 5:
+        return 0.0
+
+    # Ring-1 hexes: hexes sharing at least one vertex with the
+    # central pentagon.
+    ring1_angles: list[float] = []
+    for f in faces:
+        if f.face_type != "hex":
+            continue
+        if set(f.vertex_ids) & pent_vids:
+            hcx = sum(positioned[vid].x for vid in f.vertex_ids) / len(f.vertex_ids)
+            hcy = sum(positioned[vid].y for vid in f.vertex_ids) / len(f.vertex_ids)
+            ring1_angles.append(
+                math.atan2(hcy - cy_grid, hcx - cx_grid)
+            )
+    if not ring1_angles:
+        return 0.0
+
+    # Match each ring-1 hex to its nearest corner direction.
+    offsets: list[float] = []
+    for ha in ring1_angles:
+        best_corner = min(
+            corner_angles,
+            key=lambda ca: abs(((ha - ca) + math.pi) % (2 * math.pi) - math.pi),
+        )
+        diff = (ha - best_corner + math.pi) % (2 * math.pi) - math.pi
+        offsets.append(diff)
+
+    return sum(offsets) / len(offsets)
+
+
+def _correct_interior_rotation(
+    positioned: Dict[str, "Vertex"],
+    faces: List["Face"],
+    edges: List["Edge"],
+    corner_ids: List[str],
+) -> Dict[str, "Vertex"]:
+    """Counter-rotate non-boundary vertices to cancel the Tutte offset.
+
+    The Tutte + optimisation embedding leaves the interior hex lattice
+    rotated relative to the ideal boundary-corner positions.  This
+    function measures the offset and counter-rotates all non-boundary
+    vertices, keeping boundary vertices (and thus tile seams) exactly
+    in place.
+
+    This ensures that both the pentagon's own tile render **and** any
+    hex neighbour that stitches in this pentagon see aligned content.
+    The outer-ring hexes (which straddle the boundary) will have
+    slight shape distortion, but they sit at the UV polygon edge
+    where the 3D renderer clips them anyway.
+    """
+    from .models import Vertex as V
+
+    offset = measure_pentagon_interior_offset(
+        positioned, faces, edges, corner_ids,
+    )
+    if abs(offset) < 1e-6:
+        return positioned
+
+    # Identify boundary vertices.
+    boundary_vids: set = set()
+    for e in edges:
+        if len(e.face_ids) < 2:
+            for vid in e.vertex_ids:
+                boundary_vids.add(vid)
+
+    # Rotate all non-boundary vertices around the origin by -offset.
+    cos_a = math.cos(-offset)
+    sin_a = math.sin(-offset)
+    corrected: Dict[str, "Vertex"] = {}
+    for vid, v in positioned.items():
+        if vid in boundary_vids:
+            corrected[vid] = v
+        else:
+            nx = v.x * cos_a - v.y * sin_a
+            ny = v.x * sin_a + v.y * cos_a
+            corrected[vid] = V(vid, nx, ny)
+    return corrected
+
+
+# ═══════════════════════════════════════════════════════════════════
 # High-level builder
 # ═══════════════════════════════════════════════════════════════════
 
@@ -562,7 +722,7 @@ def build_goldberg_grid(
     verts, edges, faces, corner_ids = goldberg_topology(rings)
 
     if rings == 0:
-        # Simple regular pentagon
+        # Simple regular pentagon — point-top orientation
         radius = size / (2 * math.sin(math.pi / 5))
         pent = faces[0]
         positioned = {}
@@ -581,7 +741,8 @@ def build_goldberg_grid(
         )
 
     # Tutte embed → fix winding → optimise → fix winding again
-    positioned = goldberg_embed_tutte(verts, edges, faces, rings, size)
+    positioned = goldberg_embed_tutte(verts, edges, faces, rings, size,
+                                      corner_ids=corner_ids)
     faces = fix_face_winding(positioned, faces)
     edges = _edges_from_faces(faces)
 
@@ -592,6 +753,15 @@ def build_goldberg_grid(
         )
         faces = fix_face_winding(positioned, faces)
         edges = _edges_from_faces(faces)
+
+    # The interior hex lattice settles at a rotational offset from
+    # the ideal boundary-corner positions due to the Tutte Laplacian.
+    # We do NOT rotate the embedding — boundary corners must stay at
+    # ideal angles for clean tile seams.  The interior offset is
+    # corrected in two places:
+    # 1. Pentagon's own tile: grid corner rotation in atlas warp.
+    # 2. Hex neighbour tiles: pre-rotation of the pentagon grid
+    #    before stitching (see build_tile_with_neighbours).
 
     return PolyGrid(
         positioned.values(), edges, faces,

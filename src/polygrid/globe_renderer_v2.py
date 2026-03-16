@@ -760,8 +760,14 @@ def _normalize_vec3(v: np.ndarray) -> np.ndarray:
 
 
 def _project_to_sphere(point: np.ndarray, radius: float) -> np.ndarray:
-    """Project a point onto the sphere of given radius."""
-    return _normalize_vec3(point) * radius
+    """Project a point onto the sphere of given radius.
+
+    The ``+ 0.0`` eliminates IEEE 754 negative-zero values so that
+    shared boundary vertices from adjacent tiles produce bit-identical
+    float32 positions.  Without this the GPU rasteriser can leave
+    1-pixel gaps at tile seams.
+    """
+    return _normalize_vec3(point) * radius + 0.0
 
 
 def subdivide_tile_mesh(
@@ -914,7 +920,14 @@ def subdivide_tile_mesh(
     pos_hash = {}   # rounded position tuple → new_index
 
     for old_idx, (pos, uv, vc) in enumerate(all_verts):
-        key = (round(pos[0], 7), round(pos[1], 7), round(pos[2], 7))
+        # Normalize near-zero components to +0.0 to avoid -0.0 vs +0.0
+        # mismatches which can cause rasterisation edge ownership
+        # differences on some GPUs.  Also clamp tiny noise to exact
+        # zero before rounding.
+        px0 = 0.0 if abs(pos[0]) < 1e-12 else pos[0]
+        px1 = 0.0 if abs(pos[1]) < 1e-12 else pos[1]
+        px2 = 0.0 if abs(pos[2]) < 1e-12 else pos[2]
+        key = (round(px0, 7), round(px1, 7), round(px2, 7))
         if key in pos_hash:
             final_map[old_idx] = pos_hash[key]
         else:
@@ -2152,6 +2165,7 @@ def render_globe_v2(
     *,
     radius: float = 1.0,
     subdivisions: int = 3,
+    uv_inset_px: float = 1.5,
     width: int = 900,
     height: int = 700,
     title: str = "Polygrid Globe v2",
@@ -2177,6 +2191,9 @@ def render_globe_v2(
     radius : float
     subdivisions : int
         Per-triangle subdivision level (3 = good quality, 5 = high).
+    uv_inset_px : float
+        Inset UV polygon by this many atlas pixels to prevent bilinear
+        texture bleeding at tile edges.  Default 0.5.
     width, height : int
     title : str
     flood_fill : bool
@@ -2218,12 +2235,19 @@ def render_globe_v2(
     frequency = meta["frequency"]
 
     # ── Build batched mesh ──────────────────────────────────────────
+    # Read atlas dimensions for UV inset calculation
+    atlas_img_check = Image.open(str(atlas_path))
+    atlas_size = atlas_img_check.size[0]  # square atlas
+    atlas_img_check.close()
+
     print(f"  Building subdivided globe mesh (subdivisions={subdivisions})...")
     vertex_data, index_data = build_batched_globe_mesh(
         frequency, uv_layout,
         tile_colour_map=tile_colour_map,
         radius=radius,
         subdivisions=subdivisions,
+        uv_inset_px=uv_inset_px,
+        atlas_size=atlas_size,
     )
     n_verts = len(vertex_data)
     n_tris = len(index_data)

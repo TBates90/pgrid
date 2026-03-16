@@ -650,19 +650,24 @@ Remaining visible seams after these fixes are genuine terrain variation.
 **Remaining visual issues (cosmetic, not blocking):**
 - Pentagon tiles show slightly higher edge discontinuity than hex tiles
   (mean 6.5 vs 4.6 RGB edge_diff) — inherent to 5-sided warping geometry
-- Pentagon zigzag bias (Issue 2) still present — pentagon overrides
-  (smoothing, scaling) remain disabled in `build_polygon_cut_atlas`
+- Pentagon zigzag bias (Issue 2) still present — `_smooth_pentagon_corners()`
+  is defined but not yet wired into `build_polygon_cut_atlas`
 - Pentagon quad-range (brightness imbalance across quadrants) slightly
   higher than hex (11.5 vs 10.2) — again inherent to 5→4 sector mapping
 
-**Dead/unused code to clean up:**
-- `match_grid_corners_to_uv()` — only used by debug/diag scripts, not
-  by the atlas pipeline (which uses `compute_uv_to_polygrid_offset`)
-- `_equalise_sector_ratios()` — only used by `debug_pipeline.py`
-- `_smooth_pentagon_corners()` — defined but never called (commented out)
-- `_scale_corners_from_centroid()` — only used by `debug_pipeline.py`
+**Live production code (used by `build_polygon_cut_atlas`):**
+- `match_grid_corners_to_uv()` — angular alignment of grid→UV corners
+- `_equalise_sector_ratios()` — reshapes grid corners so every piecewise-
+  warp sector is conformal (corrects Tutte rotational offset + irregular
+  UV spacing)
+- `_scale_corners_from_centroid()` — 2 % outward expansion for pentagons
+  (`_PENTAGON_GRID_SCALE`)
+
+**Unused helpers to consider pruning:**
+- `_smooth_pentagon_corners()` — defined but never called (reserved for
+  Issue 2 pentagon zigzag fix)
 - `_rotate_corners()` — defined but never called anywhere
-- `_PENTAGON_GRID_SCALE` — only used by `debug_pipeline.py`
+- `_compute_bulk_rotation()` — diagnostic helper, not used in production
 - Numerous old `diag_*.py` scripts in `scripts/` that may be stale
 
 > **Note:** Issue 1 was initially thought to be a rotation mismatch
