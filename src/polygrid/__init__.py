@@ -191,7 +191,6 @@ try:
         decode_rgb_to_normal,
         build_normal_map_atlas,
         get_pbr_shader_sources,
-        get_v2_shader_sources,
         classify_water_tiles,
         compute_water_depth,
         DEFAULT_WATER_LEVEL,
@@ -630,6 +629,7 @@ __all__ = [
     # Globe export
     "export_globe_payload",
     "export_globe_json",
+    "validate_globe_payload",
     # Globe renderer (optional — requires models library)
     "build_coloured_globe_mesh",
     "build_coloured_globe_mesh_from_export",
@@ -655,7 +655,6 @@ __all__ = [
     "decode_rgb_to_normal",
     "build_normal_map_atlas",
     "get_pbr_shader_sources",
-    "get_v2_shader_sources",
     # Detail grids
     "build_detail_grid",
     "detail_face_count",

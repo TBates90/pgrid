@@ -15,10 +15,12 @@ Pipeline overview
 3. Match grid corners → UV corners via angular alignment (handles
    both rotation and reflection between the two orderings).
 4. Optionally equalise piecewise-warp sector ratios for irregular
-   hex tiles adjacent to pentagons.
+   hex tiles adjacent to pentagons (``equalise_sectors``).
 5. Compute a piecewise-linear (triangle-fan) warp that maps each
    pixel of the output slot back to the stitched source image.
 6. Pack all warped tiles into a texture atlas with gutter padding.
+7. Optionally blend boundary pixels along shared Goldberg edges so
+   adjacent atlas tiles match exactly at the seam (``stitch_seams``).
 
 Key functions
 -------------
@@ -26,6 +28,7 @@ Key functions
 - :func:`match_grid_corners_to_uv`     — angular alignment grid↔UV
 - :func:`compute_polygon_corners_px`   — grid corners → pixel coords
 - :func:`warp_tile_to_uv`             — piecewise-linear image warp
+- :func:`_stitch_atlas_seams`          — seam enforcement post-pass
 - :func:`build_polygon_cut_atlas`      — end-to-end atlas builder
 """
 
@@ -1497,6 +1500,15 @@ def warp_tile_to_uv(
         return Image.fromarray(out_arr, "RGB")
 
     # ── Fallback: single-affine warp (legacy) ──────────────────
+    # The piecewise warp above is the production path.  If we reach
+    # here, it means grid_corners / uv_corners were not provided.
+    import warnings
+    warnings.warn(
+        "warp_tile_to_uv: falling back to single-affine warp — "
+        "pass grid_corners and uv_corners for piecewise accuracy",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     x_min, x_max = xlim
     y_min, y_max = ylim
     x_span = x_max - x_min
@@ -1630,6 +1642,168 @@ def fill_sentinel_pixels(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 21B.1 — Atlas seam enforcement post-pass
+# ═══════════════════════════════════════════════════════════════════
+
+def _stitch_atlas_seams(
+    atlas: "Image.Image",
+    uv_layout: Dict[str, Tuple[float, float, float, float]],
+    globe_grid: PolyGrid,
+    face_ids: List[str],
+    *,
+    tile_size: int = 256,
+    gutter: int = 4,
+    stitch_width: int = 2,
+) -> "Image.Image":
+    """Average boundary pixels along shared edges in the packed atlas.
+
+    For every pair of adjacent tiles that share a Goldberg edge, this
+    function rasterises a narrow band of pixels along that edge in
+    **both** atlas slots and writes the average to both.  This removes
+    the 1–2 px colour discontinuity that remains after per-tile
+    warping, because each tile independently sampled its edge pixels
+    from slightly different source positions.
+
+    The implementation mirrors :func:`uv_texture._stitch_tile_edges`
+    but operates in atlas pixel space rather than per-tile image space.
+
+    Parameters
+    ----------
+    atlas : PIL.Image.Image
+        The packed texture atlas — modified in-place and returned.
+    uv_layout : dict
+        ``{face_id: (u_min, v_min, u_max, v_max)}`` as returned by
+        :func:`build_polygon_cut_atlas`.
+    globe_grid : PolyGrid
+    face_ids : list of str
+    tile_size : int
+    gutter : int
+    stitch_width : int
+        Half-width (in pixels) of the blend band on each side of the
+        shared edge.  Default 2 — enough to hide sub-pixel warp
+        misalignment without blurring detail.
+
+    Returns
+    -------
+    PIL.Image.Image
+        The atlas with seams blended.
+    """
+    from PIL import Image as _PILImage
+
+    try:
+        from .uv_texture import _find_shared_edges, get_tile_uv_vertices
+    except ImportError:
+        return atlas
+
+    shared_edges = _find_shared_edges(globe_grid, face_ids)
+    if not shared_edges:
+        return atlas
+
+    atlas_w, atlas_h = atlas.size
+    arr = np.array(atlas.convert("RGB"), dtype=np.float64)
+
+    for fid_a, fid_b, shared_verts in shared_edges:
+        if fid_a not in uv_layout or fid_b not in uv_layout:
+            continue
+
+        # UV corners for the shared edge (in tile-local [0,1] UV space)
+        uv_verts_a = get_tile_uv_vertices(globe_grid, fid_a)
+        uv_verts_b = get_tile_uv_vertices(globe_grid, fid_b)
+
+        (ia0, ib0), (ia1, ib1) = shared_verts
+        uv_a0 = np.array(uv_verts_a[ia0], dtype=np.float64)
+        uv_a1 = np.array(uv_verts_a[ia1], dtype=np.float64)
+        uv_b0 = np.array(uv_verts_b[ib0], dtype=np.float64)
+        uv_b1 = np.array(uv_verts_b[ib1], dtype=np.float64)
+
+        # Atlas slot origins (top-left pixel of each slot)
+        u_min_a, v_min_a, u_max_a, v_max_a = uv_layout[fid_a]
+        u_min_b, v_min_b, u_max_b, v_max_b = uv_layout[fid_b]
+
+        # Slot pixel origin = top-left corner of inner tile region
+        # (uv_layout u_min/v_max map to the inner tile, gutter sits outside)
+        ox_a = round(u_min_a * atlas_w) - gutter
+        oy_a = round((1.0 - v_max_a) * atlas_h) - gutter
+        ox_b = round(u_min_b * atlas_w) - gutter
+        oy_b = round((1.0 - v_max_b) * atlas_h) - gutter
+
+        # Perpendicular direction (inward-pointing) for the blend band
+        def _inward_perp(uv0, uv1, all_uv):
+            edge = uv1 - uv0
+            perp = np.array([-edge[1], edge[0]], dtype=np.float64)
+            n = np.linalg.norm(perp)
+            if n > 1e-12:
+                perp /= n
+            centroid = np.mean(all_uv, axis=0)
+            mid = (uv0 + uv1) * 0.5
+            if np.dot(perp, centroid - mid) < 0:
+                perp = -perp
+            return perp
+
+        perp_a = _inward_perp(uv_a0, uv_a1,
+                              np.array(uv_verts_a, dtype=np.float64))
+        perp_b = _inward_perp(uv_b0, uv_b1,
+                              np.array(uv_verts_b, dtype=np.float64))
+
+        # Rasterise sample points along the shared edge
+        n_along = max(tile_size * 4, 256)
+        t_vals = np.linspace(0.0, 1.0, n_along)
+        w_vals = np.arange(-stitch_width, stitch_width + 1, dtype=np.float64)
+        px_uv = 1.0 / tile_size  # one pixel in UV space
+
+        # UV positions along the edge: (n_along, 2)
+        base_a = (1.0 - t_vals[:, None]) * uv_a0 + t_vals[:, None] * uv_a1
+        base_b = (1.0 - t_vals[:, None]) * uv_b0 + t_vals[:, None] * uv_b1
+
+        # Add perpendicular offsets: (n_along, n_w, 2)
+        off_a = w_vals[None, :, None] * px_uv * perp_a[None, None, :]
+        off_b = w_vals[None, :, None] * px_uv * perp_b[None, None, :]
+        uv_a_all = base_a[:, None, :] + off_a
+        uv_b_all = base_b[:, None, :] + off_b
+
+        # UV → atlas pixel coordinates
+        # uv_polygon_px formula: px_x = gutter + u * tile_size
+        #                        px_y = gutter + (1 - v) * tile_size
+        # Then offset by slot origin in the atlas.
+        ax = np.round(ox_a + gutter + uv_a_all[:, :, 0] * tile_size).astype(np.int32)
+        ay = np.round(oy_a + gutter + (1.0 - uv_a_all[:, :, 1]) * tile_size).astype(np.int32)
+        bx = np.round(ox_b + gutter + uv_b_all[:, :, 0] * tile_size).astype(np.int32)
+        by = np.round(oy_b + gutter + (1.0 - uv_b_all[:, :, 1]) * tile_size).astype(np.int32)
+
+        # Validity mask (must be within atlas bounds)
+        valid = (
+            (ax >= 0) & (ax < atlas_w) & (ay >= 0) & (ay < atlas_h) &
+            (bx >= 0) & (bx < atlas_w) & (by >= 0) & (by < atlas_h)
+        )
+
+        v_idx = np.where(valid)
+        if len(v_idx[0]) == 0:
+            continue
+
+        ixa = ax[v_idx]
+        iya = ay[v_idx]
+        ixb = bx[v_idx]
+        iyb = by[v_idx]
+
+        # De-duplicate pixel pairs
+        pairs = np.column_stack([iya, ixa, iyb, ixb])
+        _, unique_idx = np.unique(pairs, axis=0, return_index=True)
+        ixa = ixa[unique_idx]
+        iya = iya[unique_idx]
+        ixb = ixb[unique_idx]
+        iyb = iyb[unique_idx]
+
+        # Average and write back
+        ca = arr[iya, ixa]  # (N, 3)
+        cb = arr[iyb, ixb]
+        avg = (ca + cb) * 0.5
+        arr[iya, ixa] = avg
+        arr[iyb, ixb] = avg
+
+    return _PILImage.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 21C — Atlas assembly from polygon-cut tiles
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1647,6 +1821,9 @@ def build_polygon_cut_atlas(
     debug_labels: bool = False,
     output_dir: Optional[Path] = None,
     pentagon_rotation_steps: int = 0,
+    stitch_seams: bool = True,
+    stitch_width: int = 2,
+    equalise_sectors: bool = False,
 ) -> Tuple["Image.Image", Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas from stitched tile images, UV-aligned.
 
@@ -1656,6 +1833,8 @@ def build_polygon_cut_atlas(
     3. Computes the affine warp from grid space → atlas slot pixels.
     4. Warps the stitched image so the polygon lands in UV-correct
        orientation within the slot.
+    5. (Optional) Blends boundary pixels along shared Goldberg edges
+       so adjacent tiles match exactly at the seam.
 
     The warped image fills the **full slot** (including gutter), with
     neighbour terrain from the stitched image naturally providing
@@ -1691,6 +1870,18 @@ def build_polygon_cut_atlas(
         Extra rotation steps applied to pentagon tiles only.
         Positive = clockwise.  Use to correct any residual
         pentagon orientation mismatch (default 0).
+    stitch_seams : bool
+        If True (default), run a post-pass that averages pixels along
+        shared Goldberg edges so adjacent atlas tiles match exactly.
+    stitch_width : int
+        Half-width of the blend band in pixels (default 2).
+    equalise_sectors : bool
+        If True, apply ``_equalise_sector_ratios`` to irregular hex
+        tiles (those adjacent to pentagons) so the piecewise-warp
+        sectors become conformal.  This reduces anisotropic distortion
+        but shifts warp sampling slightly — the seam post-pass
+        (``stitch_seams``) compensates for any resulting boundary
+        mismatch.  Default False (conservative).
 
     Returns
     -------
@@ -1748,17 +1939,27 @@ def build_polygon_cut_atlas(
         )
         uv_corners = uv_corners_raw
 
-        # Use the raw matched corners directly.  _equalise_sector_ratios
-        # moves corners away from the actual polygon boundary in the
-        # source image, which causes the warp to sample content from
-        # the wrong side of each edge — creating visible seams on the
-        # globe.  Skipping it trades minor piecewise-affine anisotropy
-        # for seamless tile boundaries.
+        # ── Corner adjustment strategy ───────────────────────────
+        # Pentagon tiles: slight outward scale to avoid boundary
+        # cropping in the warp.
+        # Irregular hex tiles (adjacent to a pentagon): optionally
+        # apply _equalise_sector_ratios so the piecewise-warp sectors
+        # become conformal — the seam post-pass compensates for any
+        # boundary shift this introduces.
+        # Regular hex tiles: use matched corners directly.
         grid_corners = grid_corners_matched
         src_centroid = None
         if is_pentagon:
             grid_corners = _scale_corners_from_centroid(
                 grid_corners, _PENTAGON_GRID_SCALE,
+            )
+        elif equalise_sectors:
+            # Only worthwhile for irregular hexes (those adjacent to
+            # a pentagon).  Regular hexes have uniform sector geometry
+            # and _equalise_sector_ratios is a no-op for them.
+            grid_corners, src_centroid = _equalise_sector_ratios(
+                grid_corners_matched, uv_corners,
+                tile_size=tile_size, gutter=gutter,
             )
 
         # Compute view limits (same as the renderer used)
@@ -1833,5 +2034,13 @@ def build_polygon_cut_atlas(
         v_min = 1.0 - (inner_y + tile_size) / atlas_h
         v_max = 1.0 - inner_y / atlas_h
         uv_layout[fid] = (u_min, v_min, u_max, v_max)
+
+    # ── Seam enforcement post-pass ───────────────────────────────
+    if stitch_seams:
+        atlas = _stitch_atlas_seams(
+            atlas, uv_layout, globe_grid, face_ids,
+            tile_size=tile_size, gutter=gutter,
+            stitch_width=stitch_width,
+        )
 
     return atlas, uv_layout

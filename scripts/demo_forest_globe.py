@@ -226,8 +226,8 @@ def main():
         print("Launching interactive 3D viewer...")
         from polygrid.globe_export import export_globe_payload
         payload = export_globe_payload(grid, store, ramp="satellite")
-        from polygrid.globe_renderer import render_textured_globe_opengl
-        render_textured_globe_opengl(
+        from polygrid.globe_renderer_v2 import render_globe_v2
+        render_globe_v2(
             payload, atlas_path, uv_layout,
             title=f"Forest Globe — freq={args.frequency}, "
                   f"rings={args.detail_rings}, {args.forest}",

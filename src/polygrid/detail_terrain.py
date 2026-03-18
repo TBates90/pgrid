@@ -207,6 +207,16 @@ def _compute_tutte_edge_angles(
         return edge_angles
 
     # ----- legacy fallback: detect corners by clustering -----
+    # The Goldberg pipeline always supplies corner_vertex_ids via
+    # grid metadata.  This path is only hit by standalone grids
+    # built outside the Goldberg pipeline.
+    import warnings
+    warnings.warn(
+        "_compute_tutte_edge_angles: falling back to geometric corner "
+        "detection — pass corner_vertex_ids for reliable results",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     # Identify boundary vertices
     boundary_verts: Set[str] = set()
     for edge in detail_grid.edges.values():
@@ -521,7 +531,16 @@ def generate_detail_terrain_bounded(
         if edge_targets:
             fallback_target = sum(edge_targets.values()) / len(edge_targets)
     elif neighbor_elevations:
-        # No edge mapping — fall back to uniform mean (legacy behaviour)
+        # No edge mapping — fall back to uniform mean (legacy behaviour).
+        # The Goldberg pipeline always provides edge mappings; this path
+        # is only hit by standalone grids.
+        import warnings
+        warnings.warn(
+            "generate_detail_terrain_bounded: no edge mapping available, "
+            "falling back to uniform mean elevation target",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         fallback_target = sum(neighbor_elevations.values()) / len(neighbor_elevations)
 
     # Assign boundary sub-faces to polygon edges

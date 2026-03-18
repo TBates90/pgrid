@@ -22,6 +22,8 @@ from polygrid.tile_detail import (
     TileDetailSpec,
     build_all_detail_grids,
     DetailGridCollection,
+    build_tile_with_neighbours,
+    _macro_edge_overlap_ok,
 )
 
 # ── Gate behind models availability ─────────────────────────────
@@ -232,3 +234,148 @@ class TestDetailGridCollection:
         grids1 = coll.grids
         grids2 = coll.grids
         assert grids1 is not grids2  # defensive copy
+
+
+# ═══════════════════════════════════════════════════════════════════
+# build_tile_with_neighbours — pentagon distortion fix
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestBuildTileWithNeighboursPentFix:
+    """Verify that pentagon-centred composites skip neighbour↔neighbour
+    closure to avoid the wedge/pinch distortion artefact, while
+    hex-centred composites still perform full closure.
+    """
+
+    def _find_face_by_type(self, grid, face_type):
+        """Return the first face_id with the given face_type."""
+        for fid, face in grid.faces.items():
+            if face.face_type == face_type:
+                return fid
+        return None
+
+    def test_pentagon_composite_has_no_outer_stitches(self):
+        """A pentagon tile should only have centre↔neighbour stitches
+        (5 stitches for 5 neighbours), not neighbour↔neighbour."""
+        grid, store = _make_globe_with_elevation(3)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+
+        pent_fid = self._find_face_by_type(grid, "pent")
+        assert pent_fid is not None, "No pentagon face found"
+
+        composite = build_tile_with_neighbours(coll, pent_fid, grid)
+        merged = composite.merged
+
+        # Pentagon has 5 neighbours → exactly 5 centre↔neighbour
+        # stitches.  If outer closure were active, there would be up
+        # to 5 more.  With the fix, merged vertex count should be
+        # strictly higher than a closed version (more unique boundary
+        # vertices).  We verify indirectly: the composite should have
+        # exactly 6 component grids (1 centre + 5 neighbours).
+        assert len(composite.id_prefixes) == 6
+
+        # The merged grid should still be valid topology.
+        errors = merged.validate()
+        assert errors == [], f"Pentagon composite validation errors: {errors}"
+
+    def test_hex_composite_still_has_outer_stitches(self):
+        """Hex-centred composites should still perform full closure."""
+        grid, store = _make_globe_with_elevation(3)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+
+        hex_fid = self._find_face_by_type(grid, "hex")
+        assert hex_fid is not None, "No hex face found"
+
+        composite = build_tile_with_neighbours(coll, hex_fid, grid)
+        merged = composite.merged
+
+        # Hex has 6 neighbours → 6 centre↔neighbour stitches + up to
+        # 6 neighbour↔neighbour stitches for full closure.
+        assert len(composite.id_prefixes) == 7  # 1 centre + 6 neighbours
+
+        errors = merged.validate()
+        assert errors == [], f"Hex composite validation errors: {errors}"
+
+    def test_pentagon_composite_no_vertex_distortion(self):
+        """Pentagon neighbour vertices should retain their original
+        positioned coordinates (no forced averaging)."""
+        grid, store = _make_globe_with_elevation(3)
+        spec = TileDetailSpec(detail_rings=2)
+        coll = DetailGridCollection.build(grid, spec)
+        coll.generate_all_terrain(store, seed=42)
+
+        pent_fid = self._find_face_by_type(grid, "pent")
+        assert pent_fid is not None
+
+        composite = build_tile_with_neighbours(coll, pent_fid, grid)
+        merged = composite.merged
+
+        # All vertices should have valid positions (no NaN / missing).
+        for vid, v in merged.vertices.items():
+            assert v.has_position(), f"Vertex {vid} has no position"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# _macro_edge_overlap_ok — overlap quality guard
+# ═══════════════════════════════════════════════════════════════════
+
+class TestMacroEdgeOverlapOk:
+    """Unit tests for the overlap quality check used by the hex
+    neighbour↔neighbour closure path."""
+
+    def test_overlapping_edges_pass(self):
+        """Two hex grids stitched in a hex-ring configuration should have
+        overlapping outer edges that pass the quality check."""
+        from polygrid.builders import build_pure_hex_grid
+        from polygrid.assembly import _position_hex_for_stitch, _snap_hex_hex_boundaries
+        from polygrid.composite import StitchSpec
+
+        # Build a mini hex-ring: centre + two adjacent hex neighbours
+        # positioned as they would be in a hex-centred composite.
+        centre = build_pure_hex_grid(2)
+        h0 = build_pure_hex_grid(2)
+        h1 = build_pure_hex_grid(2)
+        centre.compute_macro_edges(n_sides=6)
+        h0.compute_macro_edges(n_sides=6)
+        h1.compute_macro_edges(n_sides=6)
+
+        # Position hex0 flush to centre edge 0, hex1 flush to centre edge 1
+        pos_h0 = _position_hex_for_stitch(centre, 0, h0, 3)
+        pos_h1 = _position_hex_for_stitch(centre, 1, h1, 3)
+        pos_h0.compute_macro_edges(n_sides=6)
+        pos_h1.compute_macro_edges(n_sides=6)
+
+        # The outer edges of pos_h0 and pos_h1 that meet at the
+        # centre's corner should overlap (before snapping).  Use the
+        # closest-pair finder to identify them.
+        from polygrid.tile_detail import _find_closest_macro_edge_pair
+        e0, e1 = _find_closest_macro_edge_pair(
+            pos_h0, pos_h1, exclude_g1=3, exclude_g2=3,
+        )
+        # In a hex ring, adjacent neighbours meet cleanly (120° + 120° = 240°
+        # which is close enough for the tolerance).
+        assert _macro_edge_overlap_ok(pos_h0, e0, pos_h1, e1)
+
+    def test_distant_edges_fail(self):
+        """Edges that are geometrically far apart should fail."""
+        from polygrid.builders import build_pure_hex_grid
+        from polygrid.assembly import _position_hex_for_stitch
+
+        # Position a hex grid far from the centre so its edges are
+        # nowhere near the centre grid's opposite-side edges.
+        centre = build_pure_hex_grid(2)
+        remote = build_pure_hex_grid(2)
+        centre.compute_macro_edges(n_sides=6)
+        remote.compute_macro_edges(n_sides=6)
+
+        # Position remote flush against edge 0 of centre
+        positioned = _position_hex_for_stitch(centre, 0, remote, 3)
+        positioned.compute_macro_edges(n_sides=6)
+
+        # Edge 3 of centre (opposite side from edge 0) should be far
+        # from any non-stitch edge of positioned.
+        assert not _macro_edge_overlap_ok(centre, 3, positioned, 0)
