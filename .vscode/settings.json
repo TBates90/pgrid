@@ -1,3 +1,17 @@
 {
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [
+        {
+            "path": "",
+            "envManager": "ms-python.python:venv",
+            "packageManager": "ms-python.python:pip"
+        }
+    ],
+    "python.defaultInterpreterPath": "/home/toms/git_repos/pgrid/.venv/bin/python",
+    "jupyter.kernels.filter": [],
+    "jupyter.kernels.trusted": [
+        "/home/toms/.local/share/jupyter/kernels/pgrid-venv/kernel.json",
+        "/home/toms/.local/share/jupyter/kernels/pgrid/kernel.json",
+        "/home/toms/git_repos/pgrid/.venv/share/jupyter/kernels/python3/kernel.json"
+    ],
+    "jupyter.notebookFileRoot": "/home/toms/git_repos/pgrid"
 }

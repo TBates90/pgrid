@@ -462,8 +462,8 @@ def build_feature_atlas(
 
         # Fill gutter
         if gutter > 0:
-            from .texture_pipeline import _fill_gutter
-            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+            from .atlas_utils import fill_gutter
+            fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
 
         inner_x = slot_x + gutter
         inner_y = slot_y + gutter

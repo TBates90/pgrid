@@ -150,12 +150,16 @@ def compute_neighbor_edge_mapping(
 def _compute_tutte_edge_angles(
     detail_grid: PolyGrid,
     n_sides: int,
+    *,
+    corner_vertex_ids: Optional[List[str]] = None,
 ) -> List[float]:
     """Compute the midpoint angle (radians) of each polygon edge in Tutte space.
 
-    The Tutte embedding places boundary vertices at regular angular
-    intervals forming a regular *n_sides*-gon.  This function finds
-    the polygon corners and returns the angle of each edge midpoint.
+    When *corner_vertex_ids* are supplied (from
+    :func:`build_goldberg_grid` metadata) the corners are taken
+    directly from those vertices, guaranteeing the same edge
+    numbering as :meth:`PolyGrid.compute_macro_edges`.  Otherwise
+    corners are detected by geometric clustering (legacy path).
 
     Parameters
     ----------
@@ -163,6 +167,10 @@ def _compute_tutte_edge_angles(
         A detail grid (hex or pent centred).
     n_sides : int
         Number of polygon sides (5 or 6).
+    corner_vertex_ids : list of str, optional
+        Ordered corner vertex ids.  When given, edge *k* connects
+        ``corner_vertex_ids[k]`` to ``corner_vertex_ids[(k+1) % N]``,
+        matching macro-edge numbering.
 
     Returns
     -------
@@ -173,6 +181,32 @@ def _compute_tutte_edge_angles(
     gc = grid_center(detail_grid.vertices)
     gcx, gcy = gc
 
+    # ----- authoritative path: use known corner vertices -----
+    if corner_vertex_ids is not None and len(corner_vertex_ids) == n_sides:
+        # Compute macro edges so the numbering matches
+        # ``PolyGrid.compute_macro_edges``.
+        macro_edges = detail_grid.compute_macro_edges(
+            n_sides, corner_ids=list(corner_vertex_ids),
+        )
+        corner_angles: List[float] = []
+        for me in macro_edges:
+            v = detail_grid.vertices[me.corner_start]
+            corner_angles.append(math.atan2(v.y - gcy, v.x - gcx))
+
+        edge_angles: List[float] = []
+        for k in range(n_sides):
+            a1 = corner_angles[k]
+            a2 = corner_angles[(k + 1) % n_sides]
+            # Shortest arc midpoint
+            diff = a2 - a1
+            if diff > math.pi:
+                diff -= 2 * math.pi
+            elif diff < -math.pi:
+                diff += 2 * math.pi
+            edge_angles.append(a1 + diff / 2.0)
+        return edge_angles
+
+    # ----- legacy fallback: detect corners by clustering -----
     # Identify boundary vertices
     boundary_verts: Set[str] = set()
     for edge in detail_grid.edges.values():
@@ -228,7 +262,7 @@ def _compute_tutte_edge_angles(
         corner_angles.sort(reverse=True)
 
     # Edge k midpoint = average of corner k and corner (k+1) % N on the circle
-    edge_angles: List[float] = []
+    edge_angles = []
     for k in range(n_sides):
         a1 = corner_angles[k]
         a2 = corner_angles[(k + 1) % n_sides]
@@ -495,7 +529,10 @@ def generate_detail_terrain_bounded(
         fid for fid, cls in classification.items() if cls != "interior"
     }
     if edge_targets:
-        edge_angles = _compute_tutte_edge_angles(detail_grid, n_sides)
+        corner_ids = detail_grid.metadata.get("corner_vertex_ids")
+        edge_angles = _compute_tutte_edge_angles(
+            detail_grid, n_sides, corner_vertex_ids=corner_ids,
+        )
         face_edge_map = _assign_boundary_faces_to_edges(
             detail_grid, boundary_band, edge_angles, n_sides,
         )
@@ -632,12 +669,35 @@ def generate_all_detail_terrain(
         globe_grid, globe_store, elevation_field=elevation_field,
     )
 
-    # Pre-compute neighbour→edge mappings for all faces
+    # Pre-compute neighbour→edge mappings for all faces.
+    # ``compute_neighbor_edge_mapping`` returns PG-vertex-order edge
+    # indices.  When the detail grid has ``corner_vertex_ids`` the
+    # terrain generator uses macro-edge numbering (via
+    # ``_compute_tutte_edge_angles`` with those corners), so we must
+    # translate PG edge indices → macro-edge indices.
+    from .tile_uv_align import compute_pg_to_macro_edge_map
+
     edge_mappings: Dict[str, Dict[str, int]] = {}
     for face_id in collection.grids:
-        edge_mappings[face_id] = compute_neighbor_edge_mapping(
-            globe_grid, face_id,
-        )
+        pg_map = compute_neighbor_edge_mapping(globe_grid, face_id)
+        detail_grid = collection.grids[face_id]
+        corner_ids = detail_grid.metadata.get("corner_vertex_ids")
+        if corner_ids:
+            # Ensure macro edges are computed so the conversion can read them
+            n_sides = len(corner_ids)
+            if not detail_grid.macro_edges:
+                detail_grid.compute_macro_edges(n_sides, corner_ids=corner_ids)
+            # Translate PG edge → macro edge so the indices match
+            # ``_compute_tutte_edge_angles(corner_vertex_ids=...)``
+            pg2macro = compute_pg_to_macro_edge_map(
+                globe_grid, face_id, detail_grid,
+            )
+            edge_mappings[face_id] = {
+                nid: pg2macro.get(pg_idx, pg_idx)
+                for nid, pg_idx in pg_map.items()
+            }
+        else:
+            edge_mappings[face_id] = pg_map
 
     for face_id, detail_grid in collection.grids.items():
         parent_elev = globe_store.get(face_id, elevation_field)

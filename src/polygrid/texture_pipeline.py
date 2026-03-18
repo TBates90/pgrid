@@ -18,6 +18,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from .atlas_utils import fill_gutter, compute_atlas_layout
 from .detail_render import BiomeConfig, render_detail_texture_enhanced
 from .detail_terrain import generate_all_detail_terrain
 from .tile_detail import TileDetailSpec, DetailGridCollection
@@ -106,15 +107,11 @@ def build_detail_atlas(
         tile_paths[fid] = path
 
     # Compute atlas layout — each slot is tile_size + 2*gutter
-    if columns <= 0:
-        columns = max(1, math.isqrt(n))
-        if columns * columns < n:
-            columns += 1
-    rows = math.ceil(n / columns)
+    columns, rows, atlas_w, atlas_h = compute_atlas_layout(
+        n, tile_size, gutter, columns=columns,
+    )
 
     slot_size = tile_size + 2 * gutter
-    atlas_w = columns * slot_size
-    atlas_h = rows * slot_size
     atlas = Image.new("RGB", (atlas_w, atlas_h), (128, 128, 128))
 
     uv_layout: Dict[str, Tuple[float, float, float, float]] = {}
@@ -134,7 +131,7 @@ def build_detail_atlas(
 
         # Fill gutter by clamping edge pixels outward
         if gutter > 0:
-            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+            fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
 
         # UV coordinates map to the inner (non-gutter) tile region
         inner_x = slot_x + gutter
@@ -150,44 +147,6 @@ def build_detail_atlas(
     atlas.save(str(atlas_path))
 
     return atlas_path, uv_layout
-
-
-def _fill_gutter(atlas, slot_x: int, slot_y: int,
-                 tile_size: int, gutter: int) -> None:
-    """Fill gutter pixels around a tile slot by clamping edge pixels.
-
-    Copies the outermost pixel rows/columns of the tile outward into
-    the gutter region, so bilinear sampling at tile edges sees smooth
-    colour instead of adjacent tile data or black.
-    """
-    from PIL import Image
-
-    inner_x = slot_x + gutter
-    inner_y = slot_y + gutter
-
-    # Top gutter — repeat top row
-    top_strip = atlas.crop((inner_x, inner_y, inner_x + tile_size, inner_y + 1))
-    for g in range(gutter):
-        atlas.paste(top_strip, (inner_x, slot_y + g))
-
-    # Bottom gutter — repeat bottom row
-    bot_y = inner_y + tile_size - 1
-    bot_strip = atlas.crop((inner_x, bot_y, inner_x + tile_size, bot_y + 1))
-    for g in range(gutter):
-        atlas.paste(bot_strip, (inner_x, inner_y + tile_size + g))
-
-    # Left gutter — repeat left column (full height including gutter rows)
-    full_top = slot_y
-    full_bot = slot_y + tile_size + 2 * gutter
-    left_strip = atlas.crop((inner_x, full_top, inner_x + 1, full_bot))
-    for g in range(gutter):
-        atlas.paste(left_strip, (slot_x + g, full_top))
-
-    # Right gutter — repeat right column (full height including gutter rows)
-    right_x = inner_x + tile_size - 1
-    right_strip = atlas.crop((right_x, full_top, right_x + 1, full_bot))
-    for g in range(gutter):
-        atlas.paste(right_strip, (inner_x + tile_size + g, full_top))
 
 
 # ═══════════════════════════════════════════════════════════════════

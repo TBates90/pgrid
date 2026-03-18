@@ -168,7 +168,7 @@ back to the piecewise UVTransform warp.
 
 Paste the rotated polygon-masked image into the atlas slot.  The
 transparent corners land in the gutter/background region.  Fill the
-gutter by clamping edge pixels outward (existing `_fill_gutter()`
+gutter by clamping edge pixels outward (`atlas_utils.fill_gutter()`),
 approach), but operating on the polygon edge rather than the square
 edge.
 

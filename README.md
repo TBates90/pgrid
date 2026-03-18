@@ -38,9 +38,9 @@ renderer.
 ### Step 1 — Generate tile textures
 
 ```bash
-python scripts/render_polygrids.py -f 3 --seed 42 -o exports/my_globe
+python scripts/render_polygrids.py -f 3 --seed 42 -o exports/f3
 ```
-
+    
 This produces an output directory containing:
 - `atlas.png` — the packed texture atlas
 - `uv_layout.json` — per-tile UV coordinates in the atlas
@@ -59,6 +59,7 @@ This produces an output directory containing:
 | `--seed` | `42` | Random seed for reproducible terrain |
 | `--tile-size` | `512` | Tile image size in pixels |
 | `-o`, `--output-dir` | `exports/polygrids/` | Output directory |
+| `--renderer` | `analytical` | Tile renderer backend: `analytical` (deterministic point-in-polygon fill, no anti-aliasing) or `matplotlib` (patch rasterisation with anti-aliasing) |
 | `--no-polygon-cut` | off | Disable polygon-cut atlas (plain tile PNGs only) |
 
 #### Debug flags
@@ -68,18 +69,59 @@ This produces an output directory containing:
 | `--debug-labels` | Draw tile-ID and per-edge neighbour labels on each tile |
 | `--polygon-mask` | Black-fill pixels outside the UV polygon (visualise polygon boundary) |
 | `--edges` | Show grid edges overlaid on terrain colouring |
+| `--outline-tiles` | Draw thin outlines on every sub-face within each polygrid (synonym for `--edges`) |
+| `--colour-debug` | Skip terrain generation; colour each polygrid tile with a unique hue and a centre→edge gradient. Useful for inspecting stitching topology without terrain noise. No `--seed` needed. |
 
 Example with debug overlays:
 
 ```bash
 python scripts/render_polygrids.py --debug-labels --polygon-mask \
-    -f 3 --seed 42 --tile-size 256 -o exports/debug_globe
+    -f 3 --seed 142 --tile-size 256 -o exports/debug_f3
 ```
+
+Example colour-debug (no terrain, just topology):
+
+```bash
+python scripts/render_polygrids.py --colour-debug --outline-tiles \
+    -f 3 --detail-rings 4 -o exports/colour_debug
+```
+
+### Debug pipeline visualiser
+
+For diagnosing rendering issues, the debug pipeline script traces the
+full rendering pipeline step-by-step and produces annotated diagnostic
+images at each stage:
+
+```bash
+python scripts/debug_pipeline.py -f 3 --detail-rings 4
+
+# Debug specific tiles only:
+python scripts/debug_pipeline.py --tiles t0 t5 t11
+```
+
+This produces images for each stage:
+
+| Stage | What it shows |
+|-------|---------------|
+| **1. Globe topology** | All faces on the polyhedron with IDs, pentagon markers |
+| **2. Detail grid** | Tutte embedding with boundary, macro-edge segments, detected corners with angles |
+| **3. Stitched composite** | Centre tile + neighbour aprons with the view-limits box overlaid |
+| **4. Corner matching** | Grid corners (macro-edge order) ↔ UV corners showing angular alignment |
+| **5. Sector equalisation** | Before/after grid corner adjustment with per-sector angle annotations |
+| **6. Warp sectors** | Triangle-fan decomposition in source + dest space with anisotropy values |
+| **7. Warped tile** | Final warped slot image with UV polygon boundary + gutter overlay |
+
+Output goes to `exports/debug_pipeline/` by default, with a subfolder
+per tile.
 
 ### Step 2 — View the 3D globe
 
 ```bash
-python scripts/render_globe_from_tiles.py exports/my_globe --v2
+python scripts/render_globe_from_tiles.py exports/f3 --v2
+```
+
+```bash
+python scripts/render_globe_from_tiles.py exports/colour_debug --v2
 ```
 
 This loads the pre-generated atlas and metadata from the export
@@ -178,6 +220,7 @@ src/polygrid/
     detail_terrain_3d.py   # 3D terrain detail with elevation
     detail_render.py       # Satellite-style detail textures
     detail_perf.py         # Parallel gen, fast render, caching
+    atlas_utils.py         # Shared atlas helpers (fill_gutter, layout calc)
     texture_pipeline.py    # Texture atlas + UV mapping
     uv_texture.py          # GoldbergTile UV extraction
     tile_uv_align.py       # Polygon-cut warp, atlas builder
@@ -224,6 +267,9 @@ The core layer has **zero rendering dependencies**. All algorithm work operates 
 
 ## Key concepts
 
+- **Goldberg polyhedron** — a sphere tiled by hexagons and exactly 12 pentagons. Created from an icosahedron by subdivision at a given *frequency*. Total tile count = `10f² + 2`.
+- **Polygrid** — a 2D detail grid for a single Goldberg tile. **Pentgrids** (5-sided) are used for pentagon tiles and **hexgrids** (6-sided) for hexagon tiles. Each consists of a central hexagon or pentagon surrounded by rings of hexagons, as close to regular as possible.
+- **Stitching / Aprons** — polygrids can be stitched together. This is primarily used to add *apron* visual data around each polygrid so that when it is rendered onto a Goldberg tile, the jagged hex outline of the polygrid connects seamlessly to adjacent tiles — like puzzle pieces slotting together.
 - **`PolyGrid`** — the central container. Vertices, edges, faces, macro-edges. Immutable value-object primitives.
 - **`MacroEdge`** — one side of the grid's outer polygon. Used for stitching.
 - **`CompositeGrid`** — multiple grids merged by stitching along macro-edges.

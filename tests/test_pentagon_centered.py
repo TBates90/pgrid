@@ -40,3 +40,47 @@ def test_global_optimizer_smoke():
 def test_metadata_has_sides():
     grid = build_pentagon_centered_grid(2, embed=False)
     assert grid.metadata.get("generator") == "goldberg"
+
+
+def test_metadata_has_corner_vertex_ids():
+    """build_goldberg_grid stores the 5 corner vertex IDs in metadata."""
+    grid = build_pentagon_centered_grid(2, embed=True)
+    corner_ids = grid.metadata.get("corner_vertex_ids")
+    assert corner_ids is not None
+    assert len(corner_ids) == 5
+    # All corner IDs must be actual vertices in the grid
+    for vid in corner_ids:
+        assert vid in grid.vertices, f"corner {vid} not in grid vertices"
+
+
+def test_corner_vertex_ids_at_boundary():
+    """Corner vertices should be among the outermost vertices."""
+    import numpy as np
+
+    grid = build_pentagon_centered_grid(3, embed=True)
+    corner_ids = grid.metadata["corner_vertex_ids"]
+
+    all_pos = []
+    for v in grid.vertices.values():
+        if v.has_position():
+            all_pos.append(np.array([v.x, v.y]))
+    arr = np.array(all_pos)
+    centroid = arr.mean(axis=0)
+    dists = np.linalg.norm(arr - centroid, axis=1)
+    max_dist = dists.max()
+
+    for vid in corner_ids:
+        v = grid.vertices[vid]
+        d = np.linalg.norm(np.array([v.x, v.y]) - centroid)
+        assert d > max_dist * 0.85, (
+            f"Corner {vid} at dist {d:.4f} is not near boundary "
+            f"(max_dist={max_dist:.4f})"
+        )
+
+
+def test_rings_zero_corner_vertex_ids():
+    """Rings=0 (single pentagon) should still have corner_vertex_ids."""
+    grid = build_pentagon_centered_grid(0, embed=True)
+    corner_ids = grid.metadata.get("corner_vertex_ids")
+    assert corner_ids is not None
+    assert len(corner_ids) == 5

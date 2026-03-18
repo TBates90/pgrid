@@ -271,7 +271,7 @@ def build_detail_atlas_fast(
         ``(atlas_path, uv_layout)``
     """
     from PIL import Image
-    from .texture_pipeline import _fill_gutter
+    from .atlas_utils import fill_gutter
 
     if biome is None:
         biome = BiomeConfig()
@@ -326,7 +326,7 @@ def build_detail_atlas_fast(
         atlas.paste(tile_img, (slot_x + gutter, slot_y + gutter))
 
         if gutter > 0:
-            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+            fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
 
         inner_x = slot_x + gutter
         inner_y = slot_y + gutter
@@ -371,7 +371,7 @@ def build_detail_atlas_fullslot(
         ``(atlas_path, uv_layout)``
     """
     from PIL import Image
-    from .texture_pipeline import _fill_gutter
+    from .atlas_utils import fill_gutter
     from .tile_texture import render_detail_texture_fullslot
 
     if biome is None:
@@ -429,7 +429,7 @@ def build_detail_atlas_fullslot(
         atlas.paste(tile_img, (slot_x + gutter, slot_y + gutter))
 
         if gutter > 0:
-            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+            fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
 
         inner_x = slot_x + gutter
         inner_y = slot_y + gutter

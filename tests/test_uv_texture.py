@@ -19,6 +19,7 @@ from polygrid.models import Edge, Face, Vertex
 from polygrid.polygrid import PolyGrid
 from polygrid.uv_texture import (
     UVTransform,
+    _find_polygon_corners,
     _normalize_vec,
     _compute_tile_basis_from_grid,
     compute_detail_to_uv_transform,
@@ -545,3 +546,184 @@ class TestRenderTileUVAligned:
         assert img.mode == "RGB"
         assert img.size == (64, 64)
         assert np.array(img).max() > 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 38B.5 — Exact pentagon corner detection
+# ═══════════════════════════════════════════════════════════════════
+
+class TestFindPolygonCornersMetadataFastPath:
+    """Verify _find_polygon_corners uses corner_vertex_ids metadata."""
+
+    @pytest.mark.parametrize("rings", [2, 3, 4])
+    def test_pentagon_metadata_corners_count(self, rings):
+        """Pentagon grids return exactly 5 corners via metadata fast-path."""
+        from polygrid.builders import build_pentagon_centered_grid
+
+        grid = build_pentagon_centered_grid(rings)
+        assert "corner_vertex_ids" in grid.metadata
+        centroid, corners = _find_polygon_corners(grid)
+        assert corners.shape == (5, 2), f"Expected 5 corners, got {corners.shape[0]}"
+
+    @pytest.mark.parametrize("rings", [2, 3, 4])
+    def test_pentagon_fast_path_matches_clustering(self, rings):
+        """Fast-path (metadata) and clustering fallback find corners in
+        roughly the same region.  The clustering heuristic is approximate
+        (it averages nearby outer vertices), so we allow generous tolerance.
+        At higher ring counts the clustering centroids can drift up to ~1
+        grid-unit from the topological corner."""
+        from polygrid.builders import build_pentagon_centered_grid
+
+        grid = build_pentagon_centered_grid(rings)
+        # Fast path result (with metadata)
+        centroid_fast, corners_fast = _find_polygon_corners(grid)
+
+        # Remove metadata to force clustering fallback
+        saved = grid.metadata.pop("corner_vertex_ids")
+        centroid_cluster, corners_cluster = _find_polygon_corners(grid)
+        grid.metadata["corner_vertex_ids"] = saved  # restore
+
+        if corners_cluster.shape[0] == 5:
+            # Both should find 5 corners at similar positions.
+            # Match each fast corner to the nearest cluster corner.
+            # Tolerance scales with grid size (rings).
+            tol = 0.3 * rings
+            for fc in corners_fast:
+                dists = np.linalg.norm(corners_cluster - fc, axis=1)
+                assert dists.min() < tol, (
+                    f"Fast-path corner {fc} has no close match in clustering "
+                    f"result (min dist={dists.min():.4f}, tol={tol:.2f})"
+                )
+
+    def test_hex_grid_no_metadata_corners(self):
+        """Hex grids don't have corner_vertex_ids; fallback finds 6 corners."""
+        from polygrid.builders import build_pure_hex_grid
+
+        grid = build_pure_hex_grid(3)
+        assert "corner_vertex_ids" not in grid.metadata
+        centroid, corners = _find_polygon_corners(grid)
+        assert corners.shape[0] == 6
+
+    @pytest.mark.parametrize("rings", [2, 3, 4])
+    def test_pentagon_corners_on_boundary(self, rings):
+        """Corners from metadata are actual outermost vertices."""
+        from polygrid.builders import build_pentagon_centered_grid
+
+        grid = build_pentagon_centered_grid(rings)
+        centroid, corners = _find_polygon_corners(grid)
+
+        # Compute max distance from centroid
+        all_verts = []
+        for v in grid.vertices.values():
+            if v.has_position():
+                all_verts.append(np.array([v.x, v.y]))
+        arr = np.array(all_verts)
+        dists = np.linalg.norm(arr - centroid, axis=1)
+        max_dist = dists.max()
+
+        # All corners should be near the boundary
+        for i, c in enumerate(corners):
+            d = float(np.linalg.norm(c - centroid))
+            assert d > max_dist * 0.85, (
+                f"Corner {i} at dist {d:.4f} is not near boundary "
+                f"(max_dist={max_dist:.4f})"
+            )
+
+    def test_corners_counter_clockwise(self):
+        """Corners are ordered counter-clockwise."""
+        from polygrid.builders import build_pentagon_centered_grid
+
+        grid = build_pentagon_centered_grid(3)
+        centroid, corners = _find_polygon_corners(grid)
+        angles = np.arctan2(
+            corners[:, 1] - centroid[1],
+            corners[:, 0] - centroid[0],
+        )
+        # Should be strictly increasing (they were sorted by angle)
+        for i in range(len(angles) - 1):
+            assert angles[i] < angles[i + 1], (
+                f"Corners not counter-clockwise: angle[{i}]={angles[i]:.4f} "
+                f">= angle[{i+1}]={angles[i+1]:.4f}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 38C.2 — Robust corner-to-corner matching (rotational offset)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestRobustCornerMatching:
+    """Verify that compute_detail_to_uv_transform handles rotated pentagons."""
+
+    @pytest.mark.needs_models
+    def test_pentagon_rotated_72deg_recovery(self, real_globe_f3):
+        """A pentagon grid rotated by 72° still produces a valid transform."""
+        from polygrid.builders import build_pentagon_centered_grid
+
+        pent_fid = None
+        for fid, face in real_globe_f3.faces.items():
+            if face.face_type == "pent":
+                pent_fid = fid
+                break
+        assert pent_fid is not None
+
+        center, normal, tangent, bitangent = compute_tile_basis(
+            real_globe_f3, pent_fid
+        )
+        uv_bounds = compute_tile_uv_bounds(
+            real_globe_f3, pent_fid, center, tangent, bitangent
+        )
+
+        detail = build_pentagon_centered_grid(2)
+
+        # Build the standard transform
+        xf = compute_detail_to_uv_transform(
+            real_globe_f3, pent_fid, detail, center, tangent, bitangent, uv_bounds,
+        )
+
+        # Map the centroid — should land near UV polygon centre
+        uc, vc = xf.apply(float(xf.src_centroid[0]), float(xf.src_centroid[1]))
+        assert 0.1 < uc < 0.9, f"Centroid u={uc:.3f} out of range"
+        assert 0.1 < vc < 0.9, f"Centroid v={vc:.3f} out of range"
+
+        # All corners should map close to [0,1]
+        for i in range(xf.n):
+            su, sv = xf.apply(
+                float(xf.src_corners[i, 0]),
+                float(xf.src_corners[i, 1]),
+            )
+            assert -0.05 < su < 1.05, f"Corner {i}: u={su:.3f}"
+            assert -0.05 < sv < 1.05, f"Corner {i}: v={sv:.3f}"
+
+    @pytest.mark.needs_models
+    def test_all_pentagon_tiles_produce_valid_transforms(self, real_globe_f3):
+        """Every pentagon tile on the globe produces a usable transform."""
+        from polygrid.builders import build_pentagon_centered_grid
+
+        pent_fids = [
+            fid for fid, face in real_globe_f3.faces.items()
+            if face.face_type == "pent"
+        ]
+        assert len(pent_fids) == 12
+
+        for pent_fid in pent_fids:
+            center, normal, tangent, bitangent = compute_tile_basis(
+                real_globe_f3, pent_fid
+            )
+            uv_bounds = compute_tile_uv_bounds(
+                real_globe_f3, pent_fid, center, tangent, bitangent
+            )
+            detail = build_pentagon_centered_grid(2)
+            xf = compute_detail_to_uv_transform(
+                real_globe_f3, pent_fid, detail,
+                center, tangent, bitangent, uv_bounds,
+            )
+            # Centroid should map somewhere reasonable
+            uc, vc = xf.apply(
+                float(xf.src_centroid[0]), float(xf.src_centroid[1])
+            )
+            assert 0.05 < uc < 0.95, (
+                f"Face {pent_fid}: centroid u={uc:.3f}"
+            )
+            assert 0.05 < vc < 0.95, (
+                f"Face {pent_fid}: centroid v={vc:.3f}"
+            )

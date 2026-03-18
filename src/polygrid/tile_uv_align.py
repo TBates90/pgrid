@@ -2,29 +2,47 @@
 
 This module bridges **pre-rendered stitched polygrid images** and the
 3D Goldberg globe.  It extracts the polygon boundary of each tile,
-computes the affine (or piecewise-linear) warp from polygrid 2D space
-into the GoldbergTile's UV polygon space, and produces oriented
-tile images ready for atlas packing.
+computes the piecewise-linear warp from polygrid 2D space into the
+GoldbergTile's UV polygon space, and produces oriented tile images
+ready for atlas packing.
+
+Pipeline overview
+-----------------
+1. For each Goldberg tile, extract polygon corners from the detail
+   grid's macro edges (Tutte embedding space).
+2. Get the authoritative UV polygon from the ``models`` library's
+   ``GoldbergTile.uv_vertices``.
+3. Match grid corners → UV corners via angular alignment (handles
+   both rotation and reflection between the two orderings).
+4. Optionally equalise piecewise-warp sector ratios for irregular
+   hex tiles adjacent to pentagons.
+5. Compute a piecewise-linear (triangle-fan) warp that maps each
+   pixel of the output slot back to the stitched source image.
+6. Pack all warped tiles into a texture atlas with gutter padding.
 
 Key functions
 -------------
-- :func:`compute_polygon_corners_px`  — polygon corners in pixel coords
-- :func:`compute_grid_to_uv_affine`   — best-fit affine mapping corners → UV
-- :func:`warp_tile_to_uv`             — image-space affine warp
-- :func:`mask_to_polygon`             — alpha-mask outside polygon
-- :func:`build_polygon_cut_atlas`     — end-to-end atlas builder
+- :func:`get_macro_edge_corners`       — polygon corners from macro edges
+- :func:`match_grid_corners_to_uv`     — angular alignment grid↔UV
+- :func:`compute_polygon_corners_px`   — grid corners → pixel coords
+- :func:`warp_tile_to_uv`             — piecewise-linear image warp
+- :func:`build_polygon_cut_atlas`      — end-to-end atlas builder
 """
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .atlas_utils import fill_gutter, compute_atlas_layout
 from .polygrid import PolyGrid
 from .tile_detail import find_polygon_corners, DetailGridCollection
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -107,6 +125,7 @@ def align_uv_corners_to_polygrid(
     n = len(uv_corners)
     return [uv_corners[(i - offset) % n] for i in range(n)]
 
+
 def get_macro_edge_corners(
     grid: PolyGrid,
     n_sides: int,
@@ -138,6 +157,209 @@ def get_macro_edge_corners(
         v = grid.vertices[me.vertex_ids[0]]
         corners.append((v.x, v.y))
     return corners
+
+
+def compute_pg_to_macro_edge_map(
+    globe_grid: PolyGrid,
+    face_id: str,
+    detail_grid: PolyGrid,
+) -> Dict[int, int]:
+    """Map PolyGrid (vertex_ids) **edge** indices to macro-edge indices.
+
+    ``compute_neighbor_edge_mapping`` returns edge indices in
+    PolyGrid ``vertex_ids`` order — edge *k* connects ``vertex_ids[k]``
+    to ``vertex_ids[(k+1) % n]``.  The detail-grid macro-edges are
+    numbered by the Tutte boundary walk, which can have **opposite
+    winding** for hexagonal tiles (CW macro vs CCW PG).
+
+    This function first matches **corners** (macro corner → PG vertex)
+    by angular proximity, then determines whether the cyclic ordering
+    is preserved (rotation) or reversed (reflection).  For the
+    reflected case, each macro edge connects two PG vertices in the
+    *reverse* direction, so the edge mapping is shifted by one
+    relative to the corner mapping.
+
+    Parameters
+    ----------
+    globe_grid : PolyGrid
+        Globe grid with 3D vertices.
+    face_id : str
+        Tile face id, e.g. ``"t0"``.
+    detail_grid : PolyGrid
+        Detail grid with pre-computed macro-edges.
+
+    Returns
+    -------
+    dict
+        ``{pg_edge_index: macro_edge_index}`` — for every polygon
+        edge *k* (in ``vertex_ids`` numbering), the macro-edge id
+        that spans the **same pair of globe vertices**.
+    """
+    from .uv_texture import compute_tile_basis
+
+    face = globe_grid.faces[face_id]
+    n = len(face.vertex_ids)
+
+    # PG vertex angles on the tangent plane
+    center_3d, _, tangent, bitangent = compute_tile_basis(globe_grid, face_id)
+    pg_angles: List[float] = []
+    for vid in face.vertex_ids:
+        v = globe_grid.vertices[vid]
+        d = np.array([v.x, v.y, v.z], dtype=np.float64) - center_3d
+        pg_angles.append(math.atan2(float(np.dot(d, bitangent)),
+                                    float(np.dot(d, tangent))))
+
+    # Macro corner angles in Tutte 2D
+    corners = get_macro_edge_corners(detail_grid, n)
+    gc = np.array(corners, dtype=np.float64)
+    gc_center = gc.mean(axis=0)
+    macro_angles = [math.atan2(gc[k, 1] - gc_center[1],
+                               gc[k, 0] - gc_center[0]) for k in range(n)]
+
+    # Match each macro corner to closest PG vertex by angle
+    def _adiff(a: float, b: float) -> float:
+        d = abs(a - b) % (2 * math.pi)
+        return min(d, 2 * math.pi - d)
+
+    macro_corner_to_pg: Dict[int, int] = {}
+    for mk in range(n):
+        best_pk = min(range(n), key=lambda pk: _adiff(macro_angles[mk], pg_angles[pk]))
+        macro_corner_to_pg[mk] = best_pk
+
+    # Detect rotation vs reflection.
+    # Rotation: macro_corner_to_pg[k] = (k + offset) % n  (constant offset)
+    # Reflection: macro_corner_to_pg[k] = (R - k) % n     (constant sum)
+    offsets = [(macro_corner_to_pg[k] - k) % n for k in range(n)]
+    sums = [(macro_corner_to_pg[k] + k) % n for k in range(n)]
+    is_reflected = len(set(sums)) == 1 and len(set(offsets)) > 1
+
+    # Invert corner map: pg_vertex → macro_corner
+    pg_to_macro_corner: Dict[int, int] = {
+        pg: macro for macro, pg in macro_corner_to_pg.items()
+    }
+
+    if is_reflected:
+        # Reflected winding: macro edge M goes from macro_corner M to
+        # macro_corner (M+1)%n, which in PG terms is pg_vertex P to
+        # pg_vertex P' where P' is the PG vertex at angle BEFORE P
+        # (opposite direction).  PG edge k goes from pg_vertex k to
+        # pg_vertex (k+1)%n.  The macro edge sharing those same two
+        # globe vertices has its START corner at pg_vertex (k+1)%n.
+        pg_edge_to_macro: Dict[int, int] = {}
+        for k in range(n):
+            pg_end = (k + 1) % n  # end vertex of PG edge k
+            pg_edge_to_macro[k] = pg_to_macro_corner[pg_end]
+    else:
+        # Same winding: macro edge M starts at the same PG vertex as
+        # PG edge (corner_to_pg[M]), so pg_edge → macro is just the
+        # inverted corner map.
+        pg_edge_to_macro = dict(pg_to_macro_corner)
+
+    return pg_edge_to_macro
+
+
+def match_grid_corners_to_uv(
+    grid_corners: List[Tuple[float, float]],
+    globe_grid: PolyGrid,
+    face_id: str,
+) -> List[Tuple[float, float]]:
+    """Reorder *grid_corners* (macro-edge order) to match GoldbergTile UV order.
+
+    The 3D renderer pairs ``GoldbergTile.vertices[k]`` with
+    ``GoldbergTile.uv_vertices[k]`` — both in the generator's vertex
+    ordering.  The atlas piecewise warp needs ``grid_corners[k]`` to
+    pair with ``uv_corners[k]`` (also generator order).
+
+    Macro-edge corners live in 2D Tutte space and GoldbergTile vertices
+    live in 3D, but their cyclic angular order around the polygon
+    centre is the same (up to a rotation **and possibly a reflection**
+    due to the GoldbergPolyhedron layout pipeline flipping winding).
+
+    This function matches by angular proximity in a reflection-aware
+    way, producing a permutation that is guaranteed to be either a
+    cyclic rotation or a cyclic reflection.
+
+    Parameters
+    ----------
+    grid_corners : list of (x, y)
+        From :func:`get_macro_edge_corners` — macro-edge order in
+        Tutte 2D space.
+    globe_grid : PolyGrid
+        Globe grid with 3D vertices (from ``build_globe_grid``).
+    face_id : str
+        Tile face id, e.g. ``"t0"``.
+
+    Returns
+    -------
+    list of (x, y)
+        Grid corners reordered so that ``result[k]`` pairs with
+        ``uv_corners[k]`` (GoldbergTile / generator order).
+    """
+    from .uv_texture import get_goldberg_tiles, _match_tile_to_face, compute_tile_basis
+
+    n = len(grid_corners)
+    freq = globe_grid.metadata.get("frequency", 3)
+    rad = globe_grid.metadata.get("radius", 1.0)
+    tiles = get_goldberg_tiles(freq, rad)
+    tile = _match_tile_to_face(tiles, face_id)
+
+    center_3d, _, tangent_3d, bitangent_3d = compute_tile_basis(globe_grid, face_id)
+
+    # Angles of GoldbergTile vertices projected onto tangent plane
+    gt_angles = np.empty(n, dtype=np.float64)
+    for i, vtx in enumerate(tile.vertices):
+        rel = np.array(vtx, dtype=np.float64) - center_3d
+        u = float(np.dot(rel, tangent_3d))
+        v = float(np.dot(rel, bitangent_3d))
+        gt_angles[i] = math.atan2(v, u)
+
+    # Angles of macro-edge corners in Tutte 2D space
+    gc = np.array(grid_corners, dtype=np.float64)
+    centroid = gc.mean(axis=0)
+    macro_angles = np.arctan2(gc[:, 1] - centroid[1], gc[:, 0] - centroid[0])
+
+    # Try both non-reflected and reflected orderings.
+    # Non-reflected: macro_corner[k] → GT[(k + rot) % n]
+    # Reflected:     macro_corner[k] → GT[(R - k) % n]  for some R
+    # Pick the one with smallest total angular error.
+
+    def _angular_diff(a: float, b: float) -> float:
+        d = abs(a - b) % (2 * math.pi)
+        return min(d, 2 * math.pi - d)
+
+    # --- Non-reflected: find best rotation ---
+    best_rot_err = float("inf")
+    best_rot = 0
+    for rot in range(n):
+        err = sum(
+            _angular_diff(macro_angles[k], gt_angles[(k + rot) % n])
+            for k in range(n)
+        )
+        if err < best_rot_err:
+            best_rot_err = err
+            best_rot = rot
+
+    # --- Reflected: find best reflection ---
+    best_ref_err = float("inf")
+    best_ref = 0
+    for ref in range(n):
+        err = sum(
+            _angular_diff(macro_angles[k], gt_angles[(ref - k) % n])
+            for k in range(n)
+        )
+        if err < best_ref_err:
+            best_ref_err = err
+            best_ref = ref
+
+    if best_rot_err <= best_ref_err:
+        # Pure rotation: result[gt_k] = grid_corners[(gt_k - best_rot) % n]
+        # gt_k = (macro_k + best_rot) % n, so macro_k = (gt_k - best_rot) % n
+        return [grid_corners[(k - best_rot) % n] for k in range(n)]
+    else:
+        # Reflection: macro_corner[k] → GT[(best_ref - k) % n]
+        # For GT[gt_k], macro_k = (best_ref - gt_k) % n
+        return [grid_corners[(best_ref - k) % n] for k in range(n)]
+
 
 def compute_polygon_corners_px(
     corners_grid: List[Tuple[float, float]],
@@ -180,14 +402,319 @@ def compute_polygon_corners_px(
     return result
 
 
+# ── Pentagon warp compensation ───────────────────────────────────────
+# The models library assigns pentagons ~29 % more UV area per unit of
+# 3D face area than hexagons (UV/3D density ratio ≈ 1.293).  In
+# theory the grid corners should be expanded by sqrt(1.293) ≈ 1.137
+# so the warp samples a wider region of the rendered image, shrinking
+# the tile pattern to match hexagon density.
+#
+# In practice, the full theoretical correction (1.1373) over-zooms
+# because the stitched image already includes apron data.  A small
+# 2 % expansion is enough to avoid clipping the pentagon boundary
+# without visibly shrinking the texture.  If pentagon tiles look
+# noticeably different in density from their hex neighbours, increase
+# this toward the theoretical value.
+_PENTAGON_GRID_SCALE = 1.02
+
+
+def _scale_corners_from_centroid(
+    corners: List[Tuple[float, float]],
+    scale: float,
+) -> List[Tuple[float, float]]:
+    """Scale *corners* outward from their centroid by *scale*."""
+    cx = sum(x for x, _ in corners) / len(corners)
+    cy = sum(y for _, y in corners) / len(corners)
+    return [
+        (cx + (x - cx) * scale, cy + (y - cy) * scale)
+        for x, y in corners
+    ]
+
+
+def _smooth_pentagon_corners(
+    grid_corners: List[Tuple[float, float]],
+    detail_grid: "PolyGrid",
+    n_sides: int,
+) -> List[Tuple[float, float]]:
+    """Shift pentagon grid corners inward to compensate zigzag bias.
+
+    The Tutte embedding places pentagon corners at boundary vertices
+    that protrude ~3.5 % beyond the smooth polygon edge (the zigzag
+    is biased inward, so corners jut out).  This shifts each corner
+    to the average of the midpoints of the two adjacent boundary
+    segments::
+
+        mid_before = (corner + prev_boundary_vertex) / 2
+        mid_after  = (corner + next_boundary_vertex) / 2
+        smooth     = (mid_before + mid_after) / 2
+
+    The function operates on the **UV-matched** corner list, looking
+    up the corresponding macro-edge boundary vertices by matching
+    each corner position to the nearest macro-edge start vertex.
+
+    Parameters
+    ----------
+    grid_corners : list of (x, y)
+        Corners in UV-matched order (from ``match_grid_corners_to_uv``).
+    detail_grid : PolyGrid
+        Detail grid with pre-computed ``macro_edges``.
+    n_sides : int
+        Number of polygon sides (should be 5 for pentagons).
+
+    Returns
+    -------
+    list of (x, y)
+        Smoothed corner positions (same ordering as input).
+    """
+    if n_sides != 5 or not detail_grid.macro_edges:
+        return grid_corners
+
+    gc = np.array(grid_corners, dtype=np.float64)
+    n = len(gc)
+
+    # Build a map: corner position → macro_edge index (nearest).
+    # grid_corners are in UV-matched order; macro_edges are in
+    # boundary-walk order.  Match by proximity.
+    me_starts = np.array([
+        (detail_grid.vertices[me.vertex_ids[0]].x,
+         detail_grid.vertices[me.vertex_ids[0]].y)
+        for me in detail_grid.macro_edges
+    ], dtype=np.float64)
+
+    # For each UV-matched corner, find the closest macro-edge start
+    gc_to_me = []
+    for k in range(n):
+        dists = np.linalg.norm(me_starts - gc[k], axis=1)
+        gc_to_me.append(int(np.argmin(dists)))
+
+    smoothed = np.empty_like(gc)
+    for k in range(n):
+        me_idx = gc_to_me[k]
+        me = detail_grid.macro_edges[me_idx]
+        # Previous macro edge's last-before-corner vertex
+        me_prev = detail_grid.macro_edges[(me_idx - 1) % n_sides]
+        prev_v = detail_grid.vertices[me_prev.vertex_ids[-2]]
+        # Current macro edge's first-after-corner vertex
+        next_v = detail_grid.vertices[me.vertex_ids[1]]
+
+        corner = gc[k]
+        mid_before = (corner + np.array([prev_v.x, prev_v.y])) / 2
+        mid_after = (corner + np.array([next_v.x, next_v.y])) / 2
+        smoothed[k] = (mid_before + mid_after) / 2
+
+    return [(float(smoothed[i, 0]), float(smoothed[i, 1]))
+            for i in range(n)]
+
+
+def _rotate_corners(
+    corners: List[Tuple[float, float]],
+    angle_rad: float,
+) -> List[Tuple[float, float]]:
+    """Rotate *corners* around their centroid by *angle_rad*."""
+    import math as _m
+    cx = sum(x for x, _ in corners) / len(corners)
+    cy = sum(y for _, y in corners) / len(corners)
+    cos_a = _m.cos(angle_rad)
+    sin_a = _m.sin(angle_rad)
+    return [
+        (cx + (x - cx) * cos_a - (y - cy) * sin_a,
+         cy + (x - cx) * sin_a + (y - cy) * cos_a)
+        for x, y in corners
+    ]
+
+
+def _compute_bulk_rotation(
+    grid_corners: List[Tuple[float, float]],
+    uv_corners: List[Tuple[float, float]],
+    tile_size: int = 512,
+    gutter: int = 4,
+) -> float:
+    """Compute the mean angular offset between paired grid and UV corners.
+
+    Both corner lists must already be in the same pairing order (i.e.
+    ``grid_corners[k]`` corresponds to ``uv_corners[k]``).
+
+    The UV corners are converted to destination-pixel space (with the
+    Y-flip) before computing angles, matching the convention used by
+    the piecewise warp.
+
+    Returns
+    -------
+    float
+        Signed rotation in radians to apply to *grid_corners* (around
+        their centroid) so that each grid corner's angle matches the
+        corresponding UV corner's angle.
+    """
+    n = len(grid_corners)
+    gc = np.array(grid_corners, dtype=np.float64)
+    uv = np.array(uv_corners, dtype=np.float64)
+    gc_c = gc.mean(axis=0)
+
+    # Convert UV → destination pixel space (same as the warp pipeline)
+    dst_px = np.empty_like(uv)
+    for i in range(n):
+        u, v = uv[i]
+        dst_px[i, 0] = gutter + u * tile_size
+        dst_px[i, 1] = gutter + (1.0 - v) * tile_size
+    dst_px_c = dst_px.mean(axis=0)
+
+    # Sort both by destination angle (same permutation for both)
+    dst_angles = np.arctan2(
+        dst_px[:, 1] - dst_px_c[1], dst_px[:, 0] - dst_px_c[0],
+    )
+    order = np.argsort(dst_angles)
+
+    gc_sorted = gc[order]
+    gc_sorted_angles = np.arctan2(
+        gc_sorted[:, 1] - gc_c[1], gc_sorted[:, 0] - gc_c[0],
+    )
+
+    # Mean signed angular difference (grid − dst), wrapped to [−π, π]
+    diffs = gc_sorted_angles - dst_angles[order]
+    diffs = (diffs + math.pi) % (2 * math.pi) - math.pi
+    return float(np.mean(diffs))
+
+
+def _equalise_sector_ratios(
+    grid_corners: List[Tuple[float, float]],
+    uv_corners: List[Tuple[float, float]],
+    tile_size: int = 512,
+    gutter: int = 4,
+) -> Tuple[List[Tuple[float, float]], Optional[np.ndarray]]:
+    """Reshape grid corners so every piecewise-warp sector is conformal.
+
+    The piecewise centroid-fan warp maps each triangle
+    ``(src_centroid, src[i], src[i+1])`` → ``(dst_centroid, dst[i], dst[i+1])``.
+    If the source and destination triangles are **similar** (same shape,
+    different size), the per-sector affine is a pure rotation + uniform
+    scale, giving zero anisotropic distortion.
+
+    On a Goldberg polyhedron the hex faces adjacent to pentagons have
+    irregular UV polygons — different corner radii and angular spans.
+    The Tutte embedding produces a perfectly regular hexagon, so the
+    sector triangles are *not* similar, causing up to ~23 % anisotropy.
+
+    This function adjusts each grid corner's **angle** and **radius**
+    from the centroid to match the destination polygon's geometry:
+
+    - **Angles**: each grid angular span is set equal to the
+      corresponding UV-pixel angular span.
+    - **Radii**: each grid corner radius is proportional to the
+      destination corner radius (preserving mean radius).
+
+    Together these make every source triangle similar to its destination
+    triangle, achieving anisotropy = 1.0 in every sector.
+
+    Because moving corners shifts the polygon mean (which
+    ``_compute_piecewise_warp_map`` uses as fan centre), the caller
+    must pass the returned centroid as ``src_centroid_override``.
+
+    For regular tiles (not adjacent to a pentagon) all UV corners are
+    equidistant and equally spaced, so this is a no-op.
+
+    Parameters
+    ----------
+    grid_corners : list of (x, y)
+        Polygon corners in grid (Tutte) space, paired 1:1 with
+        *uv_corners* by index.
+    uv_corners : list of (u, v)
+        UV polygon corners.
+    tile_size : int
+        Inner tile size in pixels (for computing dst_px sort order).
+    gutter : int
+        Gutter pixels (for computing dst_px sort order).
+
+    Returns
+    -------
+    (corners, centroid)
+        corners : list of (x, y) — adjusted grid corners.
+        centroid : (2,) ndarray or None — the fixed centroid to pass
+        as ``src_centroid_override`` to the warp.  ``None`` when no
+        adjustment was needed.
+    """
+    n = len(grid_corners)
+    if n != len(uv_corners) or n < 3:
+        return grid_corners, None
+
+    gc = np.array(grid_corners, dtype=np.float64)
+    uv = np.array(uv_corners, dtype=np.float64)
+    gc_c = gc.mean(axis=0)
+
+    # ── Compute dst_px and sort order (same as _compute_piecewise_warp_map) ──
+    dst_px = np.empty_like(uv)
+    for i in range(n):
+        u, v = uv[i]
+        dst_px[i, 0] = gutter + u * tile_size
+        dst_px[i, 1] = gutter + (1.0 - v) * tile_size
+    dst_px_c = dst_px.mean(axis=0)
+
+    dst_angles = np.arctan2(
+        dst_px[:, 1] - dst_px_c[1],
+        dst_px[:, 0] - dst_px_c[0],
+    )
+    order = np.argsort(dst_angles)
+
+    dst_sorted = dst_px[order]
+    gc_sorted = gc[order]
+
+    # ── Destination corner radii ──
+    dst_R = np.linalg.norm(dst_sorted - dst_px_c, axis=1)
+
+    # ── Destination angular spans (sector angles at the centroid) ──
+    dst_spans = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        j = (i + 1) % n
+        d0 = dst_sorted[i] - dst_px_c
+        d1 = dst_sorted[j] - dst_px_c
+        # Signed angle from d0 to d1 (atan2 of cross, dot)
+        dst_spans[i] = math.atan2(
+            d0[0] * d1[1] - d0[1] * d1[0],
+            d0[0] * d1[0] + d0[1] * d1[1],
+        )
+
+    # ── New grid corner radii: proportional to dst radii ──
+    R_mean_src = np.mean(np.linalg.norm(gc - gc_c, axis=1))
+    R_mean_dst = dst_R.mean()
+    new_R = R_mean_src * (dst_R / R_mean_dst)
+
+    # ── New grid corner angles: align to destination angles ──
+    # The destination pixel space has Y flipped relative to grid space
+    # (pixel y=0 is top, grid y increases upward).  Angles and angular
+    # spans computed in dst_px space must be negated when placing
+    # corners in grid space so the reconstructed polygon has the
+    # correct (non-reflected) orientation.
+    dst_sorted_angles = np.arctan2(
+        dst_sorted[:, 1] - dst_px_c[1],
+        dst_sorted[:, 0] - dst_px_c[0],
+    )
+    start_angle = -dst_sorted_angles[0]
+
+    new_sorted = np.empty((n, 2), dtype=np.float64)
+    angle = start_angle
+    for i in range(n):
+        new_sorted[i, 0] = gc_c[0] + new_R[i] * math.cos(angle)
+        new_sorted[i, 1] = gc_c[1] + new_R[i] * math.sin(angle)
+        angle -= dst_spans[i]
+
+    # ── Un-sort back to original index order ──
+    result_arr = np.empty_like(gc)
+    for sorted_idx in range(n):
+        orig_idx = order[sorted_idx]
+        result_arr[orig_idx] = new_sorted[sorted_idx]
+
+    corners = [(float(result_arr[i, 0]), float(result_arr[i, 1]))
+               for i in range(n)]
+    return corners, gc_c
+
+
 def compute_tile_view_limits(
     composite,
     face_id: str,
 ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
-    """Compute the axis limits used by ``_render_stitched_tile``.
+    """Compute the axis limits used by the stitched-tile renderer.
 
-    Replicates the xlim/ylim logic: center tile extent + 25% padding,
-    with aspect-ratio correction to make the view square.
+    Centre tile extent + 25 % padding, with aspect-ratio correction
+    to make the view square.
 
     Returns
     -------
@@ -211,7 +738,7 @@ def compute_tile_view_limits(
 
     cx_range = max(center_xs) - min(center_xs)
     cy_range = max(center_ys) - min(center_ys)
-    half_span = max(cx_range, cy_range) * 0.5 * 1.25  # 25% padding
+    half_span = max(cx_range, cy_range) * 0.5 * 1.25  # 25 % padding
     cx_mid = (min(center_xs) + max(center_xs)) * 0.5
     cy_mid = (min(center_ys) + max(center_ys)) * 0.5
 
@@ -711,20 +1238,6 @@ def _assign_sectors(
     return sectors
 
 
-def _reorder_grid_corners_to_uv(
-    grid_corners: List[Tuple[float, float]],
-    uv_corners: List[Tuple[float, float]],
-) -> List[Tuple[float, float]]:
-    """No-op kept for API compatibility — caller now supplies
-    macro-edge corners which are already in the correct order.
-
-    When the caller passes ``get_macro_edge_corners()`` output,
-    edge indices already match ``compute_neighbor_edge_mapping``
-    and ``get_tile_uv_vertices``.  No reordering is needed.
-    """
-    return list(grid_corners)
-
-
 def _compute_piecewise_warp_map(
     grid_corners: List[Tuple[float, float]],
     uv_corners: List[Tuple[float, float]],
@@ -735,6 +1248,7 @@ def _compute_piecewise_warp_map(
     xlim: Tuple[float, float],
     ylim: Tuple[float, float],
     output_size: int,
+    src_centroid_override: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build per-pixel source-coordinate maps for a piecewise-linear warp.
 
@@ -748,6 +1262,15 @@ def _compute_piecewise_warp_map(
     share the ``vertex_ids`` numbering with
     :func:`get_tile_uv_vertices`.
 
+    Parameters
+    ----------
+    src_centroid_override : (2,) array, optional
+        If given, use this as the source centroid instead of
+        ``mean(grid_corners)``.  This allows the caller to fix the
+        centroid when grid corner angles have been adjusted, ensuring
+        the triangle-fan geometry matches the intended sector
+        decomposition.
+
     Returns
     -------
     (map_x, map_y) : (H, W) float arrays
@@ -755,44 +1278,57 @@ def _compute_piecewise_warp_map(
         coordinate.  Suitable for ``scipy.ndimage.map_coordinates``
         or ``cv2.remap``.
     """
-    src = np.array(grid_corners, dtype=np.float64)
+    src_grid = np.array(grid_corners, dtype=np.float64)
     dst_uv = np.array(uv_corners, dtype=np.float64)
+    n = len(dst_uv)
 
-    # Corners are paired 1:1 by index (both use vertex_ids ordering).
-    src_centroid = src.mean(axis=0)
-    dst_uv_centroid = dst_uv.mean(axis=0)
+    # ── Convert grid corners → source-image pixel coordinates ────
+    # This keeps both sides of the affine in pixel space, eliminating
+    # the mixed-coordinate-system bug where a Y-flip in the
+    # grid→pixel conversion interacted badly with sector winding.
+    x_min, x_max = xlim
+    y_min, y_max = ylim
+    x_span = x_max - x_min
+    y_span = y_max - y_min
 
-    # Destination: UV → slot pixel coordinates
+    src_px = np.empty_like(src_grid)
+    for i in range(n):
+        gx, gy = src_grid[i]
+        src_px[i, 0] = (gx - x_min) / x_span * img_w
+        src_px[i, 1] = (1.0 - (gy - y_min) / y_span) * img_h
+
+    if src_centroid_override is not None:
+        sc = np.asarray(src_centroid_override, dtype=np.float64)
+        src_px_centroid = np.array([
+            (sc[0] - x_min) / x_span * img_w,
+            (1.0 - (sc[1] - y_min) / y_span) * img_h,
+        ])
+    else:
+        src_px_centroid = src_px.mean(axis=0)
+
+    # ── Convert UV corners → destination slot-pixel coordinates ──
     dst_px = np.empty_like(dst_uv)
-    for i in range(len(dst_uv)):
+    for i in range(n):
         u, v = dst_uv[i]
         dst_px[i, 0] = gutter + u * tile_size
         dst_px[i, 1] = gutter + (1.0 - v) * tile_size
     dst_px_centroid = dst_px.mean(axis=0)
 
     # Sort both arrays by *destination-pixel* angle from their
-    # centroid.  Using the destination angle ensures that sector
-    # assignment (which operates in output/slot-pixel space) lines
-    # up with the affine triangles.  Applying the SAME permutation
-    # to both src and dst preserves the 1:1 pairing.
+    # centroid.  Both arrays are now in pixel space (Y-down), so the
+    # sort puts them in the same angular order with matching winding.
     dst_angles = np.arctan2(
         dst_px[:, 1] - dst_px_centroid[1],
         dst_px[:, 0] - dst_px_centroid[0],
     )
     order = np.argsort(dst_angles)
-    src_ordered = src[order]
+    src_px_ordered = src_px[order]
     dst_px_ordered = dst_px[order]
 
-    src_centroid_ordered = src_centroid  # centroid is permutation-invariant
-
-    # Build per-sector affines: slot_pixel → grid_space (inverse direction)
-    # Forward: grid → slot_pixel
-    fwd_sectors = _build_sector_affines(
-        src_ordered, src_centroid_ordered, dst_px_ordered, dst_px_centroid,
-    )
-    # Inverse: slot_pixel → grid
+    # Build per-sector affines entirely in pixel space
+    # Inverse: slot_pixel → source_pixel
     inv_sectors = _build_sector_affines(
-        dst_px_ordered, dst_px_centroid, src_ordered, src_centroid_ordered,
+        dst_px_ordered, dst_px_centroid, src_px_ordered, src_px_centroid,
     )
 
     # Build output pixel grid
@@ -803,12 +1339,7 @@ def _compute_piecewise_warp_map(
     # Assign each output pixel to a sector in dst_px space
     sector_ids = _assign_sectors(out_pts, dst_px_centroid, dst_px_ordered)
 
-    # Map output pixels → grid space → input pixels
-    x_min, x_max = xlim
-    y_min, y_max = ylim
-    x_span = x_max - x_min
-    y_span = y_max - y_min
-
+    # Map output pixels → source-image pixels directly
     map_x = np.full(len(out_pts), -1.0, dtype=np.float64)
     map_y = np.full(len(out_pts), -1.0, dtype=np.float64)
 
@@ -818,19 +1349,62 @@ def _compute_piecewise_warp_map(
         if not mask.any():
             continue
         pts = out_pts[mask]
-        # slot_pixel → grid
-        grid_pts = (pts @ A_inv.T) + t_inv
-        # grid → input pixel
-        # px_x = (gx - x_min) / x_span * img_w
-        # px_y = (1 - (gy - y_min) / y_span) * img_h
-        src_px_x = (grid_pts[:, 0] - x_min) / x_span * img_w
-        src_px_y = (1.0 - (grid_pts[:, 1] - y_min) / y_span) * img_h
-        map_x[mask] = src_px_x
-        map_y[mask] = src_px_y
+        mapped = (pts @ A_inv.T) + t_inv
+        map_x[mask] = mapped[:, 0]
+        map_y[mask] = mapped[:, 1]
 
     map_x = map_x.reshape(output_size, output_size)
     map_y = map_y.reshape(output_size, output_size)
     return map_x, map_y
+
+
+def _dilate_cval_pixels(
+    arr: np.ndarray,
+    cval: int = 128,
+    iterations: int = 4,
+) -> np.ndarray:
+    """Replace ``cval``-fill pixels with nearest valid neighbour colour.
+
+    The piecewise warp leaves ``(cval, cval, cval)`` at bounding-box
+    corners that fall outside the polygon sector decomposition.
+    Bilinear/mipmap texture sampling can bleed into these pixels, so
+    we dilate valid colours outward to eliminate them.
+
+    Parameters
+    ----------
+    arr : (H, W, 3) uint8 array
+        Warped image (modified in-place and returned).
+    cval : int
+        The constant fill value used by ``map_coordinates``.
+    iterations : int
+        Number of dilation passes.  Each pass expands the valid region
+        by one pixel in all 8 directions.
+    """
+    from scipy.ndimage import maximum_filter, minimum_filter
+
+    fill = np.array([cval, cval, cval], dtype=np.uint8)
+    mask = np.all(arr == fill, axis=-1)
+    if not mask.any():
+        return arr
+
+    for _ in range(iterations):
+        if not mask.any():
+            break
+        # For each channel, dilate by taking the max of the 3×3 neighbourhood
+        # but only write into masked (cval) pixels.
+        for ch in range(3):
+            dilated = maximum_filter(arr[:, :, ch], size=3)
+            # maximum_filter pushes cval outward too; use minimum_filter
+            # on the *non-masked* values to get nearest valid colour.
+            # Simpler approach: overwrite masked pixels with the dilated
+            # value, then re-check.
+            arr[:, :, ch][mask] = dilated[mask]
+
+        # Re-check which pixels are still exactly cval (may have been
+        # overwritten with valid colours that happen to equal cval — rare)
+        mask = np.all(arr == fill, axis=-1)
+
+    return arr
 
 
 def warp_tile_to_uv(
@@ -844,6 +1418,7 @@ def warp_tile_to_uv(
     uv_corners: Optional[List[Tuple[float, float]]] = None,
     tile_size: Optional[int] = None,
     gutter: int = 0,
+    src_centroid_override: Optional[np.ndarray] = None,
 ) -> "Image.Image":
     """Warp a stitched tile image so its polygon maps to the UV layout.
 
@@ -872,6 +1447,10 @@ def warp_tile_to_uv(
         Inner tile size (pixels).  Required when using piecewise warp.
     gutter : int
         Gutter pixels.
+    src_centroid_override : (2,) array, optional
+        If given, use this as the source (grid) centroid for the
+        piecewise-affine warp.  Allows fixing the fan centre when
+        grid corners have been adjusted for sector equalisation.
 
     Returns
     -------
@@ -892,6 +1471,7 @@ def warp_tile_to_uv(
             img_w=img_w, img_h=img_h,
             xlim=xlim, ylim=ylim,
             output_size=output_size,
+            src_centroid_override=src_centroid_override,
         )
 
         src_arr = np.array(img.convert("RGB"), dtype=np.float64)
@@ -908,6 +1488,12 @@ def warp_tile_to_uv(
             out_channels.append(warped_ch.astype(np.uint8))
 
         out_arr = np.stack(out_channels, axis=-1)
+
+        # Dilate any remaining cval-fill pixels (bounding-box corners
+        # outside the polygon) so bilinear/mipmap sampling never
+        # encounters the grey fallback colour.
+        out_arr = _dilate_cval_pixels(out_arr)
+
         return Image.fromarray(out_arr, "RGB")
 
     # ── Fallback: single-affine warp (legacy) ──────────────────
@@ -947,40 +1533,105 @@ def warp_tile_to_uv(
     return warped
 
 
+def _fill_warped_gaps(img: "Image.Image", cval: int = 128) -> "Image.Image":
+    """Fill any pixels equal to *cval* by copying the nearest valid pixel.
+
+    The piecewise warp uses ``cval`` as the fill value for pixels that map
+    outside the source image.  In some polygons (hexes) the bbox corners
+    remain unfilled; this routine replaces those pixels with the nearest
+    valid pixel colour so bilinear/mipmap sampling at tile edges doesn't
+    pick up the fallback colour.
+    """
+    from PIL import Image
+    import numpy as np
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        # If scipy not available, return the image unchanged
+        return img
+
+    arr = np.array(img.convert("RGB"))
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    mask_valid = ~((r == cval) & (g == cval) & (b == cval))
+    if mask_valid.all():
+        return img
+
+    valid_y, valid_x = np.nonzero(mask_valid)
+    inv_y, inv_x = np.nonzero(~mask_valid)
+    if len(valid_y) == 0:
+        return img
+
+    # Build KD-tree on valid pixel coordinates (use row, col order)
+    valid_coords = np.column_stack((valid_y, valid_x))
+    tree = cKDTree(valid_coords)
+
+    inv_coords = np.column_stack((inv_y, inv_x))
+    _, idxs = tree.query(inv_coords, k=1)
+
+    filled = arr.copy()
+    filled[inv_y, inv_x] = arr[valid_y[idxs], valid_x[idxs]]
+    return Image.fromarray(filled, "RGB")
+
+
+def fill_sentinel_pixels(
+    img: "Image.Image",
+    sentinel: Tuple[int, int, int] = (255, 0, 255),
+) -> "Image.Image":
+    """Replace sentinel-coloured pixels with the nearest valid pixel.
+
+    Stitched tile images are rendered with a bright magenta background
+    so that image corners not covered by polygon patches can be
+    identified.  This function replaces those sentinel pixels with the
+    nearest non-sentinel pixel, preventing per-tile background colour
+    from bleeding into the atlas gutter and causing visible seams.
+
+    Parameters
+    ----------
+    img : PIL.Image.Image
+        Source image (RGB).
+    sentinel : (R, G, B)
+        The sentinel colour to replace.  Default is bright magenta
+        ``(255, 0, 255)``.
+
+    Returns
+    -------
+    PIL.Image.Image
+        Image with sentinel pixels replaced.
+    """
+    from PIL import Image
+
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return img
+
+    arr = np.array(img.convert("RGB"))
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    mask_sentinel = (
+        (r == sentinel[0]) & (g == sentinel[1]) & (b == sentinel[2])
+    )
+    if not mask_sentinel.any():
+        return img
+
+    valid_y, valid_x = np.nonzero(~mask_sentinel)
+    inv_y, inv_x = np.nonzero(mask_sentinel)
+    if len(valid_y) == 0:
+        return img
+
+    valid_coords = np.column_stack((valid_y, valid_x))
+    tree = cKDTree(valid_coords)
+
+    inv_coords = np.column_stack((inv_y, inv_x))
+    _, idxs = tree.query(inv_coords, k=1)
+
+    filled = arr.copy()
+    filled[inv_y, inv_x] = arr[valid_y[idxs], valid_x[idxs]]
+    return Image.fromarray(filled, "RGB")
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 21C — Atlas assembly from polygon-cut tiles
 # ═══════════════════════════════════════════════════════════════════
-
-def _fill_gutter(atlas, slot_x: int, slot_y: int,
-                 tile_size: int, gutter: int) -> None:
-    """Fill gutter pixels by clamping edge pixels outward."""
-    inner_x = slot_x + gutter
-    inner_y = slot_y + gutter
-
-    # Top gutter
-    top_strip = atlas.crop((inner_x, inner_y, inner_x + tile_size, inner_y + 1))
-    for g in range(gutter):
-        atlas.paste(top_strip, (inner_x, slot_y + g))
-
-    # Bottom gutter
-    bot_y = inner_y + tile_size - 1
-    bot_strip = atlas.crop((inner_x, bot_y, inner_x + tile_size, bot_y + 1))
-    for g in range(gutter):
-        atlas.paste(bot_strip, (inner_x, inner_y + tile_size + g))
-
-    # Left gutter (full height including top/bottom gutter)
-    full_top = slot_y
-    full_bot = slot_y + tile_size + 2 * gutter
-    left_strip = atlas.crop((inner_x, full_top, inner_x + 1, full_bot))
-    for g in range(gutter):
-        atlas.paste(left_strip, (slot_x + g, full_top))
-
-    # Right gutter
-    right_x = inner_x + tile_size - 1
-    right_strip = atlas.crop((right_x, full_top, right_x + 1, full_bot))
-    for g in range(gutter):
-        atlas.paste(right_strip, (inner_x + tile_size + g, full_top))
-
 
 def build_polygon_cut_atlas(
     tile_images: Dict[str, "Image.Image"],
@@ -995,6 +1646,7 @@ def build_polygon_cut_atlas(
     mask_colour: Tuple[int, int, int] = (0, 0, 0),
     debug_labels: bool = False,
     output_dir: Optional[Path] = None,
+    pentagon_rotation_steps: int = 0,
 ) -> Tuple["Image.Image", Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas from stitched tile images, UV-aligned.
 
@@ -1035,6 +1687,10 @@ def build_polygon_cut_atlas(
         display the **same** edge index at the shared boundary.
     output_dir : Path, optional
         If given, saves individual masked tiles for debugging.
+    pentagon_rotation_steps : int
+        Extra rotation steps applied to pentagon tiles only.
+        Positive = clockwise.  Use to correct any residual
+        pentagon orientation mismatch (default 0).
 
     Returns
     -------
@@ -1046,14 +1702,10 @@ def build_polygon_cut_atlas(
     from .uv_texture import get_tile_uv_vertices
 
     n = len(face_ids)
-    columns = max(1, math.isqrt(n))
-    if columns * columns < n:
-        columns += 1
-    rows = math.ceil(n / columns)
-
+    columns, rows, atlas_w, atlas_h = compute_atlas_layout(
+        n, tile_size, gutter,
+    )
     slot_size = tile_size + 2 * gutter
-    atlas_w = columns * slot_size
-    atlas_h = rows * slot_size
     atlas = Image.new("RGB", (atlas_w, atlas_h), (128, 128, 128))
 
     uv_layout: Dict[str, Tuple[float, float, float, float]] = {}
@@ -1069,30 +1721,45 @@ def build_polygon_cut_atlas(
 
         tile_img = tile_images[fid]
 
-        # Get polygon corners from macro edges (same ordering as
-        # compute_neighbor_edge_mapping / vertex_ids).
+        # Replace any sentinel-coloured background pixels (image
+        # corners not covered by polygon patches) with nearest valid
+        # pixel to prevent per-tile bg colour from causing seams.
+        tile_img = fill_sentinel_pixels(tile_img)
+
+        # Get polygon corners from macro edges.
         dg = detail_grids[fid]
         n_sides = len(globe_grid.faces[fid].vertex_ids)
-        dg.compute_macro_edges(n_sides=n_sides)
+        is_pentagon = n_sides == 5
+
+        # Pentagon tiles store explicit corner_vertex_ids because
+        # angle-based detection is unreliable in the Tutte embedding.
+        corner_ids = dg.metadata.get("corner_vertex_ids") if is_pentagon else None
+        dg.compute_macro_edges(n_sides=n_sides, corner_ids=corner_ids)
         grid_corners_raw = get_macro_edge_corners(dg, n_sides)
 
         # Get UV polygon from GoldbergTile (raw = GoldbergTile order).
         uv_corners_raw = get_tile_uv_vertices(globe_grid, fid)
 
-        # The PolyGrid vertex_ids and GoldbergTile vertices have a
-        # per-tile rotational offset.  grid_corners are in PolyGrid
-        # (vertex_ids) order; uv_corners are in GoldbergTile order.
-        # We rotate the GRID corners into GoldbergTile order so that
-        # grid_corners[k] pairs with uv_corners[k], and the atlas
-        # texture stays in raw GoldbergTile UV space (which the 3D
-        # renderer expects).
-        offset = compute_uv_to_polygrid_offset(globe_grid, fid)
-        # offset = (PG_idx - GT_idx) % n, so GT_idx = (PG_idx - offset) % n
-        # grid_corners_raw is in PG order.  We want GT order:
-        #   grid_corners_gt[gt_k] = grid_corners_raw[pg_k]
-        #   where pg_k = (gt_k + offset) % n
-        grid_corners = [grid_corners_raw[(k + offset) % n_sides] for k in range(n_sides)]
+        # ── Match grid corners → UV corners ──────────────────────
+        # Use angular matching (handles both rotation and reflection
+        # between macro-edge and GoldbergTile orderings).
+        grid_corners_matched = match_grid_corners_to_uv(
+            grid_corners_raw, globe_grid, fid,
+        )
         uv_corners = uv_corners_raw
+
+        # Use the raw matched corners directly.  _equalise_sector_ratios
+        # moves corners away from the actual polygon boundary in the
+        # source image, which causes the warp to sample content from
+        # the wrong side of each edge — creating visible seams on the
+        # globe.  Skipping it trades minor piecewise-affine anisotropy
+        # for seamless tile boundaries.
+        grid_corners = grid_corners_matched
+        src_centroid = None
+        if is_pentagon:
+            grid_corners = _scale_corners_from_centroid(
+                grid_corners, _PENTAGON_GRID_SCALE,
+            )
 
         # Compute view limits (same as the renderer used)
         comp = composites[fid]
@@ -1112,7 +1779,12 @@ def build_polygon_cut_atlas(
             uv_corners=uv_corners,
             tile_size=tile_size,
             gutter=gutter,
+            src_centroid_override=src_centroid,
         )
+
+        # Fill any remaining fallback-colour pixels left by the
+        # piecewise warp at bounding-box corners outside the polygon.
+        warped = _fill_warped_gaps(warped, cval=128)
 
         # Mask outside the UV polygon
         if mask_outside:
@@ -1130,11 +1802,10 @@ def build_polygon_cut_atlas(
             # GoldbergTile order (matching uv_corners) so the labels
             # appear at the correct UV edge.
             neigh_to_edge_pg = compute_neighbor_edge_mapping(globe_grid, fid)
-            # Rotate edge indices from PolyGrid → GoldbergTile order:
-            #   gt_edge = (pg_edge - offset) % n_sides
+            pg_gt_offset = compute_uv_to_polygrid_offset(globe_grid, fid)
             edge_to_neigh_gt = {}
             for nid, pg_eidx in neigh_to_edge_pg.items():
-                gt_eidx = (pg_eidx - offset) % n_sides
+                gt_eidx = (pg_eidx - pg_gt_offset) % n_sides
                 edge_to_neigh_gt[gt_eidx] = nid
             warped = draw_debug_labels(
                 warped, uv_corners, fid, edge_to_neigh_gt,
@@ -1148,7 +1819,7 @@ def build_polygon_cut_atlas(
         # should already be there from the stitched image, but
         # clamp edges as fallback for any boundary pixels)
         if gutter > 0:
-            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+            fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
 
         # Save debug tile if requested
         if output_dir is not None:

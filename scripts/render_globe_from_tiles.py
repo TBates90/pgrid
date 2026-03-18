@@ -79,14 +79,12 @@ def _pack_atlas(
     n = len(ordered_ids)
 
     # Compute grid layout
-    columns = max(1, math.isqrt(n))
-    if columns * columns < n:
-        columns += 1
-    rows = math.ceil(n / columns)
+    from polygrid.atlas_utils import fill_gutter, compute_atlas_layout
 
+    columns, rows, atlas_w, atlas_h = compute_atlas_layout(
+        n, tile_size, gutter,
+    )
     slot_size = tile_size + 2 * gutter
-    atlas_w = columns * slot_size
-    atlas_h = rows * slot_size
     atlas = Image.new("RGB", (atlas_w, atlas_h), (128, 128, 128))
 
     uv_layout: dict[str, tuple[float, float, float, float]] = {}
@@ -105,7 +103,7 @@ def _pack_atlas(
 
         # Fill gutter by clamping edge pixels outward
         if gutter > 0:
-            _fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
+            fill_gutter(atlas, slot_x, slot_y, tile_size, gutter)
 
         # UV coordinates (inner tile region)
         inner_x = slot_x + gutter
@@ -119,37 +117,6 @@ def _pack_atlas(
     atlas_path = tile_dir / "atlas.png"
     atlas.save(str(atlas_path))
     return atlas_path, uv_layout
-
-
-def _fill_gutter(atlas, slot_x: int, slot_y: int,
-                 tile_size: int, gutter: int) -> None:
-    """Fill gutter pixels by clamping edge pixels outward."""
-    inner_x = slot_x + gutter
-    inner_y = slot_y + gutter
-
-    # Top gutter
-    top_strip = atlas.crop((inner_x, inner_y, inner_x + tile_size, inner_y + 1))
-    for g in range(gutter):
-        atlas.paste(top_strip, (inner_x, slot_y + g))
-
-    # Bottom gutter
-    bot_y = inner_y + tile_size - 1
-    bot_strip = atlas.crop((inner_x, bot_y, inner_x + tile_size, bot_y + 1))
-    for g in range(gutter):
-        atlas.paste(bot_strip, (inner_x, inner_y + tile_size + g))
-
-    # Left gutter (full height including top/bottom gutter)
-    full_top = slot_y
-    full_bot = slot_y + tile_size + 2 * gutter
-    left_strip = atlas.crop((inner_x, full_top, inner_x + 1, full_bot))
-    for g in range(gutter):
-        atlas.paste(left_strip, (slot_x + g, full_top))
-
-    # Right gutter
-    right_x = inner_x + tile_size - 1
-    right_strip = atlas.crop((right_x, full_top, right_x + 1, full_bot))
-    for g in range(gutter):
-        atlas.paste(right_strip, (inner_x + tile_size + g, full_top))
 
 
 # ═══════════════════════════════════════════════════════════════════
