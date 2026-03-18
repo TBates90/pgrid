@@ -234,8 +234,8 @@ def main():
 
         if args.view:
             print("Launching interactive 3D viewer...")
-            from polygrid.globe_renderer import render_textured_globe_opengl
-            render_textured_globe_opengl(
+            from polygrid.globe_renderer_v2 import render_globe_v2
+            render_globe_v2(
                 payload, atlas_path, uv_layout,
                 title=f"Detail Globe — freq={args.frequency}, "
                       f"rings={args.detail_rings}",

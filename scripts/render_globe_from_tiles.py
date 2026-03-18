@@ -203,8 +203,12 @@ def main():
         help="Window height (default: 700)",
     )
     parser.add_argument(
-        "--v2", action="store_true",
-        help="Use v2 renderer (newer, better sphere projection)",
+        "--v2", action="store_true", default=True,
+        help="Use v2 renderer (default; kept for backwards compatibility)",
+    )
+    parser.add_argument(
+        "--legacy-renderer", action="store_true",
+        help="Use v1 renderer (deprecated; flat projection, no PBR)",
     )
     parser.add_argument(
         "--no-view", action="store_true",
@@ -317,22 +321,29 @@ def main():
     tile_count = payload["metadata"]["tile_count"]
     title = f"Polygrid Globe — freq={freq}, {tile_count} tiles"
 
-    if args.v2:
+    if args.legacy_renderer:
+        import warnings
+        warnings.warn(
+            "The v1 globe renderer is deprecated. "
+            "Remove --legacy-renderer to use the v2 renderer.",
+            DeprecationWarning,
+            stacklevel=1,
+        )
+        print("Launching legacy v1 3D viewer...")
+        from polygrid.globe_renderer import render_textured_globe_opengl
+        render_textured_globe_opengl(
+            payload, atlas_path, uv_layout,
+            title=title,
+            width=args.width,
+            height=args.height,
+        )
+    else:
         print("Launching v2 3D viewer...")
         from polygrid.globe_renderer_v2 import render_globe_v2
         render_globe_v2(
             payload, atlas_path, uv_layout,
             title=title,
             subdivisions=args.subdivisions,
-            width=args.width,
-            height=args.height,
-        )
-    else:
-        print("Launching 3D viewer...")
-        from polygrid.globe_renderer import render_textured_globe_opengl
-        render_textured_globe_opengl(
-            payload, atlas_path, uv_layout,
-            title=title,
             width=args.width,
             height=args.height,
         )

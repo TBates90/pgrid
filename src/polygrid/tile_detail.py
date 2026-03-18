@@ -822,6 +822,73 @@ def _find_closest_macro_edge_pair(
 
     return best_pair
 
+
+def _macro_edge_overlap_ok(
+    g1: PolyGrid,
+    e1: int,
+    g2: PolyGrid,
+    e2: int,
+    *,
+    tol_factor: float = 0.25,
+) -> bool:
+    """Check whether two macro edges overlap well enough to snap/stitch.
+
+    Compares the maximum vertex-to-vertex distance between corresponding
+    boundary vertices of the two macro edges against a tolerance derived
+    from the edge length.  Returns ``True`` when the edges are close
+    enough that averaging positions will not inject significant
+    distortion.
+
+    Parameters
+    ----------
+    g1, g2 : PolyGrid
+        The two grids containing the macro edges.
+    e1, e2 : int
+        Macro-edge IDs to compare.
+    tol_factor : float
+        Maximum allowed vertex-to-vertex distance as a fraction of
+        the macro-edge length.  Default 0.25 (25 %).
+    """
+    me1 = next(m for m in g1.macro_edges if m.id == e1)
+    me2 = next(m for m in g2.macro_edges if m.id == e2)
+
+    vids_1 = list(me1.vertex_ids)
+    vids_2 = list(me2.vertex_ids)
+
+    if len(vids_1) != len(vids_2):
+        return False
+
+    # Compute macro-edge length (from first to last vertex of edge 1)
+    v_start = g1.vertices[vids_1[0]]
+    v_end = g1.vertices[vids_1[-1]]
+    edge_len = math.hypot(v_end.x - v_start.x, v_end.y - v_start.y)
+    if edge_len < 1e-12:
+        return False
+
+    tol = edge_len * tol_factor
+
+    # Determine alignment direction (same vs flipped)
+    v1_start = g1.vertices[vids_1[0]]
+    v2_start = g2.vertices[vids_2[0]]
+    v2_end = g2.vertices[vids_2[-1]]
+    d_same = math.hypot(v1_start.x - v2_start.x, v1_start.y - v2_start.y)
+    d_flip = math.hypot(v1_start.x - v2_end.x, v1_start.y - v2_end.y)
+    if d_flip < d_same:
+        vids_2 = vids_2[::-1]
+
+    # Check max vertex-to-vertex distance
+    max_dist = 0.0
+    for va_id, vb_id in zip(vids_1, vids_2):
+        va = g1.vertices[va_id]
+        vb = g2.vertices[vb_id]
+        if va.has_position() and vb.has_position():
+            d = math.hypot(va.x - vb.x, va.y - vb.y)
+            if d > max_dist:
+                max_dist = d
+
+    return max_dist <= tol
+
+
 def build_tile_with_neighbours(
     coll: "DetailGridCollection",
     face_id: str,
@@ -833,11 +900,22 @@ def build_tile_with_neighbours(
     :func:`stitch_grids` infrastructure to:
 
     1. Position each neighbour flush against *face_id*'s shared macro-edge.
-    2. Detect adjacent *outer* neighbour pairs and snap their shared
-       boundary vertices to averaged positions (same technique as
-       :func:`pent_hex_assembly`).
-    3. Stitch **all** shared edges — center↔neighbour *and*
-       neighbour↔neighbour — into a single merged :class:`CompositeGrid`.
+    2. For **hex-centred** tiles, detect adjacent *outer* neighbour pairs
+       and snap their shared boundary vertices to averaged positions
+       (same technique as :func:`pent_hex_assembly`), then stitch those
+       neighbour↔neighbour edges.
+    3. For **pentagon-centred** tiles, skip neighbour↔neighbour closure.
+       The 5-hex ring around a pentagon has an unavoidable angular
+       deficit (~6° per corner) that makes planar closure impossible
+       without injecting distortion.  Centre↔neighbour stitches are
+       still created; corner gaps are handled by the downstream
+       gap-fill infrastructure.
+    4. Stitch all applicable shared edges into a single merged
+       :class:`CompositeGrid`.
+
+    An overlap quality check (:func:`_macro_edge_overlap_ok`) guards
+    hex-centred composites against stitching edges that are too far
+    apart to merge cleanly.
 
     Parameters
     ----------
@@ -923,65 +1001,90 @@ def build_tile_with_neighbours(
     # which geometric edge a given macro-edge ID refers to.  Instead
     # of trying to map through PG→macro indices, we detect shared
     # edges by geometric proximity on the already-positioned grids.
+    #
+    # IMPORTANT: For pentagon-centred composites (n_sides == 5) we
+    # skip neighbour↔neighbour closure entirely.  A 5-hex ring around
+    # a pentagon has an unavoidable ~6° angular deficit per corner
+    # (120° hex corner vs 108° pent corner).  Forcing closure via
+    # vertex averaging injects localised wedge/pinch distortion near
+    # each pentagon corner.  Since the crop window
+    # (compute_tile_view_limits) and gap-fill infrastructure
+    # (fill_sentinel_pixels, _fill_warped_gaps) already handle any
+    # resulting corner holes, skipping closure is both safe and
+    # visually superior.
+    is_pentagon_centre = n_sides == 5
+
     neighbours = list(neigh_map.keys())
     outer_pairs: List[Tuple[str, int, str, int]] = []  # (n1, e1, n2, e2)
 
-    # Track which macro-edge on each neighbour was used for the
-    # centre↔neighbour stitch so we can exclude it from candidates.
-    stitch_edge_ids: Dict[str, int] = {}
-    for s in stitches:
-        stitch_edge_ids[s.grid_b] = s.edge_b
+    if not is_pentagon_centre:
+        # Track which macro-edge on each neighbour was used for the
+        # centre↔neighbour stitch so we can exclude it from candidates.
+        stitch_edge_ids: Dict[str, int] = {}
+        for s in stitches:
+            stitch_edge_ids[s.grid_b] = s.edge_b
 
-    for i, n1 in enumerate(neighbours):
-        n1_all_neighs = compute_neighbor_edge_mapping(globe_grid, n1)
-        for n2 in neighbours[i + 1:]:
-            if n2 not in n1_all_neighs:
-                continue
+        for i, n1 in enumerate(neighbours):
+            n1_all_neighs = compute_neighbor_edge_mapping(globe_grid, n1)
+            for n2 in neighbours[i + 1:]:
+                if n2 not in n1_all_neighs:
+                    continue
+                g1 = grids[n1]
+                g2 = grids[n2]
+                e1, e2 = _find_closest_macro_edge_pair(
+                    g1, g2,
+                    exclude_g1=stitch_edge_ids.get(n1),
+                    exclude_g2=stitch_edge_ids.get(n2),
+                )
+
+                # ── Overlap quality check ─────────────────────────
+                # Only snap/stitch if the candidate edges actually
+                # overlap geometrically.  This guards against forcing
+                # non-overlapping edges together (which causes
+                # distortion), as can happen when the planar layout
+                # leaves a gap that is too large to bridge cleanly.
+                if _macro_edge_overlap_ok(g1, e1, g2, e2):
+                    outer_pairs.append((n1, e1, n2, e2))
+
+        # ── Snap outer boundary vertices to averaged positions ────
+        for n1, e1, n2, e2 in outer_pairs:
             g1 = grids[n1]
             g2 = grids[n2]
-            e1, e2 = _find_closest_macro_edge_pair(
-                g1, g2,
-                exclude_g1=stitch_edge_ids.get(n1),
-                exclude_g2=stitch_edge_ids.get(n2),
-            )
-            outer_pairs.append((n1, e1, n2, e2))
 
-    # ── Snap outer boundary vertices to averaged positions ────────
-    for n1, e1, n2, e2 in outer_pairs:
-        g1 = grids[n1]
-        g2 = grids[n2]
+            me1 = next(m for m in g1.macro_edges if m.id == e1)
+            me2 = next(m for m in g2.macro_edges if m.id == e2)
 
-        me1 = next(m for m in g1.macro_edges if m.id == e1)
-        me2 = next(m for m in g2.macro_edges if m.id == e2)
+            vids_1 = list(me1.vertex_ids)
+            vids_2 = list(me2.vertex_ids)
 
-        vids_1 = list(me1.vertex_ids)
-        vids_2 = list(me2.vertex_ids)
+            # Determine whether the two edges run in the same or
+            # opposite direction by comparing the start vertex of
+            # each edge.
+            v1_start = g1.vertices[vids_1[0]]
+            v2_start = g2.vertices[vids_2[0]]
+            v2_end = g2.vertices[vids_2[-1]]
+            d_same = math.hypot(v1_start.x - v2_start.x,
+                                v1_start.y - v2_start.y)
+            d_flip = math.hypot(v1_start.x - v2_end.x,
+                                v1_start.y - v2_end.y)
+            if d_flip < d_same:
+                vids_2 = vids_2[::-1]
 
-        # Determine whether the two edges run in the same or opposite
-        # direction by comparing the start vertex of each edge.
-        v1_start = g1.vertices[vids_1[0]]
-        v2_start = g2.vertices[vids_2[0]]
-        v2_end = g2.vertices[vids_2[-1]]
-        d_same = math.hypot(v1_start.x - v2_start.x, v1_start.y - v2_start.y)
-        d_flip = math.hypot(v1_start.x - v2_end.x, v1_start.y - v2_end.y)
-        if d_flip < d_same:
-            vids_2 = vids_2[::-1]
+            for va_id, vb_id in zip(vids_1, vids_2):
+                va = g1.vertices[va_id]
+                vb = g2.vertices[vb_id]
+                if va.has_position() and vb.has_position():
+                    mx = (va.x + vb.x) / 2
+                    my = (va.y + vb.y) / 2
+                    g1.vertices[va_id] = Vertex(va_id, mx, my)
+                    g2.vertices[vb_id] = Vertex(vb_id, mx, my)
 
-        for va_id, vb_id in zip(vids_1, vids_2):
-            va = g1.vertices[va_id]
-            vb = g2.vertices[vb_id]
-            if va.has_position() and vb.has_position():
-                mx = (va.x + vb.x) / 2
-                my = (va.y + vb.y) / 2
-                g1.vertices[va_id] = Vertex(va_id, mx, my)
-                g2.vertices[vb_id] = Vertex(vb_id, mx, my)
-
-    # ── Add outer↔outer stitches ─────────────────────────────────
-    for n1, e1, n2, e2 in outer_pairs:
-        stitches.append(StitchSpec(
-            grid_a=n1, edge_a=e1,
-            grid_b=n2, edge_b=e2,
-            flip=True,
-        ))
+        # ── Add outer↔outer stitches ─────────────────────────────
+        for n1, e1, n2, e2 in outer_pairs:
+            stitches.append(StitchSpec(
+                grid_a=n1, edge_a=e1,
+                grid_b=n2, edge_b=e2,
+                flip=True,
+            ))
 
     return stitch_grids(grids, stitches)

@@ -1,5 +1,10 @@
 """Models renderer integration — terrain-coloured OpenGL rendering.
 
+.. deprecated::
+    This module uses the v1 flat-projection renderer.  Prefer
+    :mod:`polygrid.globe_renderer_v2` which provides PBR shading,
+    sphere-projected subdivision, water, atmosphere, and bloom.
+
 Bridges :mod:`globe_mesh` terrain meshes into the ``models`` library's
 OpenGL rendering pipeline.  These helpers prepare everything needed to
 display a terrain-coloured Goldberg polyhedron in a pyglet window.
@@ -16,8 +21,19 @@ Functions
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
+
+
+def _deprecation_warning() -> None:
+    """Emit a one-time deprecation warning for v1 renderer usage."""
+    warnings.warn(
+        "polygrid.globe_renderer is deprecated — use "
+        "polygrid.globe_renderer_v2 and render_globe_v2() instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 try:
     from models.core import Color, ShapeMesh
@@ -231,6 +247,7 @@ def render_terrain_globe_opengl(
     title : str
         Window title.
     """
+    _deprecation_warning()
     _require_models()
 
     try:
@@ -585,6 +602,7 @@ def render_textured_globe_opengl(
     radius, width, height, title
         Same as :func:`render_terrain_globe_opengl`.
     """
+    _deprecation_warning()
     _require_models()
 
     try:
