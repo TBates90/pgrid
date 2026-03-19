@@ -885,7 +885,16 @@ def subdivide_tile_mesh(
                 pos = _project_to_sphere(pos, radius)
                 uv = b0 * uv0 + b1 * uv1 + b2 * uv2
 
-                if uv_clamp_polygon is not None:
+                # Clamp interior UVs only.  Boundary vertices (b0 == 0)
+                # lie on the tile polygon edge shared with adjacent
+                # tiles.  Clamping them can push two fan sectors'
+                # copies of the same spatial point to different
+                # "nearest edge" solutions on the inset polygon,
+                # and vertex dedup then picks one arbitrarily —
+                # producing the small triangular wedge artefact at
+                # tile vertices.  Skipping the clamp for boundary
+                # points keeps their UVs coherent across sectors.
+                if uv_clamp_polygon is not None and b0 > 0:
                     cu, cv = clamp_uv_to_polygon(
                         float(uv[0]), float(uv[1]), uv_clamp_polygon
                     )
@@ -913,11 +922,19 @@ def subdivide_tile_mesh(
                     v11 = vert_map[(tri_idx, i + 1, j + 1)]
                     all_tris.append((v10, v11, v01))
 
-    # Deduplicate vertices by position (merge shared boundary vertices)
-    MERGE_EPS = 1e-8
+    # Deduplicate vertices by position AND UV.
+    #
+    # Earlier code used position-only keys, which was safe only when
+    # UVs at shared positions were guaranteed identical.  UV clamping
+    # (even with the boundary-skip guard above) can theoretically
+    # produce different UVs at the same 3D position.  Including a
+    # quantised UV in the key prevents merging vertices whose UVs
+    # disagree, eliminating the "wedge triangle" artefact at tile
+    # junctions.  The cost is a marginally larger vertex buffer at
+    # polygon corners (negligible in practice).
     final_verts = []
     final_map = {}  # old_index → new_index
-    pos_hash = {}   # rounded position tuple → new_index
+    pos_uv_hash = {}  # (rounded_pos, rounded_uv) → new_index
 
     for old_idx, (pos, uv, vc) in enumerate(all_verts):
         # Normalize near-zero components to +0.0 to avoid -0.0 vs +0.0
@@ -927,12 +944,15 @@ def subdivide_tile_mesh(
         px0 = 0.0 if abs(pos[0]) < 1e-12 else pos[0]
         px1 = 0.0 if abs(pos[1]) < 1e-12 else pos[1]
         px2 = 0.0 if abs(pos[2]) < 1e-12 else pos[2]
-        key = (round(px0, 7), round(px1, 7), round(px2, 7))
-        if key in pos_hash:
-            final_map[old_idx] = pos_hash[key]
+        key = (
+            round(px0, 7), round(px1, 7), round(px2, 7),
+            round(float(uv[0]), 6), round(float(uv[1]), 6),
+        )
+        if key in pos_uv_hash:
+            final_map[old_idx] = pos_uv_hash[key]
         else:
             new_idx = len(final_verts)
-            pos_hash[key] = new_idx
+            pos_uv_hash[key] = new_idx
             final_map[old_idx] = new_idx
             final_verts.append((pos, uv, vc))
 

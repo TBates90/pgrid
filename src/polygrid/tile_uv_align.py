@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -45,7 +45,7 @@ from .polygrid import PolyGrid
 from .tile_detail import find_polygon_corners, DetailGridCollection
 
 if TYPE_CHECKING:
-    from PIL import Image
+    from PIL import Image, ImageFont
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -855,6 +855,75 @@ def mask_warped_to_uv_polygon(
     return bg
 
 
+def _load_debug_font(size: int) -> "ImageFont.FreeTypeFont":
+    """Load DejaVuSansMono-Bold at *size*, falling back gracefully."""
+    from PIL import ImageFont
+
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ):
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
+
+
+def _grid_to_slot_px(
+    grid_corners: List[Tuple[float, float]],
+    uv_corners: List[Tuple[float, float]],
+    tile_size: int,
+    gutter: int,
+) -> "Callable[[float, float], Tuple[float, float]]":
+    """Return a piecewise-affine mapper: grid (x, y) → slot pixel (px, py).
+
+    Uses the same triangle-fan decomposition as the image warp so
+    sub-face centroids land in the correct warped positions.
+    """
+    gc = np.array(grid_corners, dtype=np.float64)
+    uv = np.array(uv_corners, dtype=np.float64)
+    n = len(gc)
+    src_c = gc.mean(axis=0)
+
+    # UV → pixel
+    dst_corners = np.empty_like(uv)
+    for i in range(n):
+        dst_corners[i, 0] = gutter + uv[i, 0] * tile_size
+        dst_corners[i, 1] = gutter + (1.0 - uv[i, 1]) * tile_size
+    dst_c = dst_corners.mean(axis=0)
+
+    # Per-sector affines (grid → slot pixel)
+    sectors = _build_sector_affines(gc, src_c, dst_corners, dst_c)
+
+    # Corner angles for sector assignment
+    corner_angles = np.arctan2(gc[:, 1] - src_c[1], gc[:, 0] - src_c[0])
+
+    def _transform(gx: float, gy: float) -> Tuple[float, float]:
+        pt = np.array([gx, gy])
+        angle = math.atan2(gy - src_c[1], gx - src_c[0])
+        # Find sector
+        best_i = 0
+        for i in range(n):
+            j = (i + 1) % n
+            a0 = corner_angles[i] % (2.0 * math.pi)
+            a1 = corner_angles[j] % (2.0 * math.pi)
+            pn = angle % (2.0 * math.pi)
+            if a0 <= a1:
+                if a0 <= pn < a1:
+                    best_i = i
+                    break
+            else:
+                if pn >= a0 or pn < a1:
+                    best_i = i
+                    break
+        A, t = sectors[best_i]
+        out = A @ pt + t
+        return float(out[0]), float(out[1])
+
+    return _transform
+
+
 def draw_debug_labels(
     img: "Image.Image",
     uv_corners: List[Tuple[float, float]],
@@ -862,55 +931,62 @@ def draw_debug_labels(
     edge_neighbours: Dict[int, str],
     tile_size: int,
     gutter: int = 0,
+    *,
+    detail_grid: Optional[PolyGrid] = None,
+    grid_corners: Optional[List[Tuple[float, float]]] = None,
+    face_type: Optional[str] = None,
+    detail_rings: Optional[int] = None,
+    xlim: Optional[Tuple[float, float]] = None,
+    ylim: Optional[Tuple[float, float]] = None,
 ) -> "Image.Image":
-    """Draw tile-ID and per-edge labels on a warped slot image.
+    """Draw comprehensive debug annotations on a warped slot image.
 
-    Places the tile ID (e.g. ``t5``) at the polygon centroid and
-    edge labels (e.g. ``e0→t12``) at the midpoint of each UV
-    polygon edge, oriented along the edge.
+    Layers (drawn back-to-front):
 
-    The edge numbering matches the globe grid's vertex ordering,
-    so adjacent tiles sharing an edge should show the **same**
-    edge index at their shared boundary.
+    1. **Grid-line overlay** — sub-face outlines transformed to
+       warped pixel space (semi-transparent white).
+    2. **Tile ID watermark** — large semi-transparent text filling
+       most of the polygon.  Pentagon tiles are prefixed with ``⬠``.
+    3. **Sub-face labels** — local face ID (e.g. ``f3``) at each
+       sub-face centroid, sized to fit the cell.  Drawn for
+       ``detail_rings ≤ 4`` (at ``detail_rings = 5`` the 9 px font
+       is too small to read).
+    4. **Edge arrows** — directional arrows along each UV polygon
+       edge showing winding order, with neighbour tile ID in black.
+    5. **Corner vertex markers** — numbered green dots at each
+       polygon corner, labels offset inward to avoid globe clipping.
 
     Parameters
     ----------
     img : PIL.Image.Image
         Warped slot image to annotate.
     uv_corners : list of (u, v)
-        UV polygon corners in [0, 1] space **in original vertex order**
-        (from :func:`get_tile_uv_vertices`).
+        UV polygon corners in [0, 1] space.
     face_id : str
-        Tile ID string (e.g. ``"t5"``).
     edge_neighbours : dict
-        ``{edge_index: neighbour_face_id}`` from
-        :func:`compute_neighbor_edge_mapping`.
-    tile_size : int
-    gutter : int
+        ``{edge_index: neighbour_face_id}``.
+    tile_size, gutter : int
+    detail_grid : PolyGrid, optional
+        The un-stitched detail grid for this tile.  Enables sub-face
+        labels and grid-line overlay.
+    grid_corners : list of (x, y), optional
+        Polygon corners in grid (Tutte) space, matched to
+        *uv_corners* ordering.  Required for sub-face labels.
+    face_type : ``"pent"`` or ``"hex"``, optional
+    detail_rings : int, optional
+    xlim, ylim : (min, max), optional
+        View limits — only needed for grid-line overlay (transform
+        from grid-space to image-space).
 
     Returns
     -------
     PIL.Image.Image
-        Annotated copy of the image.
+        Annotated copy of the image (RGBA).
     """
-    from PIL import ImageDraw, ImageFont
+    from PIL import Image as _PILImage, ImageDraw, ImageFont
 
-    out = img.copy()
-    draw = ImageDraw.Draw(out)
-
-    # Try to load a small monospace font; fall back to default
-    font_size = max(14, tile_size // 10)
-    font_small = max(11, tile_size // 14)
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", font_size)
-        font_s = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", font_small)
-    except (OSError, IOError):
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size)
-            font_s = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_small)
-        except (OSError, IOError):
-            font = ImageFont.load_default()
-            font_s = font
+    slot_size = tile_size + 2 * gutter
+    out = img.convert("RGBA")
 
     # UV → pixel helper
     def _uv_to_px(u: float, v: float) -> Tuple[float, float]:
@@ -918,85 +994,201 @@ def draw_debug_labels(
                 gutter + (1.0 - v) * tile_size)
 
     n = len(uv_corners)
-
-    # ── Centre label ────────────────────────────────────────────
     cu = sum(c[0] for c in uv_corners) / n
     cv = sum(c[1] for c in uv_corners) / n
     cx, cy = _uv_to_px(cu, cv)
-    label = face_id.upper()
-    bbox = draw.textbbox((0, 0), label, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    # Dark background pill
-    pad = 3
-    draw.rounded_rectangle(
-        [cx - tw / 2 - pad, cy - th / 2 - pad,
-         cx + tw / 2 + pad, cy + th / 2 + pad],
-        radius=4, fill=(0, 0, 0, 180),
-    )
-    draw.text((cx - tw / 2, cy - th / 2), label, fill="white", font=font)
 
-    # ── Edge labels ─────────────────────────────────────────────
-    from PIL import Image as _PILImage
+    is_pentagon = (face_type == "pent") if face_type else (n == 5)
+    n_subfaces = len(detail_grid.faces) if detail_grid else 0
+    rings = detail_rings or (detail_grid.metadata.get("detail_rings") if detail_grid else None)
+    can_draw_subfaces = (
+        detail_grid is not None
+        and grid_corners is not None
+        and rings is not None
+        and rings <= 4
+    )
+
+    # Build piecewise grid→pixel transform (if we have data)
+    _g2px = None
+    if detail_grid is not None and grid_corners is not None:
+        _g2px = _grid_to_slot_px(
+            grid_corners, uv_corners, tile_size, gutter,
+        )
+
+    # ── Layer 1: Grid-line overlay ──────────────────────────────
+    if _g2px is not None and detail_grid is not None:
+        overlay = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+        ov_draw = ImageDraw.Draw(overlay)
+        for face in detail_grid.faces.values():
+            verts_px = []
+            for vid in face.vertex_ids:
+                v = detail_grid.vertices.get(vid)
+                if v is None or not v.has_position():
+                    break
+                px, py = _g2px(v.x, v.y)
+                verts_px.append((px, py))
+            else:
+                if len(verts_px) >= 3:
+                    verts_px.append(verts_px[0])  # close polygon
+                    ov_draw.line(verts_px, fill=(255, 255, 255, 90), width=1)
+        out = _PILImage.alpha_composite(out, overlay)
+
+    # ── Layer 2: Tile ID watermark ──────────────────────────────
+    watermark = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+    wm_draw = ImageDraw.Draw(watermark)
+    wm_label = face_id.upper()
+    wm_font_size = max(24, tile_size // 3)
+    wm_font = _load_debug_font(wm_font_size)
+    bbox = wm_draw.textbbox((0, 0), wm_label, font=wm_font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    wm_draw.text(
+        (cx - tw / 2, cy - th / 2), wm_label,
+        fill=(255, 255, 255, 70), font=wm_font,
+    )
+    out = _PILImage.alpha_composite(out, watermark)
+
+    # ── Layer 3: Sub-face labels ────────────────────────────────
+    if can_draw_subfaces and _g2px is not None:
+        from .geometry import face_center as _face_center
+
+        # Estimate cell pixel size → font size
+        cell_px = tile_size / math.sqrt(max(1, n_subfaces))
+        sf_font_size = max(8, int(cell_px * 0.17))
+        sf_font = _load_debug_font(sf_font_size)
+
+        sf_layer = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+        sf_draw = ImageDraw.Draw(sf_layer)
+
+        for fid, face in detail_grid.faces.items():
+            fc = _face_center(detail_grid.vertices, face)
+            if fc is None:
+                continue
+            px, py = _g2px(fc[0], fc[1])
+            # Short label — just the face id (e.g. "f3")
+            lbl = fid
+            bb = sf_draw.textbbox((0, 0), lbl, font=sf_font)
+            lw, lh = bb[2] - bb[0], bb[3] - bb[1]
+            tx = px - lw / 2
+            ty = py - lh / 2
+            # Outline for readability: dark shadow offset by 1px
+            for ox, oy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                sf_draw.text((tx + ox, ty + oy), lbl,
+                             fill=(0, 0, 0, 200), font=sf_font)
+            sf_draw.text((tx, ty), lbl, fill=(255, 255, 255, 220), font=sf_font)
+
+        out = _PILImage.alpha_composite(out, sf_layer)
+
+    # ── Layer 4: Edge arrows + neighbour labels ─────────────────
+    edge_layer = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+    edge_draw = ImageDraw.Draw(edge_layer)
+    edge_font = _load_debug_font(max(11, tile_size // 18))
 
     for k in range(n):
         j = (k + 1) % n
-        u0, v0 = uv_corners[k]
-        u1, v1 = uv_corners[j]
+        px0x, px0y = _uv_to_px(*uv_corners[k])
+        px1x, px1y = _uv_to_px(*uv_corners[j])
 
-        # Edge midpoint in pixel space
-        mx, my = _uv_to_px((u0 + u1) / 2, (v0 + v1) / 2)
+        # Arrow line from 35% to 65% along the edge (kept inward
+        # so it isn't clipped when rendered on the globe).
+        ax0 = px0x + (px1x - px0x) * 0.35
+        ay0 = px0y + (px1y - px0y) * 0.35
+        ax1 = px0x + (px1x - px0x) * 0.65
+        ay1 = px0y + (px1y - px0y) * 0.65
+        # Push the arrow segment inward toward the polygon centre
+        amx, amy = (ax0 + ax1) / 2, (ay0 + ay1) / 2
+        dx_a, dy_a = cx - amx, cy - amy
+        da = math.hypot(dx_a, dy_a) or 1.0
+        arrow_inset = min(14, da * 0.12)
+        ax0 += dx_a / da * arrow_inset
+        ay0 += dy_a / da * arrow_inset
+        ax1 += dx_a / da * arrow_inset
+        ay1 += dy_a / da * arrow_inset
+        edge_draw.line([(ax0, ay0), (ax1, ay1)], fill=(0, 220, 220, 180), width=3)
 
-        # Push label slightly inward toward centre
-        dx, dy = cx - mx, cy - my
-        dist = math.hypot(dx, dy) or 1.0
-        inset = min(14, dist * 0.20)
-        mx += dx / dist * inset
-        my += dy / dist * inset
-
-        # Label text
-        nid = edge_neighbours.get(k, "?")
-        label_e = f"e{k}\u2192{nid}"
-
-        # Compute rotation angle from the edge direction (in pixel space).
-        # Pixel-space: x right, y down — so negate y for standard atan2.
-        px0x, px0y = _uv_to_px(u0, v0)
-        px1x, px1y = _uv_to_px(u1, v1)
+        # Arrowhead at the 75% end
         edge_dx = px1x - px0x
         edge_dy = px1y - px0y
+        elen = math.hypot(edge_dx, edge_dy) or 1.0
+        ux, uy = edge_dx / elen, edge_dy / elen
+        # Perpendicular
+        px_perp, py_perp = -uy, ux
+        head_len = min(8, elen * 0.08)
+        head_w = head_len * 0.6
+        tip_x, tip_y = ax1, ay1
+        base_x = tip_x - ux * head_len
+        base_y = tip_y - uy * head_len
+        edge_draw.polygon([
+            (tip_x, tip_y),
+            (base_x + px_perp * head_w, base_y + py_perp * head_w),
+            (base_x - px_perp * head_w, base_y - py_perp * head_w),
+        ], fill=(0, 220, 220, 220))
+
+        # Neighbour label near edge midpoint, pushed slightly inward
+        mx = (px0x + px1x) / 2
+        my = (px0y + px1y) / 2
+        dx_in, dy_in = cx - mx, cy - my
+        d_in = math.hypot(dx_in, dy_in) or 1.0
+        inset = min(16, d_in * 0.18)
+        mx += dx_in / d_in * inset
+        my += dy_in / d_in * inset
+
+        nid = edge_neighbours.get(k, "?")
+        lbl_e = f"e{k}\u2192{nid}"
+
+        # Rotation along edge
         angle_deg = -math.degrees(math.atan2(edge_dy, edge_dx))
-        # Keep text roughly upright (never upside-down)
         if angle_deg > 90:
             angle_deg -= 180
         elif angle_deg < -90:
             angle_deg += 180
 
-        # Render the label into a small temp image, rotate, then paste
-        bbox_e = draw.textbbox((0, 0), label_e, font=font_s)
-        ew, eh = bbox_e[2] - bbox_e[0], bbox_e[3] - bbox_e[1]
+        bb_e = edge_draw.textbbox((0, 0), lbl_e, font=edge_font)
+        ew, eh = bb_e[2] - bb_e[0], bb_e[3] - bb_e[1]
         pad_t = 4
-        tmp_w = ew + pad_t * 2
-        tmp_h = eh + pad_t * 2
-        tmp = _PILImage.new("RGBA", (tmp_w, tmp_h), (0, 0, 0, 0))
+        tmp = _PILImage.new("RGBA", (ew + pad_t * 2, eh + pad_t * 2), (0, 0, 0, 0))
         tmp_draw = ImageDraw.Draw(tmp)
-        # Dark pill background
-        tmp_draw.rounded_rectangle(
-            [pad_t - 2, pad_t - 2, pad_t + ew + 2, pad_t + eh + 2],
-            radius=3, fill=(0, 0, 0, 180),
-        )
-        tmp_draw.text((pad_t, pad_t), label_e, fill="yellow", font=font_s)
-
-        # Rotate around the centre of the temp image
+        tmp_draw.text((pad_t, pad_t), lbl_e, fill=(0, 0, 0, 220), font=edge_font)
         rotated = tmp.rotate(angle_deg, resample=_PILImage.BICUBIC, expand=True)
-
-        # Paste centred on (mx, my)
         rw, rh = rotated.size
         paste_x = int(round(mx - rw / 2))
         paste_y = int(round(my - rh / 2))
-        out.paste(rotated, (paste_x, paste_y), rotated)
-        # Refresh draw handle after paste
-        draw = ImageDraw.Draw(out)
+        edge_layer.paste(rotated, (paste_x, paste_y), rotated)
+        edge_draw = ImageDraw.Draw(edge_layer)
 
-    return out
+    out = _PILImage.alpha_composite(out, edge_layer)
+
+    # ── Layer 5: Corner vertex markers ──────────────────────────
+    corner_layer = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+    c_draw = ImageDraw.Draw(corner_layer)
+    c_font = _load_debug_font(max(9, tile_size // 22))
+    dot_r = max(3, tile_size // 120)
+
+    for k in range(n):
+        vx, vy = _uv_to_px(*uv_corners[k])
+        c_draw.ellipse(
+            [vx - dot_r, vy - dot_r, vx + dot_r, vy + dot_r],
+            fill=(50, 255, 50, 210),
+        )
+        vlbl = f"v{k}"
+        # Offset label well inward so it isn't clipped on the globe
+        dx_v, dy_v = cx - vx, cy - vy
+        d_v = math.hypot(dx_v, dy_v) or 1.0
+        off = max(dot_r + 10, d_v * 0.18)
+        lx = vx + dx_v / d_v * off
+        ly = vy + dy_v / d_v * off
+        bb_v = c_draw.textbbox((0, 0), vlbl, font=c_font)
+        vw, vh = bb_v[2] - bb_v[0], bb_v[3] - bb_v[1]
+        # Outline
+        for ox, oy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            c_draw.text((lx - vw / 2 + ox, ly - vh / 2 + oy), vlbl,
+                        fill=(0, 0, 0, 200), font=c_font)
+        c_draw.text((lx - vw / 2, ly - vh / 2), vlbl,
+                    fill=(50, 255, 50, 240), font=c_font)
+
+    out = _PILImage.alpha_composite(out, corner_layer)
+
+    # Convert back to RGB for downstream pipeline
+    return out.convert("RGB")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1653,19 +1845,25 @@ def _stitch_atlas_seams(
     *,
     tile_size: int = 256,
     gutter: int = 4,
-    stitch_width: int = 2,
+    stitch_width: int = 8,
 ) -> "Image.Image":
-    """Average boundary pixels along shared edges in the packed atlas.
+    """Cross-fade boundary pixels along shared edges in the packed atlas.
 
     For every pair of adjacent tiles that share a Goldberg edge, this
-    function rasterises a narrow band of pixels along that edge in
-    **both** atlas slots and writes the average to both.  This removes
-    the 1–2 px colour discontinuity that remains after per-tile
-    warping, because each tile independently sampled its edge pixels
-    from slightly different source positions.
+    function rasterises a band of pixels *stitch_width* deep on each
+    side of that edge in **both** atlas slots and writes a weighted
+    blend to both.  Pixels exactly on the edge receive a 50/50 mix;
+    pixels further inside the tile fade linearly back to their
+    original colour.  This **gradient cross-fade** hides structural
+    misalignment of the sub-tile hex grid that simple averaging cannot
+    fix — the two composites inevitably rasterise the boundary region
+    from slightly different viewpoints, and averaging a narrow 2 px
+    strip only conceals sub-pixel colour shifts, not the 2–3 px
+    offset in grid line position.
 
-    The implementation mirrors :func:`uv_texture._stitch_tile_edges`
-    but operates in atlas pixel space rather than per-tile image space.
+    The default *stitch_width* of 8 is tuned for ``tile_size=512``
+    with ``detail_rings=2`` (grid cells ≈ 100 px).  Increase for
+    higher detail_rings; decrease if the blend visibly softens detail.
 
     Parameters
     ----------
@@ -1679,9 +1877,10 @@ def _stitch_atlas_seams(
     tile_size : int
     gutter : int
     stitch_width : int
-        Half-width (in pixels) of the blend band on each side of the
-        shared edge.  Default 2 — enough to hide sub-pixel warp
-        misalignment without blurring detail.
+        Half-width (in pixels) of the cross-fade band on each side
+        of the shared edge.  Default 8.  Pixels at distance *d* from
+        the edge receive blend weight ``d / stitch_width`` for the
+        local tile and ``1 - d / stitch_width`` for the neighbour.
 
     Returns
     -------
@@ -1748,59 +1947,212 @@ def _stitch_atlas_seams(
         # Rasterise sample points along the shared edge
         n_along = max(tile_size * 4, 256)
         t_vals = np.linspace(0.0, 1.0, n_along)
-        w_vals = np.arange(-stitch_width, stitch_width + 1, dtype=np.float64)
+        # Offsets from 0 (on the edge) to stitch_width (deepest inside)
+        w_vals = np.arange(0, stitch_width + 1, dtype=np.float64)
         px_uv = 1.0 / tile_size  # one pixel in UV space
 
         # UV positions along the edge: (n_along, 2)
         base_a = (1.0 - t_vals[:, None]) * uv_a0 + t_vals[:, None] * uv_a1
         base_b = (1.0 - t_vals[:, None]) * uv_b0 + t_vals[:, None] * uv_b1
 
-        # Add perpendicular offsets: (n_along, n_w, 2)
-        off_a = w_vals[None, :, None] * px_uv * perp_a[None, None, :]
-        off_b = w_vals[None, :, None] * px_uv * perp_b[None, None, :]
-        uv_a_all = base_a[:, None, :] + off_a
-        uv_b_all = base_b[:, None, :] + off_b
+        # Cross-fade weights: at offset 0 → 0.5 local / 0.5 remote;
+        # at offset stitch_width → 1.0 local / 0.0 remote.
+        # alpha_local(d) = 0.5 + 0.5 * (d / stitch_width)
+        alpha_local = 0.5 + 0.5 * w_vals / max(stitch_width, 1)
 
-        # UV → atlas pixel coordinates
-        # uv_polygon_px formula: px_x = gutter + u * tile_size
-        #                        px_y = gutter + (1 - v) * tile_size
-        # Then offset by slot origin in the atlas.
-        ax = np.round(ox_a + gutter + uv_a_all[:, :, 0] * tile_size).astype(np.int32)
-        ay = np.round(oy_a + gutter + (1.0 - uv_a_all[:, :, 1]) * tile_size).astype(np.int32)
-        bx = np.round(ox_b + gutter + uv_b_all[:, :, 0] * tile_size).astype(np.int32)
-        by = np.round(oy_b + gutter + (1.0 - uv_b_all[:, :, 1]) * tile_size).astype(np.int32)
+        for w_idx, w in enumerate(w_vals):
+            # Offset *inward* into tile A (positive perp direction)
+            off_a = w * px_uv * perp_a
+            uv_a_pts = base_a + off_a[None, :]  # (n_along, 2)
+            # Corresponding offset *inward* into tile B
+            off_b = w * px_uv * perp_b
+            uv_b_pts = base_b + off_b[None, :]
 
-        # Validity mask (must be within atlas bounds)
-        valid = (
-            (ax >= 0) & (ax < atlas_w) & (ay >= 0) & (ay < atlas_h) &
-            (bx >= 0) & (bx < atlas_w) & (by >= 0) & (by < atlas_h)
-        )
+            ax = np.round(ox_a + gutter + uv_a_pts[:, 0] * tile_size).astype(np.int32)
+            ay = np.round(oy_a + gutter + (1.0 - uv_a_pts[:, 1]) * tile_size).astype(np.int32)
+            bx = np.round(ox_b + gutter + uv_b_pts[:, 0] * tile_size).astype(np.int32)
+            by = np.round(oy_b + gutter + (1.0 - uv_b_pts[:, 1]) * tile_size).astype(np.int32)
 
-        v_idx = np.where(valid)
-        if len(v_idx[0]) == 0:
-            continue
+            valid = (
+                (ax >= 0) & (ax < atlas_w) & (ay >= 0) & (ay < atlas_h) &
+                (bx >= 0) & (bx < atlas_w) & (by >= 0) & (by < atlas_h)
+            )
+            v_idx = np.where(valid)[0]
+            if len(v_idx) == 0:
+                continue
 
-        ixa = ax[v_idx]
-        iya = ay[v_idx]
-        ixb = bx[v_idx]
-        iyb = by[v_idx]
+            ixa = ax[v_idx]
+            iya = ay[v_idx]
+            ixb = bx[v_idx]
+            iyb = by[v_idx]
 
-        # De-duplicate pixel pairs
-        pairs = np.column_stack([iya, ixa, iyb, ixb])
-        _, unique_idx = np.unique(pairs, axis=0, return_index=True)
-        ixa = ixa[unique_idx]
-        iya = iya[unique_idx]
-        ixb = ixb[unique_idx]
-        iyb = iyb[unique_idx]
+            ca = arr[iya, ixa]  # (N, 3)
+            cb = arr[iyb, ixb]
 
-        # Average and write back
-        ca = arr[iya, ixa]  # (N, 3)
-        cb = arr[iyb, ixb]
-        avg = (ca + cb) * 0.5
-        arr[iya, ixa] = avg
-        arr[iyb, ixb] = avg
+            # For tile A at this offset: blend toward B's colour.
+            # alpha_local[w_idx] is how much A keeps; rest comes from B.
+            a_loc = alpha_local[w_idx]
+            a_rem = 1.0 - a_loc
+            arr[iya, ixa] = a_loc * ca + a_rem * cb
+
+            # For tile B at this offset: blend toward A's colour
+            # (symmetric — B keeps the same fraction of itself).
+            arr[iyb, ixb] = a_loc * cb + a_rem * ca
 
     return _PILImage.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 21B.2 — Corner-junction blending post-pass
+# ═══════════════════════════════════════════════════════════════════
+
+def _find_vertex_junctions(
+    globe_grid: PolyGrid,
+    face_ids: List[str],
+) -> Dict[str, List[Tuple[str, int]]]:
+    """Build a vertex → incident-tile map for globe polygon vertices.
+
+    Returns ``{vertex_id: [(face_id, vertex_index), …]}`` where
+    *vertex_index* is the position of the vertex within
+    ``globe_grid.faces[face_id].vertex_ids``.
+
+    Only vertices incident to **two or more** tiles that are in
+    *face_ids* are returned (these are the junction points where
+    texture mismatches can appear).
+    """
+    fid_set = set(face_ids)
+    vertex_to_faces: Dict[str, List[Tuple[str, int]]] = {}
+
+    for fid in face_ids:
+        face = globe_grid.faces.get(fid)
+        if face is None:
+            continue
+        for idx, vid in enumerate(face.vertex_ids):
+            vertex_to_faces.setdefault(vid, []).append((fid, idx))
+
+    # Keep only junctions (≥ 2 incident atlas tiles)
+    return {
+        vid: entries
+        for vid, entries in vertex_to_faces.items()
+        if len(entries) >= 2
+    }
+
+
+def _blend_corner_junctions(
+    atlas: "Image.Image",
+    uv_layout: Dict[str, Tuple[float, float, float, float]],
+    globe_grid: PolyGrid,
+    face_ids: List[str],
+    *,
+    tile_size: int = 256,
+    gutter: int = 4,
+    blend_radius: int = 2,
+) -> "Image.Image":
+    """Average atlas pixels at multi-tile vertex junctions.
+
+    At every globe vertex shared by two or more tiles, each incident
+    tile has a UV corner that maps to a small pixel neighbourhood in
+    its atlas slot.  If the warped textures differ slightly at that
+    corner (due to independent sampling), a tiny wedge artefact can
+    appear on the rendered globe.
+
+    This function samples a disc of *blend_radius* pixels around
+    each junction in every incident tile's atlas slot, computes the
+    mean colour, and writes it back to all of them — the atlas-space
+    analogue of ``_stitch_atlas_seams`` but for point junctions
+    rather than edge bands.
+
+    Parameters
+    ----------
+    atlas : PIL.Image.Image
+        Packed atlas — modified in-place and returned.
+    uv_layout : dict
+        ``{face_id: (u_min, v_min, u_max, v_max)}``.
+    globe_grid : PolyGrid
+    face_ids : list of str
+    tile_size : int
+    gutter : int
+    blend_radius : int
+        Radius in pixels of the averaging disc around each junction
+        (default 2).  A small value is enough — the artefact is
+        localised to 1–2 pixels.
+
+    Returns
+    -------
+    PIL.Image.Image
+        The atlas with corner junctions blended.
+    """
+    from PIL import Image as _PILImg
+
+    try:
+        from .uv_texture import get_tile_uv_vertices
+    except ImportError:
+        return atlas
+
+    junctions = _find_vertex_junctions(globe_grid, face_ids)
+    if not junctions:
+        return atlas
+
+    atlas_w, atlas_h = atlas.size
+    arr = np.array(atlas.convert("RGB"), dtype=np.float64)
+
+    # Pre-build a disc mask of offsets within *blend_radius* pixels.
+    offsets = []
+    for dy in range(-blend_radius, blend_radius + 1):
+        for dx in range(-blend_radius, blend_radius + 1):
+            if dx * dx + dy * dy <= blend_radius * blend_radius:
+                offsets.append((dy, dx))
+    offsets_arr = np.array(offsets, dtype=np.int32)  # (K, 2)  [dy, dx]
+
+    for _vid, entries in junctions.items():
+        # Collect atlas pixel centres for this junction across tiles.
+        centres = []  # list of (atlas_y, atlas_x) per incident tile
+        for fid, vtx_idx in entries:
+            if fid not in uv_layout:
+                continue
+            uv_verts = get_tile_uv_vertices(globe_grid, fid)
+            if vtx_idx >= len(uv_verts):
+                continue
+            u, v = uv_verts[vtx_idx]
+
+            # Atlas slot pixel: same formula as _stitch_atlas_seams
+            u_min, v_min, u_max, v_max = uv_layout[fid]
+            ox = round(u_min * atlas_w) - gutter
+            oy = round((1.0 - v_max) * atlas_h) - gutter
+            px_x = int(round(ox + gutter + u * tile_size))
+            px_y = int(round(oy + gutter + (1.0 - v) * tile_size))
+            centres.append((px_y, px_x))
+
+        if len(centres) < 2:
+            continue
+
+        # Gather pixel values from the disc around each centre,
+        # compute the global mean, and write it back.
+        all_vals = []
+        pixel_locs = []  # (y, x) arrays per centre
+        for cy, cx in centres:
+            ys = offsets_arr[:, 0] + cy
+            xs = offsets_arr[:, 1] + cx
+            valid = (ys >= 0) & (ys < atlas_h) & (xs >= 0) & (xs < atlas_w)
+            ys = ys[valid]
+            xs = xs[valid]
+            if len(ys) == 0:
+                pixel_locs.append((np.array([], dtype=np.int32),
+                                   np.array([], dtype=np.int32)))
+                continue
+            all_vals.append(arr[ys, xs])
+            pixel_locs.append((ys, xs))
+
+        if not all_vals:
+            continue
+
+        mean_colour = np.mean(np.concatenate(all_vals, axis=0), axis=0)
+
+        for ys, xs in pixel_locs:
+            if len(ys) > 0:
+                arr[ys, xs] = mean_colour
+
+    return _PILImg.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1821,9 +2173,11 @@ def build_polygon_cut_atlas(
     debug_labels: bool = False,
     output_dir: Optional[Path] = None,
     pentagon_rotation_steps: int = 0,
-    stitch_seams: bool = True,
-    stitch_width: int = 2,
+    stitch_seams: bool = False,
+    stitch_width: int = 8,
     equalise_sectors: bool = False,
+    blend_corners: bool = False,
+    blend_radius: int = 2,
 ) -> Tuple["Image.Image", Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas from stitched tile images, UV-aligned.
 
@@ -1871,17 +2225,24 @@ def build_polygon_cut_atlas(
         Positive = clockwise.  Use to correct any residual
         pentagon orientation mismatch (default 0).
     stitch_seams : bool
-        If True (default), run a post-pass that averages pixels along
-        shared Goldberg edges so adjacent atlas tiles match exactly.
+        If True, run a cross-fade post-pass along shared Goldberg
+        edges so adjacent atlas tiles transition smoothly.
+        Default False — disabled to avoid masking genuine alignment
+        issues that should be fixed at the warp/composite level.
     stitch_width : int
-        Half-width of the blend band in pixels (default 2).
+        Half-width of the cross-fade band in pixels (default 8).
+        Only used when ``stitch_seams=True``.
     equalise_sectors : bool
         If True, apply ``_equalise_sector_ratios`` to irregular hex
         tiles (those adjacent to pentagons) so the piecewise-warp
-        sectors become conformal.  This reduces anisotropic distortion
-        but shifts warp sampling slightly — the seam post-pass
-        (``stitch_seams``) compensates for any resulting boundary
-        mismatch.  Default False (conservative).
+        sectors become conformal.  Default False (conservative).
+    blend_corners : bool
+        If True, run a post-pass that averages pixels at multi-tile
+        vertex junctions.  Default False — disabled to avoid masking
+        genuine alignment issues.
+    blend_radius : int
+        Radius in pixels of the averaging disc at each corner
+        junction (default 2).  Only used when ``blend_corners=True``.
 
     Returns
     -------
@@ -1995,7 +2356,7 @@ def build_polygon_cut_atlas(
                 fill_colour=mask_colour,
             )
 
-        # Draw debug labels (tile ID + edge→neighbour)
+        # Draw debug labels (tile ID, sub-face IDs, edge arrows, etc.)
         if debug_labels:
             from .detail_terrain import compute_neighbor_edge_mapping
             # compute_neighbor_edge_mapping returns {neighbour_id: edge_index}
@@ -2008,9 +2369,17 @@ def build_polygon_cut_atlas(
             for nid, pg_eidx in neigh_to_edge_pg.items():
                 gt_eidx = (pg_eidx - pg_gt_offset) % n_sides
                 edge_to_neigh_gt[gt_eidx] = nid
+            face_type = globe_grid.faces[fid].face_type
+            d_rings = dg.metadata.get("detail_rings")
             warped = draw_debug_labels(
                 warped, uv_corners, fid, edge_to_neigh_gt,
                 tile_size=tile_size, gutter=gutter,
+                detail_grid=dg,
+                grid_corners=grid_corners,
+                face_type=face_type,
+                detail_rings=d_rings,
+                xlim=xlim,
+                ylim=ylim,
             )
 
         # Paste into atlas
@@ -2041,6 +2410,14 @@ def build_polygon_cut_atlas(
             atlas, uv_layout, globe_grid, face_ids,
             tile_size=tile_size, gutter=gutter,
             stitch_width=stitch_width,
+        )
+
+    # ── Corner-junction blending post-pass ───────────────────────
+    if blend_corners:
+        atlas = _blend_corner_junctions(
+            atlas, uv_layout, globe_grid, face_ids,
+            tile_size=tile_size, gutter=gutter,
+            blend_radius=blend_radius,
         )
 
     return atlas, uv_layout

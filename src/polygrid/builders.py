@@ -86,11 +86,29 @@ def _get_edge_ids(
 
 
 def build_pure_hex_grid(rings: int, size: float = 1.0) -> PolyGrid:
-    """Build a pure hex grid in a hexagonal shape using axial coordinates."""
+    """Build a pure hex grid in a hexagonal shape using axial coordinates.
+
+    Face IDs are assigned centre-outward (f1 = centre cell) so the
+    ordering is consistent with the pentagon-centred Goldberg grids.
+    """
     if rings < 0:
         raise ValueError("rings must be >= 0")
 
     coords = _hex_area(rings)
+
+    # Sort centre-outward so f1 is always the centre cell, matching
+    # the pentagon grid convention.  Within the same ring, sort by
+    # angle for deterministic ordering.
+    import math as _math
+
+    def _sort_key(c: AxialCoord) -> tuple:
+        px, py = _axial_to_pixel(c, size)
+        dist = _math.hypot(px, py)
+        angle = _math.atan2(py, px)
+        return (round(dist, 6), angle)
+
+    coords.sort(key=_sort_key)
+
     vertex_map: Dict[str, Vertex] = {}
     edge_map: Dict[Tuple[str, str], Edge] = {}
     faces: List[Face] = []
