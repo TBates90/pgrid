@@ -211,6 +211,12 @@ def main():
         help="Use v1 renderer (deprecated; flat projection, no PBR)",
     )
     parser.add_argument(
+        "--uv-inset-px", type=float, default=0.0,
+        help="UV polygon inset in atlas pixels before optional clamping "
+             "(default: 0.0 for polygon-cut atlases which already have "
+             "gutter + seam stitching; use 1.5 for raw atlases)",
+    )
+    parser.add_argument(
         "--no-view", action="store_true",
         help="Build atlas only, don't launch 3D viewer",
     )
@@ -346,6 +352,7 @@ def main():
             subdivisions=args.subdivisions,
             width=args.width,
             height=args.height,
+            uv_inset_px=args.uv_inset_px,
         )
 
 
