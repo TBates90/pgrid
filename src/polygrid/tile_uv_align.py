@@ -412,13 +412,91 @@ def compute_polygon_corners_px(
 # so the warp samples a wider region of the rendered image, shrinking
 # the tile pattern to match hexagon density.
 #
-# In practice, the full theoretical correction (1.1373) over-zooms
-# because the stitched image already includes apron data.  A small
-# 2 % expansion is enough to avoid clipping the pentagon boundary
-# without visibly shrinking the texture.  If pentagon tiles look
-# noticeably different in density from their hex neighbours, increase
-# this toward the theoretical value.
-_PENTAGON_GRID_SCALE = 1.02
+# Minimum pentagon grid scale — prevents under-zoom when the dynamic
+# computation yields a ratio very close to 1.0 (e.g. at low freq).
+_PENTAGON_GRID_SCALE_MIN = 1.02
+
+
+def _avg_sector_scale(
+    grid_corners: List[Tuple[float, float]],
+    uv_corners: List[Tuple[float, float]],
+    tile_size: int,
+    gutter: int,
+) -> float:
+    """Average triangle-fan sector scale from *grid_corners* → atlas pixels.
+
+    Each sector is the triangle (centroid, corner_i, corner_{i+1}).
+    The scale is ``sqrt(det_dst / det_src)`` — i.e. the square-root of
+    the area ratio — averaged over all sectors.  This gives a
+    single representative "pixels per grid-unit" number that can be
+    compared across tiles to detect density mismatch.
+    """
+    gc = np.asarray(grid_corners, dtype=float)
+    uv = np.asarray(uv_corners, dtype=float)
+    n = len(gc)
+
+    gc_c = gc.mean(axis=0)
+
+    # Map UV [0,1]² → atlas-slot pixel coordinates
+    dst = np.empty_like(uv)
+    for i in range(n):
+        u, v = uv[i]
+        dst[i, 0] = gutter + u * tile_size
+        dst[i, 1] = gutter + (1.0 - v) * tile_size
+    dst_c = dst.mean(axis=0)
+
+    total = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        S = np.column_stack([gc[i] - gc_c, gc[j] - gc_c])
+        D = np.column_stack([dst[i] - dst_c, dst[j] - dst_c])
+        det_s = abs(np.linalg.det(S))
+        det_d = abs(np.linalg.det(D))
+        if det_s > 1e-20:
+            total += np.sqrt(det_d / det_s)
+    return total / n
+
+
+def _compute_pentagon_grid_scale(
+    pent_grid_corners: List[Tuple[float, float]],
+    pent_uv_corners: List[Tuple[float, float]],
+    hex_neighbours_data: List[
+        Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]
+    ],
+    tile_size: int,
+    gutter: int,
+) -> float:
+    """Compute the dynamic grid-corner scale for a pentagon tile.
+
+    The pentagon's UV polygon has more UV area per grid-unit area than
+    its hex neighbours, so the warp maps it at a higher pixel density.
+    This function computes the ratio
+    ``pentagon_sector_scale / mean(hex_neighbour_sector_scales)``
+    and returns it as the multiplicative scale to apply to the
+    pentagon's grid corners (expanding them outward from the centroid
+    so the warp brings the pixel density back in line with the hexes).
+
+    Falls back to ``_PENTAGON_GRID_SCALE_MIN`` when there are no hex
+    neighbours or when the computed ratio is below that floor.
+    """
+    pent_scale = _avg_sector_scale(
+        pent_grid_corners, pent_uv_corners, tile_size, gutter,
+    )
+
+    if not hex_neighbours_data:
+        return _PENTAGON_GRID_SCALE_MIN
+
+    hex_scales = [
+        _avg_sector_scale(gc, uc, tile_size, gutter)
+        for gc, uc in hex_neighbours_data
+    ]
+    avg_hex = sum(hex_scales) / len(hex_scales)
+
+    if avg_hex < 1e-12:
+        return _PENTAGON_GRID_SCALE_MIN
+
+    ratio = pent_scale / avg_hex
+    return max(ratio, _PENTAGON_GRID_SCALE_MIN)
 
 
 def _scale_corners_from_centroid(
@@ -2262,6 +2340,47 @@ def build_polygon_cut_atlas(
 
     uv_layout: Dict[str, Tuple[float, float, float, float]] = {}
 
+    # ── Pre-pass: collect matched grid/UV corners for every tile ─
+    # Pentagon scale depends on hex-neighbour geometry, so we gather
+    # corners first and compute the dynamic scale before warping.
+    _tile_corners: Dict[str, Tuple[
+        List[Tuple[float, float]],   # grid_corners_matched
+        List[Tuple[float, float]],   # uv_corners
+        int,                         # n_sides
+    ]] = {}
+
+    for fid in face_ids:
+        if fid not in tile_images:
+            continue
+        dg = detail_grids[fid]
+        ns = len(globe_grid.faces[fid].vertex_ids)
+        is_pent = ns == 5
+
+        corner_ids = dg.metadata.get("corner_vertex_ids") if is_pent else None
+        dg.compute_macro_edges(n_sides=ns, corner_ids=corner_ids)
+        gc_raw = get_macro_edge_corners(dg, ns)
+        uc_raw = get_tile_uv_vertices(globe_grid, fid)
+        gc_matched = match_grid_corners_to_uv(gc_raw, globe_grid, fid)
+        _tile_corners[fid] = (gc_matched, uc_raw, ns)
+
+    # ── Compute dynamic pentagon scale factors ───────────────────
+    _pent_scales: Dict[str, float] = {}
+    for fid, (gc_m, uc, ns) in _tile_corners.items():
+        if ns != 5:
+            continue
+        # Gather hex-neighbour corner data
+        hex_data: List[
+            Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]
+        ] = []
+        for nid in globe_grid.faces[fid].neighbor_ids:
+            if nid in _tile_corners:
+                ngc, nuc, nns = _tile_corners[nid]
+                if nns == 6:
+                    hex_data.append((ngc, nuc))
+        _pent_scales[fid] = _compute_pentagon_grid_scale(
+            gc_m, uc, hex_data, tile_size, gutter,
+        )
+
     for idx, fid in enumerate(face_ids):
         if fid not in tile_images:
             continue
@@ -2278,31 +2397,16 @@ def build_polygon_cut_atlas(
         # pixel to prevent per-tile bg colour from causing seams.
         tile_img = fill_sentinel_pixels(tile_img)
 
-        # Get polygon corners from macro edges.
-        dg = detail_grids[fid]
-        n_sides = len(globe_grid.faces[fid].vertex_ids)
+        # Retrieve pre-computed corners.
+        grid_corners_matched, uv_corners, n_sides = _tile_corners[fid]
         is_pentagon = n_sides == 5
 
-        # Pentagon tiles store explicit corner_vertex_ids because
-        # angle-based detection is unreliable in the Tutte embedding.
-        corner_ids = dg.metadata.get("corner_vertex_ids") if is_pentagon else None
-        dg.compute_macro_edges(n_sides=n_sides, corner_ids=corner_ids)
-        grid_corners_raw = get_macro_edge_corners(dg, n_sides)
-
-        # Get UV polygon from GoldbergTile (raw = GoldbergTile order).
-        uv_corners_raw = get_tile_uv_vertices(globe_grid, fid)
-
-        # ── Match grid corners → UV corners ──────────────────────
-        # Use angular matching (handles both rotation and reflection
-        # between macro-edge and GoldbergTile orderings).
-        grid_corners_matched = match_grid_corners_to_uv(
-            grid_corners_raw, globe_grid, fid,
-        )
-        uv_corners = uv_corners_raw
+        # (macro edges already computed in pre-pass)
+        dg = detail_grids[fid]
 
         # ── Corner adjustment strategy ───────────────────────────
-        # Pentagon tiles: slight outward scale to avoid boundary
-        # cropping in the warp.
+        # Pentagon tiles: dynamic outward scale so the piecewise warp
+        # produces the same pixel density as the surrounding hexes.
         # Irregular hex tiles (adjacent to a pentagon): optionally
         # apply _equalise_sector_ratios so the piecewise-warp sectors
         # become conformal — the seam post-pass compensates for any
@@ -2312,7 +2416,7 @@ def build_polygon_cut_atlas(
         src_centroid = None
         if is_pentagon:
             grid_corners = _scale_corners_from_centroid(
-                grid_corners, _PENTAGON_GRID_SCALE,
+                grid_corners, _pent_scales[fid],
             )
         elif equalise_sectors:
             # Only worthwhile for irregular hexes (those adjacent to

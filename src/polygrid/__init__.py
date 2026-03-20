@@ -221,6 +221,7 @@ except ImportError:
 # ── Detail grids ────────────────────────────────────────────────────
 from .detail_grid import (
     build_detail_grid,
+    deform_grid_to_uv_shape,
     detail_face_count,
     generate_detail_terrain,
     render_detail_texture,
@@ -657,6 +658,7 @@ __all__ = [
     "get_pbr_shader_sources",
     # Detail grids
     "build_detail_grid",
+    "deform_grid_to_uv_shape",
     "detail_face_count",
     "generate_detail_terrain",
     "render_detail_texture",
