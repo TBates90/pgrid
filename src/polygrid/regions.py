@@ -46,45 +46,14 @@ from typing import (
 
 from .algorithms import build_face_adjacency, get_face_adjacency
 from .geometry import face_center, grid_center
-from .models import Face, Vertex
+from .models import Face, Region, Vertex
 from .polygrid import PolyGrid
 from .transforms import Overlay, OverlayRegion
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Data model
+# Data model (Region is defined in models.py and re-exported here)
 # ═══════════════════════════════════════════════════════════════════
-
-@dataclass
-class Region:
-    """A named collection of face ids with optional metadata.
-
-    Parameters
-    ----------
-    name : str
-        Human-readable name (e.g. ``"continent_1"``).
-    face_ids : frozenset[str]
-        Immutable set of face ids belonging to this region.
-    metadata : dict
-        Arbitrary key-value metadata (e.g. ``{"biome": "temperate"}``).
-    """
-
-    name: str
-    face_ids: FrozenSet[str] = field(default_factory=frozenset)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def size(self) -> int:
-        """Number of faces in the region."""
-        return len(self.face_ids)
-
-    def __contains__(self, face_id: str) -> bool:
-        return face_id in self.face_ids
-
-    def __repr__(self) -> str:
-        meta = f", metadata={self.metadata}" if self.metadata else ""
-        return f"Region(name={self.name!r}, faces={self.size}{meta})"
-
 
 @dataclass
 class RegionMap:

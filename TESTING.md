@@ -1,6 +1,6 @@
 # Testing quickguide
 
-This repository has a large test-suite. Use these quick commands to avoid long runs while iterating.
+This repository has a test suite of **605 tests across 14 files**. Use these quick commands to avoid long runs while iterating.
 
 Prerequisites
 - Install the sibling `models` package in editable mode (required for globe tests):
@@ -13,27 +13,26 @@ pip install -e ../models
 Run only fast tests (recommended during development)
 
 ```bash
-# from repo root
-./scripts/run_fast.sh
-# or directly
-python3 -m pytest -m fast
+pytest -m fast
 ```
 
-Run the full test-suite with grouped output and timing (slower):
+Run the full test-suite:
 
 ```bash
-python3 scripts/run_tests.py
+pytest
 ```
 
 Run only the medium+fast but not slow tests:
 
 ```bash
-python3 -m pytest -m "not slow"
+pytest -m "not slow"
 ```
 
 How tests are grouped
-- Fast: quick unit tests (< ~3s per file)
-- Medium: moderately expensive integration tests (3-60s per file)
-- Slow: long-running or performance tests (> 1m per file)
+- **Fast**: quick unit tests — core topology, tile data, noise, heightmap, mountains, UV, atlas, corner blend
+- **Medium**: moderately expensive — detail grids, detail render, detail terrain, grid deformation, globe renderer v2
+- **Slow**: long-running — globe tests
 
-If a particular test file is taking too long for your iteration flow, run it explicitly or mark it `slow` in `tests/conftest.py` so it is omitted from routine runs.
+Tiers are assigned automatically by `tests/conftest.py` based on filename.
+If a particular test file is taking too long for your iteration flow, run it
+explicitly or adjust its tier in `_FILE_TIER` in `tests/conftest.py`.

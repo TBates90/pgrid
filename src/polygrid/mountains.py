@@ -24,7 +24,6 @@ from .heightmap import (
     clamp_field,
     normalize_field,
     sample_noise_field,
-    sample_noise_field_region,
     smooth_field,
 )
 from .noise import (
@@ -36,7 +35,7 @@ from .noise import (
     terrace as terrace_fn,
 )
 from .polygrid import PolyGrid
-from .regions import Region
+from .models import Region
 from .tile_data import TileDataStore
 
 

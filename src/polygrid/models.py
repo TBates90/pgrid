@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from typing import Any, Dict, FrozenSet, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -69,3 +69,34 @@ class MacroEdge:
     edge_ids: tuple[str, ...]
     corner_start: str
     corner_end: str
+
+
+@dataclass
+class Region:
+    """A named collection of face ids with optional metadata.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable name (e.g. ``"continent_1"``).
+    face_ids : frozenset[str]
+        Immutable set of face ids belonging to this region.
+    metadata : dict
+        Arbitrary key-value metadata (e.g. ``{"biome": "temperate"}``).
+    """
+
+    name: str
+    face_ids: FrozenSet[str] = field(default_factory=frozenset)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def size(self) -> int:
+        """Number of faces in the region."""
+        return len(self.face_ids)
+
+    def __contains__(self, face_id: str) -> bool:
+        return face_id in self.face_ids
+
+    def __repr__(self) -> str:
+        meta = f", metadata={self.metadata}" if self.metadata else ""
+        return f"Region(name={self.name!r}, faces={self.size}{meta})"

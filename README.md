@@ -15,7 +15,7 @@ A **topology-first polygon grid toolkit** for building, composing, and running a
 
 Procedural terrain generation for a game. Each tile sits on a **Goldberg polyhedron** (a sphere tiled by hexagons and 12 pentagons). PolyGrid handles the 2D topology, algorithms, terrain generation, texture pipeline, and 3D rendering. A separate `models` package provides the Goldberg polyhedron geometry primitives.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and [`docs/TASKLIST.md`](docs/TASKLIST.md) for the roadmap.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 
 ## Quick start
 
@@ -237,11 +237,10 @@ src/polygrid/
 docs/
     ARCHITECTURE.md        # Design, layers, separation of concerns
     MODULE_REFERENCE.md    # Per-module reference
-    TASKLIST.md            # Comprehensive roadmap
     JSON_CONTRACT.md       # JSON serialisation format
 
-tests/                     # 1,101 tests across 36 test files
-scripts/                   # Demo and diagnostic scripts
+tests/                     # 605 tests across 14 test files
+scripts/                   # Production scripts
 ```
 
 ## Architecture

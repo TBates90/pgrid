@@ -15,7 +15,7 @@ from polygrid.mountains import (
     ROLLING_HILLS,
     MESA_PLATEAU,
 )
-from polygrid.regions import Region
+from polygrid.models import Region
 from polygrid.tile_data import FieldDef, TileSchema, TileDataStore
 
 

@@ -90,69 +90,90 @@ The two *retained* diagnostic tools (`debug_pipeline.py`,
   tests for dead functions removed.
 - `__init__.py` re-exports `globe_to_colour_map` from `globe_export`.
 
-### 4.2 Legacy shaders in `globe_renderer_v2.py`
-- `_V2_VERTEX_SHADER` / `_V2_FRAGMENT_SHADER` (lines 1852–1895) are the
+### 4.3 `Region` moved to `models.py`  ✅ DONE
+- `Region` dataclass moved from `regions.py` to `models.py` (core data types).
+- `mountains.py` now imports `Region` from `models` instead of `regions`,
+  breaking the unnecessary `mountains → regions → transforms` dependency chain.
+- `regions.py` re-imports `Region` from `models` for backward compatibility.
+- Removed unused `sample_noise_field_region` import from `mountains.py`.
+- `__init__.py` exports `Region` from the `models` import block.
+
+### 4.4 `tile_detail.py` dead neighbour-border code removed  ✅ DONE
+- Removed `NeighbourBorderFace` class, `_compute_edge_transform`,
+  `_boundary_face_ids_for_edge`, `get_neighbour_border_faces`, and
+  `get_neighbour_border_grid` (346 lines, old Phase 10 neighbour approach).
+- Removed corresponding exports from `__init__.py` and `__all__`.
+- `find_polygon_corners` and `build_tile_with_neighbours` remain (live).
+
+### 4.5 Legacy shaders in `globe_renderer_v2.py`  ✅ DONE
+- `_V2_VERTEX_SHADER` / `_V2_FRAGMENT_SHADER` (lines 1883–1905) are the
   old 8-float vertex shaders, kept for `get_v2_shader_sources()`.
-- `get_v2_shader_sources()` is exported in `__init__.py` / `__all__` but
-  has **zero callers** outside the module itself (used only by the internal
-  `_build_v2_shader_program`).
-- **Action**: Remove the public export of `get_v2_shader_sources` from
-  `__init__.py` and `__all__`.  Keep the shaders as internal helpers.
+- `get_v2_shader_sources()` was removed from `__init__.py` re-exports
+  during the 4.6 pruning pass. The function and shaders remain as
+  internal helpers in `globe_renderer_v2.py`, tested directly via
+  `test_globe_renderer_v2.py`.
+
+### 4.6 `__init__.py` pruning  ✅ DONE
+- Pruned from ~278 lines / ~200 re-exported symbols to ~175 lines / ~95 symbols.
+- Removed bulk re-export blocks for `globe_renderer_v2` (~40 symbols),
+  `uv_texture` (8), `tile_uv_align` (9), and `atlas_utils` (2).
+- Replaced silent `try/except ImportError: pass` for `globe`/`models`
+  optional dependency with an explicit `ImportWarning`.
+- `__all__` slimmed to match only the symbols actually imported.
+- Docstring updated: specialised subsystems (globe_renderer_v2, uv_texture,
+  tile_uv_align, atlas_utils) are now imported directly from their modules.
 
 ---
 
-## 5. Legacy Fallback Code in Production Modules
+## 5. Legacy Fallback Code in Production Modules  ✅ DONE
 
-### 5.1 `detail_terrain.py` — legacy corner detection (~60 lines)
+### 5.1 `detail_terrain.py` — legacy corner detection (~60 lines)  ✅ DONE
 - `_compute_tutte_edge_angles()` has a "legacy fallback" path
   (lines 209–260) that detects polygon corners by geometric clustering
   when `corner_vertex_ids` is not supplied.
 - The Goldberg pipeline *always* sets `corner_vertex_ids` in grid
   metadata via `goldberg_topology.py`, so the fallback is never
   triggered in production.
-- **Action**: Add a deprecation warning to the fallback path now.
-  Remove the fallback in a future release once confirmed unused by any
-  downstream consumer.
+- **Status**: `DeprecationWarning` added. Fallback kept for standalone
+  grid consumers.
 
-### 5.2 `detail_terrain.py` — legacy uniform-mean elevation fallback
-- Line 524: `"No edge mapping — fall back to uniform mean (legacy behaviour)"`.
-- Same situation: the edge mapping is always available in the Goldberg
-  pipeline.
-- **Action**: Add a deprecation warning.  Remove later.
+### 5.2 `detail_terrain.py` — legacy uniform-mean elevation fallback  ✅ DONE
+- `generate_detail_terrain_bounded()`: "No edge mapping — fall back to
+  uniform mean (legacy behaviour)".
+- The Goldberg pipeline always provides edge mappings; this path is only
+  hit by standalone grids.
+- **Status**: `DeprecationWarning` added.
 
-### 5.3 `tile_uv_align.py` — legacy single-affine warp fallback
-- Line 1499: `"Fallback: single-affine warp (legacy)"`.
-- The piecewise warp is the production path.  The single-affine fallback
-  exists as a safety net.
-- **Action**: Keep for now (it's a genuine safety net), but add a
-  warning log when it triggers so we know if it's ever hit.
+### 5.3 `tile_uv_align.py` — legacy single-affine warp fallback  ✅ DONE
+- `warp_tile_to_uv()`: "Fallback: single-affine warp (legacy)".
+- The piecewise warp is the production path. The single-affine fallback
+  exists as a safety net when `grid_corners` / `uv_corners` are not provided.
+- **Status**: `DeprecationWarning` added.
 
 ---
 
-## 6. `__init__.py` Hygiene
+## 6. `__init__.py` Hygiene  ✅ DONE
 
-### 6.1 Module is 858 lines
-- The flat re-export style works but is fragile — every new public symbol
-  must be added in two places (import + `__all__`).
+### 6.1 Module pruned  ✅ DONE
+- Pruned from ~278 to ~175 lines (see 4.6 above for details).
+- The flat re-export style is now manageable at ~95 symbols.
 - **Action (future)**: Consider switching to explicit sub-package imports
   (e.g. `from polygrid.terrain import MountainConfig`) and a generated
   `__all__`.  Not urgent.
 
-### 6.2 Missing `__all__` entries
-- `validate_globe_payload` is imported (line 161) but not in `__all__`.
-- **Action**: Add it, or remove the import if it's only used internally.
+### 6.2 Missing `__all__` entries  ✅ DONE
+- Cleaned up during the 4.6 pruning pass — `__all__` now matches
+  imported symbols exactly.
 
 ---
 
 ## 7. Test Housekeeping
 
-### 7.1 `test_determinism.py` (13 lines)
-- Extremely thin — likely a placeholder.  Check if it provides value
-  beyond what other tests cover.
-- **Action**: Review; expand or merge into another test file.
+### 7.1 `test_determinism.py`  ✅ DONE
+- File no longer exists (removed in prior cleanup).
 
-### 7.2 `test_globe_renderer_v2.py` (3,091 lines)
-- The largest test file by far.  May contain redundant or
+### 7.2 `test_globe_renderer_v2.py` (2,942 lines)
+- The largest test file by far (252 tests).  May contain redundant or
   over-specified tests from incremental development.
 - **Action (future)**: Audit for redundancy; consolidate where
   possible.
@@ -180,4 +201,4 @@ The two *retained* diagnostic tools (`debug_pipeline.py`,
 | **C — Script consolidation** | 3.1 | ~15 min | Delete v1 viewer | ✅ Done |
 | **D — Legacy fallbacks** | 5.1, 5.2, 5.3 | ~30 min | Add deprecation warnings | ✅ Done |
 | **E — Renderer migration** | 4.1 | ~1 hr | Migrate script callers to v2, deprecate v1 module | ✅ Done |
-| **F — Structural** | 6.1, 7.1, 7.2 | ~4+ hrs | `__init__.py` refactor, test audit | Remaining |
+| **F — Structural** | 6.1, 7.1, 7.2 | ~4+ hrs | `__init__.py` refactor, test audit | 6.1 ✅ Done; 7.1 ✅ Done; 7.2 Remaining |

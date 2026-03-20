@@ -1,101 +1,37 @@
 ══════════════════════════════════════════════════════════
- PolyGrid Test Suite — 1,478 tests across 47 files
+ PolyGrid Test Suite — 605 tests across 14 files
 ══════════════════════════════════════════════════════════
 
-  Phase 1-4 — Core Topology & Transforms
-    ✅ test_core_topology.py .................    6 tests    0.3s
-    ✅ test_stitching.py .....................    5 tests    0.7s
-    ✅ test_assembly.py ......................   16 tests    1.4s
-    ✅ test_macro_edges.py ...................   10 tests    0.9s
-    ✅ test_pentagon_centered.py .............    9 tests    1.8s
-    ✅ test_transforms.py ....................   15 tests    0.8s
-    ✅ test_diagnostics.py ...................    6 tests    0.5s
-    ✅ test_visualize.py .....................    4 tests    1.8s
-                                           ────────────────────────
-                                             71 tests     8.2s
+  Core Topology & Transforms
+    ✅ test_core_topology.py .................    6 tests
+    ✅ test_grid_deformation.py ..............   19 tests
 
-  Phase 2 — Goldberg Topology
-    ✅ test_goldberg.py ......................   79 tests   18.7s
-                                           ────────────────────────
-                                             79 tests    18.7s
+  Terrain & Noise
+    ✅ test_noise.py .........................   40 tests
+    ✅ test_heightmap.py .....................   19 tests
+    ✅ test_mountains.py .....................   16 tests
+    ✅ test_tile_data.py .....................   52 tests
 
-  Phase 5-7 — Tile Data & Terrain
-    ✅ test_tile_data.py .....................   52 tests    0.7s
-    ✅ test_regions.py .......................   76 tests    0.6s
-    ✅ test_noise.py .........................   40 tests    0.5s
-    ✅ test_heightmap.py .....................   19 tests    0.3s
-    ✅ test_mountains.py .....................   16 tests    0.5s
-    ✅ test_rivers.py ........................   25 tests    0.3s
-    ✅ test_pipeline.py ......................   20 tests    0.7s
-    ✅ test_terrain_render.py ................   24 tests    0.7s
-    ✅ test_determinism.py ...................    2 tests    0.5s
-                                           ────────────────────────
-                                            274 tests     4.8s
+  Globe & Export
+    ✅ test_globe.py .........................   79 tests
 
-  Phase 8-9 — Globe & Export
-    ❌ test_globe.py .........................  110 tests    5.9s  (3 failed)
-                                           ────────────────────────
-                                            110 tests     5.9s
+  Sub-Tile Detail
+    ✅ test_tile_detail.py ...................   24 tests
+    ✅ test_detail_render.py .................   26 tests
+    ✅ test_detail_terrain.py ................   15 tests
 
-  Phase 10 — Sub-Tile Detail
-    ✅ test_tile_detail.py ...................   24 tests   11.6s
-    ✅ test_detail_render.py .................   26 tests    1.6s
-    ❌ test_detail_perf.py ...................   15 tests    2.0s  (2 failed)
-                                           ────────────────────────
-                                             65 tests    15.1s
+  Rendering & PBR
+    ✅ test_globe_renderer_v2.py .............  252 tests
 
-  Phase 11 — Cohesive Terrain
-    ✅ test_detail_terrain.py ................   15 tests    5.7s
-    ✅ test_detail_terrain_3d.py .............   29 tests    2.8s
-    ✅ test_terrain_patches.py ...............   22 tests    4.0s
-    ❌ test_globe_terrain.py .................   17 tests    2.2s  (1 failed)
-    ✅ test_region_stitch.py .................   19 tests    2.1s
-    ✅ test_render_enhanced.py ...............   32 tests    4.1s
-    ✅ test_texture_pipeline.py ..............    9 tests    4.0s
-                                           ────────────────────────
-                                            143 tests    24.9s
-
-  Phase 12-13 — Rendering & PBR
-    ❌ test_globe_renderer_v2.py .............  262 tests    5.1s  (1 failed)
-    ✅ test_phase13_rendering.py .............   15 tests    3.3s
-                                           ────────────────────────
-                                            277 tests     8.4s
-
-  Phase 14 — Biome Features
-    ✅ test_biome_scatter.py .................   37 tests    1.9s
-    ✅ test_biome_render.py ..................   23 tests    1.4s
-    ✅ test_biome_pipeline.py ................   29 tests    5.2s
-    ✅ test_biome_continuity.py ..............   21 tests    0.3s
-                                           ────────────────────────
-                                            110 tests     8.8s
-
-  Ungrouped
-    ✅ test_apron_grid.py ....................   28 tests    0.9s
-    ✅ test_apron_texture.py .................   17 tests    3.6s
-    ❌ test_atlas_seams.py ...................    7 tests    0.3s  (2 failed)
-    ✅ test_biome_topology.py ................   33 tests    0.7s
-    ✅ test_coastline.py .....................   49 tests    3.5s
-    ❌ test_corner_blend.py ..................   13 tests    0.3s  (1 failed)
-    ✅ test_grid_deformation.py ..............   19 tests    0.8s
-    ✅ test_ocean_render.py ..................   44 tests    1.4s
-    ✅ test_texture_export.py ................   36 tests    0.4s
-    ✅ test_tile_texture.py ..................   40 tests    1.5s
-    ✅ test_uv_texture.py ....................   43 tests    2.7s
-    ✅ test_visual_cohesion.py ...............   19 tests   12.1s
-                                           ────────────────────────
-                                            348 tests    28.0s
+  UV & Atlas
+    ✅ test_uv_texture.py ....................   37 tests
+    ✅ test_atlas_seams.py ...................    7 tests
+    ✅ test_corner_blend.py ..................   13 tests
 
 ══════════════════════════════════════════════════════════
  SUMMARY
 ══════════════════════════════════════════════════════════
-  Phase 1-4 — Core Topology & Trans...   71 tests     8.2s  ✅
-  Phase 2 — Goldberg Topology            79 tests    18.7s  ✅
-  Phase 5-7 — Tile Data & Terrain       274 tests     4.8s  ✅
-  Phase 8-9 — Globe & Export            110 tests     5.9s  ❌
-  Phase 10 — Sub-Tile Detail             65 tests    15.1s  ❌
-  Phase 11 — Cohesive Terrain           143 tests    24.9s  ❌
-  Phase 12-13 — Rendering & PBR         277 tests     8.4s  ❌
-  Phase 14 — Biome Features             110 tests     8.8s  ✅
-  Ungrouped                             348 tests    28.0s  ❌
-──────────────────────────────────────────────────────────
-  TOTAL                                1477 tests  2m 02.8s  10 FAILED
+  TOTAL                                 605 tests  ✅ ALL PASSED
+
+  Updated: 2026-03-20 (post-cleanup)
+  Previous: 1,478 tests across 47 files (pre-cleanup)

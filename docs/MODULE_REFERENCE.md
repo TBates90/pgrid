@@ -160,8 +160,8 @@ Detail grid builder: `build_detail_grid`, `generate_detail_terrain`, `render_det
 
 **Depends on:** `polygrid`, `tile_data`
 
-### `tile_detail.py` (335 lines)
-Sub-tile infrastructure: `TileDetailSpec`, `build_all_detail_grids`, `DetailGridCollection`.
+### `tile_detail.py` (745 lines)
+Sub-tile infrastructure: `TileDetailSpec`, `build_all_detail_grids`, `DetailGridCollection`, `find_polygon_corners`, `build_tile_with_neighbours`.
 
 **Depends on:** `detail_grid`, `globe`
 

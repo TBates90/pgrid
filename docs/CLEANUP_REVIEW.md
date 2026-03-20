@@ -36,46 +36,32 @@ Review and update the CLEANUP_REVIEW.md document.
 | `polygrid.noise` | detail_render, detail_terrain, tile_detail, mountains |
 | `polygrid.heightmap` | mountains, detail_terrain, tile_detail |
 | `polygrid.detail_grid` | tile_detail, detail_terrain |
-| `polygrid.regions` | mountains (Region type) |
-| `polygrid.transforms` | regions (Overlay types) |
+| `polygrid.regions` | terrain_patches, pipeline (RegionMap + partitioning) |
+| `polygrid.transforms` | regions, terrain_render, rivers, visualize (Overlay types) |
 
 ---
 
 ### 🟡 TODO REFACTOR — In live tree but has issues
 | Module | Issue |
 |--------|-------|
-| `regions.py` | Only `Region` type is used (by `mountains.py`). The full partitioning API (`partition_voronoi`, `partition_noise`, etc.) is not used by any live script. |
-| `transforms.py` | Only `Overlay` and `OverlayRegion` types are used (by `regions.py`). The functions `apply_voronoi`, `apply_partition` are unused by live scripts. |
-| `__init__.py` | Re-exports ~200 symbols from 30+ modules. Most are from dead modules. Needs major pruning once dead modules are removed. |
+| `regions.py` | ✅ REVIEWED — `Region` type used by `mountains.py` (via `models.py`). `RegionMap`, `partition_flood_fill`, `partition_noise` used by `terrain_patches.py`. `partition_voronoi` used in `test_globe.py`. The remaining functions (`partition_angular`, `assign_field`, `assign_biome`, `regions_to_overlay`, `validate_region_map`) are part of the public API for library consumers. All kept. |
+| `transforms.py` | ✅ REVIEWED — `Overlay`, `OverlayRegion` used by `regions.py`, `visualize.py`, `terrain_render.py`, `rivers.py`. `OverlayPoint`, `OverlaySegment` used by `visualize.py`. `apply_voronoi` used by `cli.py`. `apply_partition` removed from `__init__.py` re-exports (zero callers); kept in module for library consumers who import directly. |
+| `__init__.py` | ✅ DONE — Pruned from ~200 to ~95 re-exported symbols. Removed bulk re-exports for `globe_renderer_v2`, `uv_texture`, `tile_uv_align`, `atlas_utils`. Added `ImportWarning` for missing `globe`/`models` optional dependency (was silent `pass`). Specialised subsystems now imported directly from their modules. |
 
 ### 🟡 TODO REVIEW — Tests for live modules but may overlap / be unnecessary
 | Test file | Issue |
 |-----------|-------|
-| `test_goldberg.py` | Tests standalone `goldberg_topology.py` which may be removed. BUT also tests core goldberg embedding maths that `globe.py` depends on indirectly. Check which tests exercise code actually used by `globe.py`. |
+| `test_goldberg.py` | ✅ REVIEWED — File does not exist (removed in prior cleanup). `goldberg_topology.py` is exercised indirectly via `build_pentagon_centered_grid` in `test_mountains.py` and detail-grid tests. Standalone `goldberg_face_count`, `goldberg_embed_tutte`, and `goldberg_optimise` could benefit from targeted tests but are not blocking. |
+| `test_determinism.py` | ✅ REVIEWED — File does not exist (removed in prior cleanup). |
 
 ### 🟡 TODO REVIEW - docs
-- `docs/ARCHITECTURE.md` — likely needs update to reflect stripped-down codebase
-- `docs/MODULE_REFERENCE.md` — will need heavy rewrite
-- `docs/JSON_CONTRACT.md` — check if it describes the live payload format
-- `docs/CLEANUP.md` — existing cleanup notes, merge with this review
-- `test_results.md` — stale test timing data
-- `TESTING.md` — testing guide, will need update
-- `README.md` — will need update after cleanup
+- `docs/ARCHITECTURE.md` — references some removed modules (`render.py`) in layer diagram; layer table still accurate. Low-priority update.
+- `docs/MODULE_REFERENCE.md` — line counts and test counts stale; module list includes removed files. Needs rewrite when cleanup stabilises.
+- `docs/JSON_CONTRACT.md` — describes live payload format, still accurate.
+- `docs/CLEANUP.md` — ✅ kept up to date with all cleanup actions.
+- `test_results.txt` — ✅ UPDATED (was 1,478 tests/47 files, now 605 tests/14 files).
+- `TESTING.md` — ✅ UPDATED (removed references to deleted `run_fast.sh` and `run_tests.py` scripts, updated test counts and instructions).
+- `README.md` — ✅ UPDATED (removed stale `TASKLIST.md` reference, updated test counts).
 
 ---
 
-## 6. Potential Logic Issues (TODO REVIEW)
-
-### 6.1 `mountains.py` → `regions.py` dependency
-`mountains.py` imports `Region` from `regions.py` which in turn imports `transforms.py`. This creates a dependency chain `mountains → regions → transforms → geometry`. The live scripts only use `MountainConfig` and `generate_mountains`. Check if `Region` is actually used inside `generate_mountains` or if it's only used in the `generate_mountains_regional` variant.
-
-### 6.2 `render_polygrids.py` has dead code paths
-- `_main_neighbour_edges()` uses `get_neighbour_border_grid` — this is the old Phase 10 neighbour approach, replaced by stitched composites. The `--with-neighbour-edges` flag is labeled "Legacy" in the argparse help.
-- `_main_simple()` — simple un-stitched rendering, may still be useful but is not the default path.
-- `_render_tile()` — only called by `_main_simple` and `_main_neighbour_edges`, not by the default polygon-cut path.
-
-### 6.3 `__init__.py` catches ImportError silently
-The `try/except ImportError: pass` blocks in `__init__.py` mean missing dependencies produce zero feedback. After cleanup, these should be more explicit about what's optional.
-
-### 6.4 `goldberg_topology.py` vs `globe.py`
-`goldberg_topology.py` provides standalone goldberg grid building. `globe.py` builds on the `models` library's goldberg generator. It's unclear if `globe.py` uses anything from `goldberg_topology.py` or if they're fully independent implementations. If independent, `goldberg_topology.py` is dead code. If `globe.py` delegates to it, it's live.
