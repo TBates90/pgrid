@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module biome_topology.py.
 """Tests for Phase 18C — topology-aware biome feature rendering."""
 
 from __future__ import annotations

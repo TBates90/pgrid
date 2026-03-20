@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 18B apron-aware texture rendering.
 """Apron-aware texture rendering — Phase 18B.
 
 Renders tile textures using apron-extended grids so that the

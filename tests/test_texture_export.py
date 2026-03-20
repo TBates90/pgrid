@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module texture_export.py.
 """Tests for Phase 18D — Texture Export Pipeline."""
 
 from __future__ import annotations

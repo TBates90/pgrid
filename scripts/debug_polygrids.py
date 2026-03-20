@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Diagnostic script, not part of live pipeline.
 """Debug script: render detail polygrids for adjacent tiles.
 
 Outputs a matplotlib figure showing the actual sub-face polygons

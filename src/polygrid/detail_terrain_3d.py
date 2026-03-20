@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 11A 3D-coherent terrain generation.
 """Globe-coherent 3-D terrain generation for sub-tile detail grids.
 
 Phase 11A — replaces the per-tile noise sampling of Phase 10 with a

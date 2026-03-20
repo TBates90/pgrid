@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module rivers.py.
 """Tests for rivers.py — Phase 7E: River generation."""
 
 from __future__ import annotations

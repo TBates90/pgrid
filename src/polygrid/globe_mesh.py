@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Old mesh bridge for models library renderer.
 """Globe mesh bridge — terrain-coloured meshes for the ``models`` renderer.
 
 Converts :func:`globe_to_tile_colours` output into ``models``-compatible

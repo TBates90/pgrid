@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module visualize.py.
 """Tests for the visualize module (rendering to PNG)."""
 
 import os

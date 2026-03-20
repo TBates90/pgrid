@@ -1,3 +1,5 @@
+# TODO REFACTOR — Re-exports ~200 symbols from 30+ modules.  Most of those
+#   modules are dead.  Prune to only re-export from the 22 live modules.
 """PolyGrid — topology-first polygon grid toolkit.
 
 Public API is organised into layers:

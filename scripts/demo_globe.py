@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead globe_render.py (flat/3D matplotlib views).
 """Demo: generate terrain on a Goldberg polyhedron and render it.
 
 Usage:

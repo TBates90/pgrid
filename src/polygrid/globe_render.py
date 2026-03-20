@@ -1,3 +1,5 @@
+# TODO REFACTOR — Only globe_to_colour_map() is used (by globe_export.py).
+#   The rest of this module (render_globe_flat, render_globe_3d, etc.) is dead.
 """Globe rendering — 2-D flat map and 3-D matplotlib views of a GlobeGrid.
 
 Functions

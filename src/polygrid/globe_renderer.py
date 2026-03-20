@@ -1,3 +1,5 @@
+# TODO REFACTOR — Deprecated v1 renderer, only reachable via --legacy-renderer
+#   flag in render_polygrids.py.  Consider removing entirely once v2 is validated.
 """Models renderer integration — terrain-coloured OpenGL rendering.
 
 .. deprecated::

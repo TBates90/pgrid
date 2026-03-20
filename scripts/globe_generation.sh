@@ -1,4 +1,5 @@
 
+# Globe generation pipeline — calls the 2 live scripts.
 # Generate Atlases
 python scripts/render_polygrids.py -f 3 --seed 42 -o exports/f3-1 --detail-rings 1
 python scripts/render_polygrids.py -f 3 --seed 42 -o exports/f3-2 --detail-rings 2

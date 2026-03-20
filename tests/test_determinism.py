@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module builders.py.
 from polygrid.builders import build_pentagon_centered_grid
 
 

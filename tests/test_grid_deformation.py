@@ -1,3 +1,6 @@
+# TODO REVIEW — Tests live detail_grid.deform_grid_to_uv_shape but also
+#   imports build_pure_hex_grid from dead builders.py.  Rewrite helper to
+#   remove builders dependency, then keep.
 """Tests for UV shape-matched grid deformation.
 
 Covers:

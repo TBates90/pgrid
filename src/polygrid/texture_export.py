@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 18D KTX2/glTF texture export.
 """Texture export pipeline — Phase 18D.
 
 Output proper texture assets suitable for game engines: power-of-two

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Diagnostic script, not part of live pipeline.
 """Render a diagnostic globe with tile IDs, type labels, and polygon outlines
 burned directly into the atlas texture.
 

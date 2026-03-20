@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module diagnostics.py.
 """Tests for diagnostics module."""
 
 from polygrid.builders import build_pentagon_centered_grid, build_pure_hex_grid

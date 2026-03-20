@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 14D biome atlas pipeline.
 """Biome feature pipeline — integrate feature rendering into the atlas.
 
 Hooks the biome feature renderers into the existing texture atlas

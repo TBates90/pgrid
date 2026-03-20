@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead Phase 11 modules.
 """Demo: Phase 11 full cohesive terrain pipeline vs Phase 10 per-tile.
 
 Usage

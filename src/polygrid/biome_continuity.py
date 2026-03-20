@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 14C cross-tile biome continuity.
 """Cross-tile biome continuity — seamless feature rendering across boundaries.
 
 Ensures that biome features (forests, etc.) flow seamlessly across

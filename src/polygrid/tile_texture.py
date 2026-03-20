@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 16A full-slot tile texture rendering.
 """Full-slot tile texture rendering — Phase 16A + 16D hex softening.
 
 Replaces the flat-colour background approach with per-pixel terrain

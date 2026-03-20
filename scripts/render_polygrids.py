@@ -711,7 +711,7 @@ def _render_colour_debug_single(
     )
 
 
-def _render_tile(
+def _render_tile(  # TODO REMOVE — Legacy single-tile renderer, only used by _main_simple/_main_neighbour_edges.
     face_id: str,
     detail_grid,
     detail_store,
@@ -834,7 +834,7 @@ def main():
         "--stitched", action="store_true",
         help="Render each tile stitched with all its neighbours "
              "as a single merged polygrid (no gaps)",
-    )
+    )  # TODO REMOVE — Legacy flag, only triggers dead _main_stitched path.
     parser.add_argument(
         "--no-polygon-cut", action="store_true",
         help="Disable polygon-cut rendering. By default, polygon-cut "
@@ -860,7 +860,7 @@ def main():
     parser.add_argument(
         "--with-neighbour-edges", action="store_true",
         help="(Legacy) Show neighbour tile border faces around each tile",
-    )
+    )  # TODO REMOVE — Legacy flag, only triggers dead _main_neighbour_edges path.
     parser.add_argument(
         "--colour-debug", action="store_true",
         help="Skip terrain generation and colour each polygrid tile "
@@ -1179,7 +1179,7 @@ def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
     print(f"Output: {output_dir}/")
 
 
-def _main_stitched(args, output_dir, grid, coll, biome,
+def _main_stitched(args, output_dir, grid, coll, biome,  # TODO REMOVE — Legacy path, needs --no-polygon-cut --stitched.
                     face_ids, show_edges):
     """Stitched tile rendering (no atlas)."""
     from polygrid.tile_detail import build_tile_with_neighbours
@@ -1213,7 +1213,7 @@ def _main_stitched(args, output_dir, grid, coll, biome,
     print(f"Output: {output_dir}/")
 
 
-def _main_neighbour_edges(args, output_dir, grid, coll, biome,
+def _main_neighbour_edges(args, output_dir, grid, coll, biome,  # TODO REMOVE — Legacy path.
                            face_ids, show_edges):
     """Legacy neighbour-edge rendering."""
     from polygrid.tile_detail import get_neighbour_border_grid
@@ -1244,7 +1244,7 @@ def _main_neighbour_edges(args, output_dir, grid, coll, biome,
     print(f"Output: {output_dir}/")
 
 
-def _main_simple(args, output_dir, coll, biome, face_ids, show_edges):
+def _main_simple(args, output_dir, coll, biome, face_ids, show_edges):  # TODO REMOVE — Legacy path.
     """Simple single-tile rendering (no stitching, no atlas)."""
     print(f"Rendering {len(face_ids)} tile polygrids to {output_dir}/...")
     t0 = time.perf_counter()

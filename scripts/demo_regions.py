@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead regions.py partitioning / assembly.py.
 """Demo: build a pent+hex assembly and partition it into terrain regions.
 
 Produces a 4-panel PNG:

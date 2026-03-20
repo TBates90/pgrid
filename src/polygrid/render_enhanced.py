@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 11E biome assignment / normal maps.
 """Rendering enhancements for cohesive globe terrain — Phase 11E.
 
 Provides automatic biome assignment based on elevation statistics,

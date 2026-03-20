@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Old Phase 1–4 matplotlib visualisation.
 """Multi-panel composite visualisation.
 
 Produces PNG images that show:

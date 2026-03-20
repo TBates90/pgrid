@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module globe_terrain.py.
 """Tests for Phase 11D — enhanced globe terrain (mountains, rivers, erosion).
 
 Tests verify:

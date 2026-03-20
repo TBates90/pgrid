@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 11D globe-scale terrain (mountains_3d, erosion).
 """Globe-scale terrain enhancements — Phase 11D.
 
 Provides globe-optimised mountain presets, cross-tile river generation,

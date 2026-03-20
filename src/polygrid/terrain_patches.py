@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 11B terrain distribution patches.
 """Terrain patches — structured terrain distribution across the globe.
 
 Phase 11B — groups adjacent Goldberg tiles into *terrain patches*

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module detail_perf.py.
 """Tests for Phase 10F — Performance utilities (detail_perf.py).
 
 Covers:

@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 7D overlay-based terrain rendering.
 """Elevation-aware terrain rendering — Phase 7D.
 
 Converts per-face elevation data from a :class:`~tile_data.TileDataStore`

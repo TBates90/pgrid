@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module detail_terrain_3d.py.
 """Tests for Phase 11A — 3-D coherent terrain generation.
 
 Tests verify:

@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 10F parallel/cached detail generation.
 """Performance utilities for the detail grid pipeline.
 
 Provides parallel generation, fast texture rendering, caching, and

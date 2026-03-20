@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. CLI wrapper around io.py (also dead).
 """PolyGrid command-line interface."""
 
 from __future__ import annotations

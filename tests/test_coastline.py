@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module coastline.py.
 """Tests for Phase 19 — Coastline transition rendering.
 
 Tests verify:

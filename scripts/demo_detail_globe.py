@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead texture_pipeline.py / render_enhanced.py.
 """End-to-end demo: globe → mountains → detail grids → textures → atlas.
 
 Usage

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module biome_continuity.py.
 """Tests for Phase 14C — biome_continuity.py (cross-tile continuity)."""
 
 from __future__ import annotations

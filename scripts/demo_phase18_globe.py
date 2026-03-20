@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead Phase 18 modules (apron/texture_export/visual_cohesion).
 """Demo: Phase 18 visual cohesion — apron rendering + topology biomes + export.
 
 Usage

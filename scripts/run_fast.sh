@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# TODO REVIEW — References 'fast' pytest mark.  Check if mark is still applied
+#   after removing dead test files.
 # Quick runner: execute only the fast-tier tests (developer-friendly)
 # Usage: ./scripts/run_fast.sh [-v]
 set -euo pipefail

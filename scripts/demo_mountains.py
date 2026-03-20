@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead assembly.py / builders.py / terrain_render.py.
 """Demo: generate mountain terrain on a pent-hex assembly and render it.
 
 Usage

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead partitioning algorithms in regions.py (only Region type is live).
 """Tests for the regions module — Phase 6: Terrain Partitioning."""
 
 from __future__ import annotations

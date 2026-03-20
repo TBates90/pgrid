@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TODO REVIEW — Custom test runner.  May be useful, but references dead test
+#   files in tier/phase lists.  Prune to match live test set or remove if
+#   plain pytest is sufficient.
 """
 PolyGrid Test Runner — grouped progress output with timing.
 

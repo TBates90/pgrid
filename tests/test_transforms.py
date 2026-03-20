@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module transforms.py (transform functions are unused).
 """Tests for the transforms module (Voronoi, partition, etc.)."""
 
 import pytest

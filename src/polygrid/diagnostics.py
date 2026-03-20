@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Quality-gate diagnostics for standalone grids.
 """Diagnostics - per-ring length / angle statistics and quality gates."""
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Superseded by render_globe_from_tiles.py.
 """Phase 13 integrated globe viewer — PBR + water + atmosphere + bloom + LOD.
 
 Wires together all Phase 12-13 rendering features into a single

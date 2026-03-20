@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead assembly/composite code paths.
 """Tests for macro-edges and boundary detection."""
 
 import pytest

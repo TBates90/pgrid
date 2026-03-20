@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module biome_render.py.
 """Tests for Phase 14B — biome_render.py (forest feature rendering)."""
 
 from __future__ import annotations

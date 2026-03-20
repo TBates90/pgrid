@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module terrain_patches.py.
 """Tests for Phase 11B — terrain patches.
 
 Tests verify:

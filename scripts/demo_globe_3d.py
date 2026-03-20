@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead globe_mesh.py / globe_renderer.py (v1).
 """Demo: generate terrain on a Goldberg polyhedron with 3D mesh output.
 
 This script builds terrain on a globe grid and produces:

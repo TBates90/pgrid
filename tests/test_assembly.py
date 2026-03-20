@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module assembly.py.
 """Tests for the assembly module."""
 
 import math

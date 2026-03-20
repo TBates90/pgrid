@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 17A ocean biome rendering.
 """Ocean biome rendering — depth gradients, wave textures, coastal features.
 
 Phase 17 renders ocean tiles with rich depth-based colour gradients,

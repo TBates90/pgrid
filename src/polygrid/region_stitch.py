@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 11C stitched detail grids.
 """Stitched sub-grid terrain — merge detail grids for adjacent tiles.
 
 Phase 11C — the highest-quality terrain generation mode.  Adjacent

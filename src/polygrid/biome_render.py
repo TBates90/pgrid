@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 14B forest rendering.
 """Biome feature rendering — pixel-level forest canopy, shadows, undergrowth.
 
 Renders visual features onto PIL tile textures to produce a satellite-

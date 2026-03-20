@@ -1,3 +1,5 @@
+# TODO REFACTOR — _FILE_TIER dict has entries for 31 dead test files.
+#   Remove dead entries after deleting the dead test files.
 import sys
 from pathlib import Path
 from functools import lru_cache

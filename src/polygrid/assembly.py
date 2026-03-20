@@ -1,3 +1,5 @@
+# TODO REMOVE — Not used by any live script (render_polygrids, render_globe_from_tiles, debug_pipeline).
+# Phase 1–4 assembly model, replaced by globe-based pipeline.
 """High-level assembly recipes for building composite polygrids.
 
 An *assembly* is a collection of named component polygrids with stitch

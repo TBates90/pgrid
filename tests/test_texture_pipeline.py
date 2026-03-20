@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module texture_pipeline.py.
 """Tests for Phase 10D — Texture atlas & UV mapping (texture_pipeline.py).
 
 Covers:

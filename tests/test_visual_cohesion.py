@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module visual_cohesion.py.
 """Tests for Phase 18E — Visual Cohesion & Validation."""
 
 from __future__ import annotations

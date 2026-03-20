@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Old Phase 1–4 stitching model.
 """Composite grid assembly — stitching polygrids along macro-edges."""
 
 from __future__ import annotations

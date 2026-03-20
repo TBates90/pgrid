@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module builders.py.
 """Tests for pentagon-centred grid builder and topology validation."""
 
 from polygrid.builders import build_pentagon_centered_grid, validate_pentagon_topology

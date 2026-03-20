@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module terrain_render.py.
 """Tests for terrain_render.py — Phase 7D: Elevation-aware rendering."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module tile_texture.py.
 """Tests for Phase 16A — Full-slot tile texture rendering (tile_texture.py).
 
 Covers:

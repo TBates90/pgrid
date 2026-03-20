@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Replaced by render_polygrids.py atlas builder.
 """Texture atlas pipeline and UV mapping for Goldberg globe tiles.
 
 Renders all detail grids, assembles them into a texture atlas, and

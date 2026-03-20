@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 18A apron grid construction.
 """Apron grid construction for seamless tile-boundary rendering.
 
 Phase 18A — extends each tile's detail grid with the outermost

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module goldberg_topology.py.
 """Tests for the Goldberg topology and embedding pipeline."""
 
 import math

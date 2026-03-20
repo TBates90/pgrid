@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead biome_scatter.py / biome_render.py / biome_pipeline.py.
 """End-to-end demo: globe with forest biome features.
 
 Usage

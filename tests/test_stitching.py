@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module composite.py.
 """Tests for grid stitching / composite assembly."""
 
 import pytest

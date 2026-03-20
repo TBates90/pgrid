@@ -1,3 +1,5 @@
+# TODO REFACTOR — Only the Region dataclass is used (type annotation in mountains.py).
+#   RegionMap and all partitioning algorithms are dead code.
 """Terrain partitioning — splitting grids into named regions.
 
 This module provides the :class:`Region` and :class:`RegionMap` data

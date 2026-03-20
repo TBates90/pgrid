@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module apron_grid.py.
 """Tests for Phase 18A — apron grid construction.
 
 Covers:

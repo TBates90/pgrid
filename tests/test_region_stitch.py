@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module region_stitch.py.
 """Tests for Phase 11C — stitched sub-grid terrain.
 
 Tests verify:

@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 18C topology-aware biome rendering.
 """Topology-aware biome feature rendering — Phase 18C.
 
 Places biome features (forest trees, ocean depth/coastal detail) at

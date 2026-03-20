@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead Phase 13 code (texture_pipeline.py / render_enhanced.py).
 """Tests for Phase 13A (full-coverage textures) and 13B (atlas gutters).
 
 Verifies that:

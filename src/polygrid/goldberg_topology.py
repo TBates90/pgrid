@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. globe.py uses the models library's goldberg generator.
 """Correct combinatorial topology for a Goldberg‑polyhedron face.
 
 One central pentagon surrounded by *R* rings of hexagons, forming an

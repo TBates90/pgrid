@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 18E visual cohesion validation.
 """Visual cohesion validation — Phase 18E.
 
 Programmatic checks that tile boundaries are seamless, topology-aware

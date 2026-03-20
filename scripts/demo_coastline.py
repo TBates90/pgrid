@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead coastline.py / ocean_render.py.
 """Demo: Phase 19 coastline transitions — natural biome boundaries.
 
 Usage

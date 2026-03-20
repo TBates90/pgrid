@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module ocean_render.py.
 """Tests for Phase 17A — ocean_render.py (config + depth map)."""
 
 from __future__ import annotations

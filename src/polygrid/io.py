@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Old JSON I/O for standalone polygrids.
 from __future__ import annotations
 
 import json

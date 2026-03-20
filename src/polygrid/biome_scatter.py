@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 14A biome feature scattering.
 """Biome feature scattering — Poisson disk placement for natural features.
 
 Places feature instances (trees, rocks, bushes, etc.) across tile

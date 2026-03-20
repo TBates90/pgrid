@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 7E river generation.
 """River generation — Phase 7E.
 
 Rivers are linear features that flow *through* existing terrain following

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module biome_pipeline.py.
 """Tests for Phase 14D — biome_pipeline.py (atlas integration).
 
 Performance-optimised: the expensive globe + detail-terrain build is

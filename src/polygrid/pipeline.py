@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Old Phase 7F composable pipeline framework.
 """Terrain pipeline — composable step-based terrain generation framework.
 
 Phase 7F — provides :class:`TerrainStep` (protocol) and

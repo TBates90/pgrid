@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module apron_texture.py.
 """Tests for Phase 18B — apron-aware texture rendering.
 
 Covers:

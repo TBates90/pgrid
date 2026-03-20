@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Diagnostic script, not part of live pipeline.
 """Validate polygon-cut UV alignment for a single tile.
 
 Renders a diagnostic image showing:

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module render_enhanced.py.
 """Tests for Phase 11E — render enhancements (biomes, normals, textures).
 
 Tests verify:

@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module pipeline.py.
 """Tests for ``polygrid.pipeline`` — terrain step/pipeline framework (7F)."""
 
 from __future__ import annotations

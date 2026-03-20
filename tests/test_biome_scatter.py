@@ -1,3 +1,4 @@
+# TODO REMOVE — Tests dead module biome_scatter.py.
 """Tests for Phase 14A — biome_scatter.py (feature placement)."""
 
 from __future__ import annotations

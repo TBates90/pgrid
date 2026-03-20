@@ -1,3 +1,5 @@
+# TODO REVIEW — Tests live modules (tile_uv_align, globe_renderer_v2).
+#   Verify all tested functions are exercised by live scripts, then keep.
 """Tests for Phase 21B.2 — Corner-junction blending and subdivision fixes.
 
 Covers:

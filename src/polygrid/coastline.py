@@ -1,3 +1,4 @@
+# TODO REMOVE — Not used by any live script. Phase 19 coastline transitions.
 """Coastline transition rendering — natural biome boundaries.
 
 Phase 19 replaces hard hexagonal biome boundaries with **noise-warped

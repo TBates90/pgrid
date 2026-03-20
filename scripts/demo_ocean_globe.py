@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead ocean_render.py / biome modules.
 """End-to-end demo: globe with ocean biome features.
 
 Usage

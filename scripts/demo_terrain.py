@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead pipeline.py / rivers.py / terrain_render.py.
 """Demo: full terrain pipeline — mountains + rivers on a pent-hex assembly.
 
 Usage

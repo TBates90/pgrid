@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO REMOVE — Demo for dead assembly.py / builders.py / composite.py.
 """Generate the 4-panel assembly demo image.
 
 Usage:

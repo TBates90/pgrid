@@ -1,3 +1,5 @@
+# TODO REVIEW — Tests live atlas_utils module.
+#   Verify all tested functions are exercised by live scripts, then keep.
 """Tests for Phase 21B.1 — Atlas seam enforcement post-pass.
 
 Covers:
