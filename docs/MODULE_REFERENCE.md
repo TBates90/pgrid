@@ -151,11 +151,6 @@ Globe JSON export: `export_globe_json`, `validate_globe_payload`. Produces per-t
 
 **Depends on:** `globe`, `models` library
 
-### `globe_render.py` (265 lines)
-Render helpers for globe output.
-
-**Depends on:** `globe_mesh`, `models` library
-
 ---
 
 ## Sub-Tile Detail Layer
@@ -198,11 +193,6 @@ Texture atlas + UV mapping: `build_atlas`, `compute_tile_uvs`, `build_uv_layout`
 ---
 
 ## GPU Rendering Layer
-
-### `globe_renderer.py` (851 lines)
-OpenGL renderer v1: flat-colour and textured modes using `models` library's `SimpleMeshRenderer`. Includes `render_textured_globe_opengl`, `render_terrain_globe_opengl`.
-
-**Depends on:** `globe_mesh`, `models` library, `pyglet`
 
 ### `globe_renderer_v2.py` (2,403 lines)
 Phase 12–13 renderer — the main rendering engine:

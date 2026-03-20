@@ -15,11 +15,90 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .globe import GlobeGrid
-from .globe_render import globe_to_colour_map
 from .tile_data import TileDataStore
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Colour ramps (inlined from former globe_render.py)
+# ═══════════════════════════════════════════════════════════════════
+
+def _lerp_colour(
+    a: Tuple[float, float, float],
+    b: Tuple[float, float, float],
+    t: float,
+) -> Tuple[float, float, float]:
+    return (
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    )
+
+
+def _ramp_satellite(elevation: float) -> Tuple[float, float, float]:
+    """Earth-like colour ramp: deep blue → green → brown → snow."""
+    if elevation < 0.15:
+        return _lerp_colour((0.05, 0.10, 0.40), (0.10, 0.25, 0.55), elevation / 0.15)
+    elif elevation < 0.35:
+        t = (elevation - 0.15) / 0.20
+        return _lerp_colour((0.10, 0.40, 0.15), (0.30, 0.55, 0.20), t)
+    elif elevation < 0.60:
+        t = (elevation - 0.35) / 0.25
+        return _lerp_colour((0.45, 0.40, 0.25), (0.55, 0.45, 0.30), t)
+    elif elevation < 0.85:
+        t = (elevation - 0.60) / 0.25
+        return _lerp_colour((0.55, 0.45, 0.30), (0.70, 0.65, 0.60), t)
+    else:
+        t = (elevation - 0.85) / 0.15
+        return _lerp_colour((0.80, 0.80, 0.80), (1.0, 1.0, 1.0), min(t, 1.0))
+
+
+def _ramp_topo(elevation: float) -> Tuple[float, float, float]:
+    """Topographic colour ramp: blue → cyan → green → yellow → red → white."""
+    stops = [
+        (0.00, (0.0, 0.0, 0.5)),
+        (0.20, (0.0, 0.4, 0.8)),
+        (0.35, (0.1, 0.6, 0.3)),
+        (0.50, (0.5, 0.7, 0.2)),
+        (0.65, (0.8, 0.7, 0.1)),
+        (0.80, (0.8, 0.3, 0.1)),
+        (1.00, (1.0, 1.0, 1.0)),
+    ]
+    for i in range(len(stops) - 1):
+        t0, c0 = stops[i]
+        t1, c1 = stops[i + 1]
+        if elevation <= t1:
+            t = (elevation - t0) / (t1 - t0) if t1 > t0 else 0.0
+            return _lerp_colour(c0, c1, t)
+    return stops[-1][1]
+
+
+_RAMPS: Dict[str, Callable[[float], Tuple[float, float, float]]] = {
+    "satellite": _ramp_satellite,
+    "topo": _ramp_topo,
+}
+
+
+def globe_to_colour_map(
+    globe_grid: GlobeGrid,
+    store: TileDataStore,
+    *,
+    field_name: str = "elevation",
+    ramp: str = "satellite",
+) -> Dict[str, Tuple[float, float, float]]:
+    """Map per-tile data to RGB colours.
+
+    Returns ``{face_id: (r, g, b)}`` where each component is in ``[0, 1]``.
+    """
+    ramp_fn = _RAMPS.get(ramp, _ramp_satellite)
+    colours: Dict[str, Tuple[float, float, float]] = {}
+    for fid in globe_grid.faces:
+        val = store.get(fid, field_name)
+        val = max(0.0, min(1.0, float(val)))
+        colours[fid] = ramp_fn(val)
+    return colours
 
 _EXPORT_VERSION = "1.0"
 

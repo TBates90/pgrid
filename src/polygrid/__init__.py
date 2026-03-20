@@ -109,28 +109,7 @@ try:
         export_globe_payload,
         export_globe_json,
         validate_globe_payload,
-    )
-except ImportError:
-    pass
-
-try:
-    from .globe_render import (
         globe_to_colour_map,
-        globe_to_tile_colours,
-        render_globe_flat,
-        render_globe_3d,
-    )
-except ImportError:
-    pass
-
-try:
-    from .globe_renderer import (
-        build_coloured_globe_mesh,
-        build_coloured_globe_mesh_from_export,
-        build_edge_mesh_for_frequency,
-        prepare_terrain_scene,
-        render_terrain_globe_opengl,
-        render_textured_globe_opengl,
     )
 except ImportError:
     pass
@@ -263,11 +242,7 @@ __all__ = [
     # Globe
     "build_globe_grid", "GlobeGrid",
     "export_globe_payload", "export_globe_json", "validate_globe_payload",
-    "globe_to_colour_map", "globe_to_tile_colours",
-    "render_globe_flat", "render_globe_3d",
-    "build_coloured_globe_mesh", "build_coloured_globe_mesh_from_export",
-    "build_edge_mesh_for_frequency", "prepare_terrain_scene",
-    "render_terrain_globe_opengl", "render_textured_globe_opengl",
+    "globe_to_colour_map",
     "flood_fill_tile_texture", "flood_fill_atlas",
     "subdivide_tile_mesh", "build_batched_globe_mesh", "render_globe_v2",
     "compute_uv_polygon_inset", "clamp_uv_to_polygon",

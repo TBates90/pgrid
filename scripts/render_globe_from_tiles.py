@@ -14,9 +14,6 @@ Usage
     # Then view as a 3D globe (reads metadata from the export directory):
     python scripts/render_globe_from_tiles.py exports/my_tiles
 
-    # With v2 renderer (newer, better quality):
-    python scripts/render_globe_from_tiles.py exports/my_tiles --v2
-
     # Save a flat atlas without launching the viewer:
     python scripts/render_globe_from_tiles.py exports/my_tiles --no-view
 
@@ -192,7 +189,7 @@ def main():
     )
     parser.add_argument(
         "--subdivisions", type=int, default=3,
-        help="Triangle subdivision level for v2 renderer (default: 3)",
+        help="Triangle subdivision level for sphere projection (default: 3)",
     )
     parser.add_argument(
         "--width", type=int, default=900,
@@ -201,14 +198,6 @@ def main():
     parser.add_argument(
         "--height", type=int, default=700,
         help="Window height (default: 700)",
-    )
-    parser.add_argument(
-        "--v2", action="store_true", default=True,
-        help="Use v2 renderer (default; kept for backwards compatibility)",
-    )
-    parser.add_argument(
-        "--legacy-renderer", action="store_true",
-        help="Use v1 renderer (deprecated; flat projection, no PBR)",
     )
     parser.add_argument(
         "--uv-inset-px", type=float, default=0.0,
@@ -327,33 +316,16 @@ def main():
     tile_count = payload["metadata"]["tile_count"]
     title = f"Polygrid Globe — freq={freq}, {tile_count} tiles"
 
-    if args.legacy_renderer:
-        import warnings
-        warnings.warn(
-            "The v1 globe renderer is deprecated. "
-            "Remove --legacy-renderer to use the v2 renderer.",
-            DeprecationWarning,
-            stacklevel=1,
-        )
-        print("Launching legacy v1 3D viewer...")
-        from polygrid.globe_renderer import render_textured_globe_opengl
-        render_textured_globe_opengl(
-            payload, atlas_path, uv_layout,
-            title=title,
-            width=args.width,
-            height=args.height,
-        )
-    else:
-        print("Launching v2 3D viewer...")
-        from polygrid.globe_renderer_v2 import render_globe_v2
-        render_globe_v2(
-            payload, atlas_path, uv_layout,
-            title=title,
-            subdivisions=args.subdivisions,
-            width=args.width,
-            height=args.height,
-            uv_inset_px=args.uv_inset_px,
-        )
+    print("Launching 3D viewer...")
+    from polygrid.globe_renderer_v2 import render_globe_v2
+    render_globe_v2(
+        payload, atlas_path, uv_layout,
+        title=title,
+        subdivisions=args.subdivisions,
+        width=args.width,
+        height=args.height,
+        uv_inset_px=args.uv_inset_px,
+    )
 
 
 if __name__ == "__main__":

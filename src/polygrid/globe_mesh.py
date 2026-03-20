@@ -72,7 +72,7 @@ def terrain_colors_for_layout(
         The globe grid that produced the colour map.
     colour_map : dict
         ``{face_id: (r, g, b)}`` as returned by
-        :func:`globe_render.globe_to_colour_map`.
+        :func:`globe_export.globe_to_colour_map`.
     layout : GoldbergLayout
         The models layout for the same frequency.
     fallback : tuple

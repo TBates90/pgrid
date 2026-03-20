@@ -527,11 +527,11 @@ class TestGetFaceAdjacency:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 8D — Globe rendering
+# 8D — Globe colour mapping
 # ═══════════════════════════════════════════════════════════════════
 
 @needs_models
-class TestGlobeRendering:
+class TestGlobeColourMap:
     def _make_globe_with_terrain(self, freq=2):
         from polygrid.mountains import MountainConfig, generate_mountains
 
@@ -543,14 +543,14 @@ class TestGlobeRendering:
         return grid, store
 
     def test_colour_map_has_all_faces(self):
-        from polygrid.globe_render import globe_to_colour_map
+        from polygrid.globe_export import globe_to_colour_map
 
         grid, store = self._make_globe_with_terrain()
         colours = globe_to_colour_map(grid, store)
         assert set(colours.keys()) == set(grid.faces.keys())
 
     def test_colour_map_valid_rgb(self):
-        from polygrid.globe_render import globe_to_colour_map
+        from polygrid.globe_export import globe_to_colour_map
 
         grid, store = self._make_globe_with_terrain()
         colours = globe_to_colour_map(grid, store)
@@ -559,37 +559,8 @@ class TestGlobeRendering:
             assert 0.0 <= g <= 1.0, f"{fid}: g={g}"
             assert 0.0 <= b <= 1.0, f"{fid}: b={b}"
 
-    def test_tile_colours_export(self):
-        from polygrid.globe_render import globe_to_tile_colours
-
-        grid, store = self._make_globe_with_terrain()
-        payload = globe_to_tile_colours(grid, store)
-        assert len(payload) == len(grid.faces)
-        first = next(iter(payload.values()))
-        assert "color" in first
-        assert "elevation" in first
-        assert len(first["color"]) == 3
-
-    def test_render_flat_produces_file(self, tmp_path):
-        from polygrid.globe_render import render_globe_flat
-
-        grid, store = self._make_globe_with_terrain()
-        out = tmp_path / "flat.png"
-        result = render_globe_flat(grid, store, out)
-        assert result.exists()
-        assert result.stat().st_size > 0
-
-    def test_render_3d_produces_file(self, tmp_path):
-        from polygrid.globe_render import render_globe_3d
-
-        grid, store = self._make_globe_with_terrain()
-        out = tmp_path / "globe_3d.png"
-        result = render_globe_3d(grid, store, out)
-        assert result.exists()
-        assert result.stat().st_size > 0
-
     def test_topo_ramp(self):
-        from polygrid.globe_render import globe_to_colour_map
+        from polygrid.globe_export import globe_to_colour_map
 
         grid, store = self._make_globe_with_terrain()
         colours = globe_to_colour_map(grid, store, ramp="topo")
@@ -871,86 +842,3 @@ class TestGlobeExport:
         )
         # Most tiles should differ between ramps
         assert diff > 0
-
-
-# ═══════════════════════════════════════════════════════════════════
-# 9C — Models renderer integration (CPU-side mesh tests)
-# ═══════════════════════════════════════════════════════════════════
-
-@needs_models
-class TestGlobeRenderer:
-    """Tests for globe_renderer.py — mesh builders, scene prep."""
-
-    def _make_payload(self, freq=2):
-        from polygrid.mountains import MountainConfig, generate_mountains
-        from polygrid.globe_export import export_globe_payload
-
-        grid = build_globe_grid(freq)
-        schema = TileSchema([FieldDef("elevation", float, 0.0)])
-        store = TileDataStore(grid=grid, schema=schema)
-        config = MountainConfig(seed=42, ridge_frequency=2.0, ridge_octaves=3)
-        generate_mountains(grid, store, config)
-        payload = export_globe_payload(grid, store)
-        return grid, store, payload
-
-    def test_build_coloured_globe_mesh(self):
-        from polygrid.globe_renderer import build_coloured_globe_mesh
-
-        grid, _, payload = self._make_payload()
-        tile_colours = {t["id"]: tuple(t["color"]) for t in payload["tiles"]}
-        mesh = build_coloured_globe_mesh(grid.frequency, tile_colours)
-        assert len(mesh.vertex_data) > 0
-        assert len(mesh.index_data) > 0
-
-    def test_build_coloured_mesh_from_export(self):
-        from polygrid.globe_renderer import build_coloured_globe_mesh_from_export
-
-        _, _, payload = self._make_payload()
-        mesh = build_coloured_globe_mesh_from_export(payload)
-        assert len(mesh.vertex_data) > 0
-        assert len(mesh.index_data) > 0
-
-    def test_mesh_colours_match_payload(self):
-        """Verify mesh colours correspond to the export payload colours."""
-        from polygrid.globe_renderer import build_coloured_globe_mesh
-
-        _, _, payload = self._make_payload(freq=1)
-        tile_colours = {t["id"]: tuple(t["color"]) for t in payload["tiles"]}
-        mesh = build_coloured_globe_mesh(1, tile_colours)
-        # Mesh has vertex data — just verify it's non-trivial
-        assert mesh.stride > 0
-        assert len(mesh.attributes) >= 2  # position + color
-
-    def test_build_edge_mesh(self):
-        from polygrid.globe_renderer import build_edge_mesh_for_frequency
-
-        mesh = build_edge_mesh_for_frequency(2)
-        assert len(mesh.vertex_data) > 0
-        assert len(mesh.index_data) > 0
-
-    def test_prepare_terrain_scene(self):
-        from polygrid.globe_renderer import prepare_terrain_scene
-
-        _, _, payload = self._make_payload()
-        scene = prepare_terrain_scene(payload)
-        assert "mesh" in scene
-        assert "edge_mesh" in scene
-        assert scene["frequency"] == 2
-        assert scene["tile_count"] == len(payload["tiles"])
-        assert len(scene["mesh"].vertex_data) > 0
-
-    def test_prepare_scene_no_edges(self):
-        from polygrid.globe_renderer import prepare_terrain_scene
-
-        _, _, payload = self._make_payload()
-        scene = prepare_terrain_scene(payload, include_edges=False)
-        assert scene["edge_mesh"] is None
-        assert len(scene["mesh"].vertex_data) > 0
-
-    def test_prepare_scene_custom_radius(self):
-        from polygrid.globe_renderer import prepare_terrain_scene
-
-        _, _, payload = self._make_payload()
-        scene = prepare_terrain_scene(payload, radius=2.5)
-        assert scene["radius"] == 2.5
-

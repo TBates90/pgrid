@@ -26,7 +26,7 @@ The project is organised around strict layering:
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           scripts / CLI                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  globe_renderer_v2.py │ globe_renderer.py │ visualize.py │ render.py  │  GPU + 2D rendering
+│  globe_renderer_v2.py │ visualize.py │ render.py                     │  GPU + 2D rendering
 ├─────────────────────────────────────────────────────────────────────────┤
 │  texture_pipeline.py │ detail_render.py │ detail_perf.py              │  Texture pipeline
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -60,7 +60,7 @@ The project is organised around strict layering:
 | **Globe** (`globe`, `globe_terrain`, `globe_export`, `globe_mesh`) | Core, tile data, terrain, `models` lib | Rendering |
 | **Detail** (`detail_grid`, `tile_detail`, `detail_terrain`, `detail_render`, `detail_perf`) | Core, terrain, globe | GPU rendering |
 | **Texture** (`texture_pipeline`) | Detail, globe | GPU rendering |
-| **Rendering** (`globe_renderer`, `globe_renderer_v2`, `visualize`) | Everything above | Nothing below it depends on rendering |
+| **Rendering** (`globe_renderer_v2`, `visualize`) | Everything above | Nothing below it depends on rendering |
 | **Scripts / CLI** | Everything | — |
 
 **Key principle:** the core topology layer has **zero rendering dependencies**. Matplotlib and pyglet are optional installs. All algorithm work operates on the abstract `PolyGrid` graph.
@@ -172,12 +172,12 @@ Each Goldberg tile is expanded into a local hex sub-grid:
 
 ## GPU Rendering (Phases 12–13)
 
-> **Note:** `globe_renderer.py` and `globe_renderer_v2.py` are **standalone
-> demo/diagnostic renderers** — they are NOT part of the library API.
-> `playground` has its own full OpenGL pipeline and does not import these
-> modules.  They exist so pgrid can be developed and tested independently
-> with a 3D viewer.  They are gated behind the `[demo]` / `[globe]` extras
-> and are only imported by scripts in `scripts/` and by their own test files.
+> **Note:** `globe_renderer_v2.py` is a **standalone demo/diagnostic
+> renderer** — it is NOT part of the library API.
+> `playground` has its own full OpenGL pipeline and does not import this
+> module.  It exists so pgrid can be developed and tested independently
+> with a 3D viewer.  It is gated behind the `[demo]` / `[globe]` extras
+> and is only imported by scripts in `scripts/` and by its own test files.
 
 `globe_renderer_v2.py` is the main renderer (~2,300 lines), implementing:
 
@@ -271,11 +271,9 @@ imported by `playground`.
 
 | Module | Purpose |
 |--------|---------|
-| `globe_renderer.py` | v1 terrain-coloured OpenGL renderer (pyglet) |
-| `globe_renderer_v2.py` | v2 renderer: subdivision, batching, PBR, water, atmosphere, LOD, bloom |
-| `globe_mesh.py` | Builds `ShapeMesh` objects for the 3D renderers |
+| `globe_renderer_v2.py` | Globe renderer: subdivision, batching, PBR, water, atmosphere, LOD, bloom |
+| `globe_mesh.py` | Builds `ShapeMesh` objects for the 3D renderer |
 | `texture_pipeline.py` | Builds textured globe meshes for the 3D renderers |
-| `globe_render.py` | Colour-map helpers for globe rendering |
 | `visualize.py` | 2D matplotlib rendering |
 
 These are gated behind optional extras (`[demo]`, `[globe]`, `[render]`)
@@ -311,8 +309,8 @@ When integration is complete, playground will import from these pgrid modules:
 - `polygrid.terrain_patches` — `TERRAIN_PRESETS`, `generate_patched_terrain`
 - `polygrid.coastline` — `CoastlineConfig`, `classify_all_tiles`
 
-Playground must **never** import pgrid rendering modules (`globe_renderer`,
-`globe_renderer_v2`, `globe_mesh`, `visualize`).
+Playground must **never** import pgrid rendering modules (`globe_renderer_v2`,
+`globe_mesh`, `visualize`).
 
 ---
 

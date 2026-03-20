@@ -117,11 +117,11 @@ per tile.
 ### Step 2 — View the 3D globe
 
 ```bash
-python scripts/render_globe_from_tiles.py exports/f3 --v2
+python scripts/render_globe_from_tiles.py exports/f3
 ```
 
 ```bash
-python scripts/render_globe_from_tiles.py exports/colour_debug --v2
+python scripts/render_globe_from_tiles.py exports/colour_debug
 ```
 
 This loads the pre-generated atlas and metadata from the export
@@ -133,7 +133,6 @@ they are read automatically from `metadata.json`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--v2` | off | Use the v2 renderer (recommended — better sphere projection) |
 | `--subdivisions` | `3` | Triangle subdivision level (higher = smoother sphere) |
 | `--width` / `--height` | `900` / `700` | Window dimensions |
 | `--no-view` | off | Build atlas/payload only, don't launch the viewer |
@@ -226,9 +225,7 @@ src/polygrid/
     tile_uv_align.py       # Polygon-cut warp, atlas builder
 
     # ── GPU rendering ──────────────────────────────────────────
-    globe_renderer.py      # OpenGL renderer v1 (flat + textured modes)
-    globe_renderer_v2.py   # Phase 12-13 renderer (PBR, LOD, water, atmosphere)
-    globe_render.py        # Render helpers
+    globe_renderer_v2.py   # PBR renderer (subdivision, LOD, water, atmosphere)
     render_enhanced.py     # Enhanced rendering utilities
 
     # ── 2D visualisation ───────────────────────────────────────
@@ -261,7 +258,7 @@ Strict layering with clear separation of concerns:
 | **Globe** | `globe`, `globe_terrain`, `globe_export`, `globe_mesh` | Globe-scale topology & terrain |
 | **Detail** | `detail_grid`, `tile_detail`, `detail_terrain`, `detail_terrain_3d`, `detail_render`, `detail_perf` | Sub-tile detail grids & textures |
 | **Texture** | `texture_pipeline`, `uv_texture`, `tile_uv_align` | Polygon-cut warp, texture atlas, UV mapping |
-| **Rendering** | `globe_renderer`, `globe_renderer_v2`, `globe_render`, `render_enhanced`, `visualize` | GPU rendering, PBR, LOD |
+| **Rendering** | `globe_renderer_v2`, `render_enhanced`, `visualize` | GPU rendering, PBR, LOD |
 
 The core layer has **zero rendering dependencies**. All algorithm work operates on abstract graph topology.
 

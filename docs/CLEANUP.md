@@ -73,15 +73,22 @@ The two *retained* diagnostic tools (`debug_pipeline.py`,
 
 ## 4. Renderer Duplication
 
-### 4.1 `globe_renderer.py` (v1) vs `globe_renderer_v2.py` (v2)  ✅ DONE
-- All scripts migrated to v2: `demo_detail_globe.py`,
-  `demo_ocean_globe.py`, `demo_forest_globe.py` now import
-  `render_globe_v2` from `globe_renderer_v2`.
-- `render_globe_from_tiles.py` defaults to v2; old path available
-  via `--legacy-renderer` with deprecation warning.
-- `globe_renderer.py` now emits a `DeprecationWarning` on import.
-- v1 module kept for test compatibility (tests still import mesh
-  builder helpers); removal is a future step once tests are migrated.
+### 4.1 `globe_renderer.py` (v1) removal  ✅ DONE
+- v1 renderer (`globe_renderer.py`) deleted.
+- `--legacy-renderer` and `--v2` flags removed from `render_globe_from_tiles.py`.
+- `globe_renderer_v2.py` is now the only renderer, used by default.
+- v1 tests removed from `test_globe.py` (`TestGlobeRenderer`) and
+  `test_globe_renderer_v2.py` (`TestTexturedRenderer`).
+- `__init__.py` no longer re-exports v1 symbols.
+
+### 4.2 `globe_render.py` inlined into `globe_export.py`  ✅ DONE
+- `globe_to_colour_map` and its colour-ramp helpers (`_lerp_colour`,
+  `_ramp_satellite`, `_ramp_topo`, `_RAMPS`) inlined into `globe_export.py`.
+- `globe_render.py` deleted (removed unused `render_globe_flat`,
+  `render_globe_3d`, `globe_to_tile_colours`).
+- Tests for `globe_to_colour_map` moved to import from `globe_export`;
+  tests for dead functions removed.
+- `__init__.py` re-exports `globe_to_colour_map` from `globe_export`.
 
 ### 4.2 Legacy shaders in `globe_renderer_v2.py`
 - `_V2_VERTEX_SHADER` / `_V2_FRAGMENT_SHADER` (lines 1852–1895) are the

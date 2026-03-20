@@ -711,7 +711,7 @@ differences are within acceptable bounds.  No blocking issues found.
 .venv/bin/python scripts/debug_pipeline.py --tiles t0 t5
 
 # Render full globe from colour-debug tiles
-.venv/bin/python scripts/render_globe_from_tiles.py exports/colour_debug --v2
+.venv/bin/python scripts/render_globe_from_tiles.py exports/colour_debug
 ```
 
 Output directories:

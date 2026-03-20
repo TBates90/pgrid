@@ -15,17 +15,17 @@ python scripts/render_polygrids.py -f 3 --seed 42 -o exports/f3-4-colour --detai
 python scripts/render_polygrids.py -f 3 --seed 42 -o exports/f3-5-colour --detail-rings 5 --colour-debug --debug-labels
 
 # Render Globes
-python scripts/render_globe_from_tiles.py exports/f3-1 --v2
-python scripts/render_globe_from_tiles.py exports/f3-2 --v2
-python scripts/render_globe_from_tiles.py exports/f3-3 --v2
-python scripts/render_globe_from_tiles.py exports/f3-4 --v2
-python scripts/render_globe_from_tiles.py exports/f3-5 --v2
+python scripts/render_globe_from_tiles.py exports/f3-1
+python scripts/render_globe_from_tiles.py exports/f3-2
+python scripts/render_globe_from_tiles.py exports/f3-3
+python scripts/render_globe_from_tiles.py exports/f3-4
+python scripts/render_globe_from_tiles.py exports/f3-5
 
 # Render Debug Globes
-python scripts/render_globe_from_tiles.py exports/f3-1-colour --v2
-python scripts/render_globe_from_tiles.py exports/f3-2-colour --v2
-python scripts/render_globe_from_tiles.py exports/f3-3-colour --v2
-python scripts/render_globe_from_tiles.py exports/f3-4-colour --v2
-python scripts/render_globe_from_tiles.py exports/f3-5-colour --v2
+python scripts/render_globe_from_tiles.py exports/f3-1-colour
+python scripts/render_globe_from_tiles.py exports/f3-2-colour
+python scripts/render_globe_from_tiles.py exports/f3-3-colour
+python scripts/render_globe_from_tiles.py exports/f3-4-colour
+python scripts/render_globe_from_tiles.py exports/f3-5-colour
 
-python scripts/render_globe_from_tiles.py exports/debug_labels_test --v2
+python scripts/render_globe_from_tiles.py exports/debug_labels_test
