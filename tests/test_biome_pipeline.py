@@ -1,7 +1,18 @@
-"""Tests for Phase 14D — biome_pipeline.py (atlas integration)."""
+"""Tests for Phase 14D — biome_pipeline.py (atlas integration).
+
+Performance-optimised: the expensive globe + detail-terrain build is
+done **once per module** and shared across all integration classes via
+``_shared_build_collection()``.  Each call returns a fresh
+``DetailGridCollection`` wrapper so tests can mutate ``_stores``
+safely.
+"""
 
 from __future__ import annotations
 
+import random
+from functools import lru_cache
+
+import numpy as np
 import pytest
 
 try:
@@ -22,6 +33,59 @@ needs_pil = pytest.mark.skipif(not _HAS_PIL, reason="PIL/Pillow not installed")
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Shared, cached collection builder  (runs once per (freq, rings))
+# ═══════════════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=4)
+def _cached_collection_internals(freq: int = 1, rings: int = 1):
+    """Build and cache the expensive parts: globe, grids, spec, globe_store.
+
+    Returns (globe, grids_dict, spec, globe_store) — all immutable /
+    read-only so safe to cache.
+    """
+    from conftest import cached_build_globe
+    from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
+    from polygrid.detail_terrain import generate_all_detail_terrain
+    from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
+
+    grid = cached_build_globe(freq)
+    if grid is None:
+        return None
+
+    schema = TileSchema([FieldDef("elevation", float, 0.0)])
+    store = TileDataStore(grid=grid, schema=schema)
+    rng = random.Random(42)
+    for fid in grid.faces:
+        store.set(fid, "elevation", rng.uniform(0.1, 0.9))
+
+    spec = TileDetailSpec(detail_rings=rings)
+    coll = DetailGridCollection.build(grid, spec)
+    generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+    # Snapshot the stores so we can copy them into fresh collections
+    return grid, store, coll._grids, coll._stores, spec
+
+
+def _shared_build_collection(freq: int = 1, rings: int = 1):
+    """Return (grid, globe_store, collection) with a *fresh* wrapper.
+
+    The heavy grid/terrain work is cached; each call gets its own
+    ``DetailGridCollection`` with a **copy** of ``_stores`` so tests
+    can't cross-contaminate.
+    """
+    result = _cached_collection_internals(freq, rings)
+    if result is None:
+        pytest.skip("models library not installed")
+
+    grid, store, grids_dict, stores_dict, spec = result
+    from polygrid.tile_detail import DetailGridCollection
+    coll = DetailGridCollection(grid, spec, grids_dict)
+    # Copy the stores dict (shallow — store objects are not mutated)
+    coll._stores = dict(stores_dict)
+    return grid, store, coll
+
+
+# ═══════════════════════════════════════════════════════════════════
 # ForestRenderer
 # ═══════════════════════════════════════════════════════════════════
 
@@ -30,7 +94,6 @@ class TestForestRenderer:
     def test_satisfies_protocol(self):
         from polygrid.biome_pipeline import BiomeRenderer, ForestRenderer
         renderer = ForestRenderer()
-        # Check it has the render method with right signature
         assert hasattr(renderer, "render")
         assert callable(renderer.render)
 
@@ -46,7 +109,6 @@ class TestForestRenderer:
         renderer = ForestRenderer()
         ground = Image.new("RGB", (64, 64), (100, 80, 50))
         result = renderer.render(ground, "t0", density=0.0, seed=42)
-        # Very low density → should be close to ground
         result_rgb = result.convert("RGB")
         assert result_rgb.size == (64, 64)
 
@@ -56,11 +118,8 @@ class TestForestRenderer:
         ground = Image.new("RGB", (64, 64), (100, 80, 50))
         r1 = renderer.render(ground, "t0", density=0.8, seed=42)
         r2 = renderer.render(ground, "t5", density=0.8, seed=42)
-        # Different tile_id → different seed → different scatter
-        diff = sum(
-            1 for x in range(64) for y in range(64)
-            if r1.getpixel((x, y)) != r2.getpixel((x, y))
-        )
+        # Fast numpy comparison instead of pixel-by-pixel Python loop
+        diff = (np.array(r1) != np.array(r2)).any(axis=-1).sum()
         assert diff > 50
 
 
@@ -125,44 +184,42 @@ class TestIdentifyForestTiles:
 @needs_models
 @needs_pil
 class TestBuildFeatureAtlas:
-    """Integration tests for the full feature atlas pipeline."""
+    """Integration tests for the full feature atlas pipeline.
 
-    def _build_collection(self, freq=1, rings=1):
-        from conftest import cached_build_globe
-        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
-        from polygrid.detail_terrain import generate_all_detail_terrain
-        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
-        import random
+    Uses a class-scoped fixture so the atlas is built **once** and
+    shared across simple validation tests (UV ranges, file exists, etc).
+    """
 
-        grid = cached_build_globe(freq)
-        schema = TileSchema([FieldDef("elevation", float, 0.0)])
-        store = TileDataStore(grid=grid, schema=schema)
-        rng = random.Random(42)
-        for fid in grid.faces:
-            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
-        spec = TileDetailSpec(detail_rings=rings)
-        coll = DetailGridCollection.build(grid, spec)
-        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
-        return grid, store, coll
-
-    def test_atlas_with_no_features(self, tmp_path):
+    @pytest.fixture(scope="class")
+    def shared_atlas(self, tmp_path_factory):
+        """Build a plain atlas once for the whole class."""
         from polygrid.biome_pipeline import build_feature_atlas
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
+        out = tmp_path_factory.mktemp("atlas_shared")
         atlas_path, uv = build_feature_atlas(
             coll, globe_grid=grid,
-            output_dir=tmp_path / "tiles",
+            output_dir=out / "tiles",
             tile_size=64,
         )
+        return grid, coll, atlas_path, uv
+
+    def test_atlas_with_no_features(self, shared_atlas):
+        _grid, coll, atlas_path, uv = shared_atlas
         assert atlas_path.exists()
         assert len(uv) == len(coll.face_ids)
         img = Image.open(str(atlas_path))
         assert img.size[0] > 0
 
+    def test_uv_layout_same_as_standard(self, shared_atlas):
+        """UV layout structure should match the standard atlas format."""
+        _grid, _coll, _path, uv = shared_atlas
+        for fid, (u_min, v_min, u_max, v_max) in uv.items():
+            assert 0 <= u_min < u_max <= 1.0
+            assert 0 <= v_min < v_max <= 1.0
+
     def test_atlas_with_forest_features(self, tmp_path):
         from polygrid.biome_pipeline import build_feature_atlas, ForestRenderer
-        grid, store, coll = self._build_collection()
-
-        # Give all tiles some density
+        grid, _store, coll = _shared_build_collection()
         density_map = {fid: 0.8 for fid in coll.face_ids}
 
         atlas_path, uv = build_feature_atlas(
@@ -177,7 +234,7 @@ class TestBuildFeatureAtlas:
 
     def test_featured_atlas_differs_from_plain(self, tmp_path):
         from polygrid.biome_pipeline import build_feature_atlas, ForestRenderer
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
 
         # Plain atlas (no density)
         plain_path, _ = build_feature_atlas(
@@ -195,42 +252,19 @@ class TestBuildFeatureAtlas:
             tile_size=64,
         )
 
-        plain_img = Image.open(str(plain_path))
-        feat_img = Image.open(str(feat_path))
-        assert plain_img.size == feat_img.size
-
-        # Images should differ (features overlay)
-        plain_bytes = plain_img.tobytes()
-        feat_bytes = feat_img.tobytes()
-        # Compare pixel-by-pixel (3 bytes per pixel for RGB)
-        bpp = 3
-        n_pixels = len(plain_bytes) // bpp
-        diff = sum(
-            1 for i in range(n_pixels)
-            if plain_bytes[i*bpp:(i+1)*bpp] != feat_bytes[i*bpp:(i+1)*bpp]
-        )
+        plain_arr = np.array(Image.open(str(plain_path)))
+        feat_arr = np.array(Image.open(str(feat_path)))
+        assert plain_arr.shape == feat_arr.shape
+        diff = (plain_arr != feat_arr).any(axis=-1).sum()
         assert diff > 100, f"Only {diff} pixels differ"
-
-    def test_uv_layout_same_as_standard(self, tmp_path):
-        """UV layout structure should match the standard atlas format."""
-        from polygrid.biome_pipeline import build_feature_atlas
-        grid, store, coll = self._build_collection()
-        _, uv = build_feature_atlas(
-            coll, globe_grid=grid,
-            output_dir=tmp_path / "tiles",
-            tile_size=64,
-        )
-        for fid, (u_min, v_min, u_max, v_max) in uv.items():
-            assert 0 <= u_min < u_max <= 1.0
-            assert 0 <= v_min < v_max <= 1.0
 
     def test_partial_density_map(self, tmp_path):
         """Only some tiles have density — others get plain ground."""
         from polygrid.biome_pipeline import build_feature_atlas, ForestRenderer
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
 
         face_ids = coll.face_ids
-        density_map = {face_ids[0]: 0.9}  # only first tile
+        density_map = {face_ids[0]: 0.9}
 
         atlas_path, uv = build_feature_atlas(
             coll, globe_grid=grid,
@@ -250,70 +284,81 @@ class TestBuildFeatureAtlas:
 @needs_pil
 @needs_models
 class TestSoftBlendPipeline:
-    """Integration tests for the full Phase 16 soft-blend pipeline."""
+    """Integration tests for the full Phase 16 soft-blend pipeline.
 
-    def _build_collection(self, freq=1, rings=1):
-        from conftest import cached_build_globe
-        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
-        from polygrid.detail_terrain import generate_all_detail_terrain
-        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
-        import random
+    A class-scoped fixture builds the plain + soft-blend atlases once;
+    individual tests inspect the cached results.
+    """
 
-        grid = cached_build_globe(freq)
-        schema = TileSchema([FieldDef("elevation", float, 0.0)])
-        store = TileDataStore(grid=grid, schema=schema)
-        rng = random.Random(42)
-        for fid in grid.faces:
-            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
-        spec = TileDetailSpec(detail_rings=rings)
-        coll = DetailGridCollection.build(grid, spec)
-        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
-        return grid, store, coll
-
-    # ── 16E.1  soft_blend produces a valid atlas ────────────────
-
-    def test_soft_blend_atlas_produces_file(self, tmp_path):
-        """soft_blend=True should produce a valid atlas PNG."""
+    @pytest.fixture(scope="class")
+    def blend_atlases(self, tmp_path_factory):
+        """Build plain and soft-blend atlases once for the whole class."""
         from polygrid.biome_pipeline import build_feature_atlas
-        grid, store, coll = self._build_collection()
-        atlas_path, uv = build_feature_atlas(
+        grid, _store, coll = _shared_build_collection()
+
+        out = tmp_path_factory.mktemp("blend")
+
+        plain_path, uv_plain = build_feature_atlas(
             coll, globe_grid=grid,
-            output_dir=tmp_path / "tiles",
+            output_dir=out / "plain",
+            tile_size=64,
+            fullslot=True,
+        )
+        blend_path, uv_blend = build_feature_atlas(
+            coll, globe_grid=grid,
+            output_dir=out / "blend",
             tile_size=64,
             soft_blend=True,
         )
+        return {
+            "grid": grid, "coll": coll,
+            "plain_path": plain_path, "uv_plain": uv_plain,
+            "blend_path": blend_path, "uv_blend": uv_blend,
+        }
+
+    # ── 16E.1  soft_blend produces a valid atlas ────────────────
+
+    def test_soft_blend_atlas_produces_file(self, blend_atlases):
+        """soft_blend=True should produce a valid atlas PNG."""
+        atlas_path = blend_atlases["blend_path"]
+        uv = blend_atlases["uv_blend"]
+        coll = blend_atlases["coll"]
         assert atlas_path.exists()
         assert len(uv) == len(coll.face_ids)
         img = Image.open(str(atlas_path))
         assert img.size[0] > 0 and img.size[1] > 0
 
-    def test_soft_blend_atlas_dimensions_unchanged(self, tmp_path):
+    def test_soft_blend_atlas_dimensions_unchanged(self, blend_atlases):
         """soft_blend should not change atlas dimensions vs plain."""
-        from polygrid.biome_pipeline import build_feature_atlas
-        grid, store, coll = self._build_collection()
-
-        plain_path, uv_plain = build_feature_atlas(
-            coll, globe_grid=grid,
-            output_dir=tmp_path / "plain",
-            tile_size=64,
-        )
-        blend_path, uv_blend = build_feature_atlas(
-            coll, globe_grid=grid,
-            output_dir=tmp_path / "blend",
-            tile_size=64,
-            soft_blend=True,
-        )
-
-        plain_img = Image.open(str(plain_path))
-        blend_img = Image.open(str(blend_path))
+        plain_img = Image.open(str(blend_atlases["plain_path"]))
+        blend_img = Image.open(str(blend_atlases["blend_path"]))
         assert plain_img.size == blend_img.size
-        # UV layout should have same keys
-        assert set(uv_plain.keys()) == set(uv_blend.keys())
+        assert set(blend_atlases["uv_plain"].keys()) == set(blend_atlases["uv_blend"].keys())
+
+    def test_soft_blend_forces_fullslot(self, blend_atlases):
+        """When soft_blend=True, no magenta sentinel pixels should appear."""
+        img = Image.open(str(blend_atlases["blend_path"]))
+        arr = np.array(img)
+        magenta_mask = (arr[:, :, 0] == 255) & (arr[:, :, 1] == 0) & (arr[:, :, 2] == 255)
+        assert magenta_mask.sum() == 0, "Magenta sentinel pixels found in soft_blend atlas"
+
+    def test_soft_blend_alters_tile_edges(self, blend_atlases):
+        """soft_blend should fade tile edges, reducing boundary contrast."""
+        plain_arr = np.array(Image.open(str(blend_atlases["plain_path"]))).astype(np.float32)
+        blend_arr = np.array(Image.open(str(blend_atlases["blend_path"]))).astype(np.float32)
+        diff = np.abs(plain_arr - blend_arr).mean()
+        assert diff > 0.5, f"Expected noticeable difference, got mean diff={diff:.2f}"
+
+    def test_soft_blend_uv_values_in_range(self, blend_atlases):
+        """UV coords from soft_blend atlas should be valid."""
+        for fid, (u_min, v_min, u_max, v_max) in blend_atlases["uv_blend"].items():
+            assert 0 <= u_min < u_max <= 1.0, f"{fid}: u range invalid"
+            assert 0 <= v_min < v_max <= 1.0, f"{fid}: v range invalid"
 
     def test_soft_blend_with_forest_features(self, tmp_path):
         """soft_blend + forest features should produce a valid atlas."""
         from polygrid.biome_pipeline import build_feature_atlas, ForestRenderer
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
         density_map = {fid: 0.8 for fid in coll.face_ids}
 
         atlas_path, uv = build_feature_atlas(
@@ -327,73 +372,10 @@ class TestSoftBlendPipeline:
         assert atlas_path.exists()
         assert len(uv) == len(coll.face_ids)
 
-    def test_soft_blend_forces_fullslot(self, tmp_path):
-        """When soft_blend=True, the pipeline should use fullslot rendering."""
-        from polygrid.biome_pipeline import build_feature_atlas
-        import numpy as np
-
-        grid, store, coll = self._build_collection()
-        atlas_path, _ = build_feature_atlas(
-            coll, globe_grid=grid,
-            output_dir=tmp_path / "tiles",
-            tile_size=64,
-            soft_blend=True,
-        )
-        # With fullslot, no magenta sentinel pixels should appear
-        img = Image.open(str(atlas_path))
-        arr = np.array(img)
-        magenta_mask = (arr[:, :, 0] == 255) & (arr[:, :, 1] == 0) & (arr[:, :, 2] == 255)
-        assert magenta_mask.sum() == 0, "Magenta sentinel pixels found in soft_blend atlas"
-
-    def test_soft_blend_alters_tile_edges(self, tmp_path):
-        """soft_blend should fade tile edges, reducing boundary contrast."""
-        from polygrid.biome_pipeline import build_feature_atlas
-        import numpy as np
-
-        grid, store, coll = self._build_collection()
-
-        # Build plain atlas (no blend)
-        plain_path, _ = build_feature_atlas(
-            coll, globe_grid=grid,
-            output_dir=tmp_path / "plain",
-            tile_size=64,
-            fullslot=True,
-        )
-        # Build soft-blend atlas
-        blend_path, _ = build_feature_atlas(
-            coll, globe_grid=grid,
-            output_dir=tmp_path / "blend",
-            tile_size=64,
-            soft_blend=True,
-        )
-
-        plain_arr = np.array(Image.open(str(plain_path))).astype(np.float32)
-        blend_arr = np.array(Image.open(str(blend_path))).astype(np.float32)
-
-        # The blend atlas should differ from the plain one
-        diff = np.abs(plain_arr - blend_arr).mean()
-        assert diff > 0.5, f"Expected noticeable difference, got mean diff={diff:.2f}"
-
-    def test_soft_blend_uv_values_in_range(self, tmp_path):
-        """UV coords from soft_blend atlas should be valid."""
-        from polygrid.biome_pipeline import build_feature_atlas
-        grid, store, coll = self._build_collection()
-        _, uv = build_feature_atlas(
-            coll, globe_grid=grid,
-            output_dir=tmp_path / "tiles",
-            tile_size=64,
-            soft_blend=True,
-        )
-        for fid, (u_min, v_min, u_max, v_max) in uv.items():
-            assert 0 <= u_min < u_max <= 1.0, f"{fid}: u range invalid"
-            assert 0 <= v_min < v_max <= 1.0, f"{fid}: v range invalid"
-
     def test_blend_fade_width_parameter(self, tmp_path):
         """Custom blend_fade_width should be accepted and alter result."""
         from polygrid.biome_pipeline import build_feature_atlas
-        import numpy as np
-
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
 
         narrow_path, _ = build_feature_atlas(
             coll, globe_grid=grid,
@@ -412,14 +394,13 @@ class TestSoftBlendPipeline:
 
         narrow_arr = np.array(Image.open(str(narrow_path))).astype(np.float32)
         wide_arr = np.array(Image.open(str(wide_path))).astype(np.float32)
-        # Different fade widths should produce different results
         diff = np.abs(narrow_arr - wide_arr).mean()
         assert diff > 0.1, f"Expected different results, got mean diff={diff:.2f}"
 
     def test_soft_blend_partial_density(self, tmp_path):
         """soft_blend with partial density: only some tiles get features."""
         from polygrid.biome_pipeline import build_feature_atlas, ForestRenderer
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
 
         face_ids = coll.face_ids
         density_map = {face_ids[0]: 0.9}
@@ -472,14 +453,9 @@ class TestOceanRenderer:
 
     def test_depth_map_affects_output(self):
         from polygrid.biome_pipeline import OceanRenderer
-        import numpy as np
 
-        shallow_renderer = OceanRenderer(
-            ocean_depth_map={"f0": 0.05},
-        )
-        deep_renderer = OceanRenderer(
-            ocean_depth_map={"f0": 0.95},
-        )
+        shallow_renderer = OceanRenderer(ocean_depth_map={"f0": 0.05})
+        deep_renderer = OceanRenderer(ocean_depth_map={"f0": 0.95})
         ground = Image.new("RGB", (32, 32), (40, 100, 160))
         shallow = shallow_renderer.render(ground, "f0", 1.0, seed=42)
         deep = deep_renderer.render(ground, "f0", 1.0, seed=42)
@@ -494,28 +470,10 @@ class TestOceanRenderer:
 class TestOceanPipelineIntegration:
     """Integration tests: ocean + forest in the same atlas."""
 
-    def _build_collection(self, freq=1, rings=1):
-        from conftest import cached_build_globe
-        from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
-        from polygrid.detail_terrain import generate_all_detail_terrain
-        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
-        import random
-
-        grid = cached_build_globe(freq)
-        schema = TileSchema([FieldDef("elevation", float, 0.0)])
-        store = TileDataStore(grid=grid, schema=schema)
-        rng = random.Random(42)
-        for fid in grid.faces:
-            store.set(fid, "elevation", rng.uniform(0.1, 0.9))
-        spec = TileDetailSpec(detail_rings=rings)
-        coll = DetailGridCollection.build(grid, spec)
-        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
-        return grid, store, coll
-
     def test_ocean_only_atlas(self, tmp_path):
         """Atlas with only ocean tiles should render correctly."""
         from polygrid.biome_pipeline import build_feature_atlas, OceanRenderer
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
         face_ids = coll.face_ids
 
         density_map = {fid: 1.0 for fid in face_ids}
@@ -543,21 +501,19 @@ class TestOceanPipelineIntegration:
         from polygrid.biome_pipeline import (
             build_feature_atlas, ForestRenderer, OceanRenderer,
         )
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
         face_ids = coll.face_ids
 
-        # Split tiles: first half forest, second half ocean
         mid = len(face_ids) // 2
         forest_ids = face_ids[:mid]
         ocean_ids = face_ids[mid:]
 
         density_map = {fid: 0.8 for fid in face_ids}
         depth_map = {fid: 0.5 for fid in ocean_ids}
-        biome_type_map = {}
-        for fid in forest_ids:
-            biome_type_map[fid] = "forest"
-        for fid in ocean_ids:
-            biome_type_map[fid] = "ocean"
+        biome_type_map = {
+            **{fid: "forest" for fid in forest_ids},
+            **{fid: "ocean" for fid in ocean_ids},
+        }
 
         renderers = {
             "forest": ForestRenderer(),
@@ -584,9 +540,7 @@ class TestOceanPipelineIntegration:
         from polygrid.biome_pipeline import (
             build_feature_atlas, ForestRenderer, OceanRenderer,
         )
-        import numpy as np
-
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
         face_ids = coll.face_ids
         density_map = {fid: 0.9 for fid in face_ids}
 
@@ -619,13 +573,11 @@ class TestOceanPipelineIntegration:
         from polygrid.biome_pipeline import (
             build_feature_atlas, ForestRenderer, OceanRenderer,
         )
-
-        grid, store, coll = self._build_collection()
+        grid, _store, coll = _shared_build_collection()
         face_ids = coll.face_ids
         if len(face_ids) < 2:
             pytest.skip("Need at least 2 tiles")
 
-        # Make only the first tile ocean, rest use default (forest)
         density_map = {fid: 0.9 for fid in face_ids}
         depth_map = {face_ids[0]: 0.2}
         biome_type_map = {face_ids[0]: "ocean"}
@@ -652,12 +604,8 @@ class TestOceanPipelineIntegration:
 
     def test_land_tiles_unaffected_by_ocean(self, tmp_path):
         """Tiles without ocean density should not be ocean-rendered."""
-        from polygrid.biome_pipeline import (
-            build_feature_atlas, OceanRenderer,
-        )
-        import numpy as np
-
-        grid, store, coll = self._build_collection()
+        from polygrid.biome_pipeline import build_feature_atlas, OceanRenderer
+        grid, _store, coll = _shared_build_collection()
         face_ids = coll.face_ids
 
         # No density → no features applied

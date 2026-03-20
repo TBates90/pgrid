@@ -582,6 +582,32 @@ def _make_detail_collection_real(globe_grid, detail_rings=2):
     return coll
 
 
+from functools import lru_cache
+import copy
+
+
+@lru_cache(maxsize=4)
+def _cached_globe_grid_real(frequency: int = 1):
+    """Cached version of _make_globe_grid_real."""
+    return _make_globe_grid_real(frequency)
+
+
+@lru_cache(maxsize=4)
+def _cached_detail_collection_internals(frequency: int = 1, detail_rings: int = 2):
+    """Build and cache the expensive collection internals."""
+    globe = _cached_globe_grid_real(frequency)
+    coll = _make_detail_collection_real(globe, detail_rings)
+    return coll
+
+
+def _shared_detail_collection(frequency: int = 1, detail_rings: int = 2):
+    """Return a fresh wrapper around cached internals."""
+    cached = _cached_detail_collection_internals(frequency, detail_rings)
+    wrapper = copy.copy(cached)
+    wrapper._stores = copy.copy(cached._stores)
+    return wrapper
+
+
 @pytest.fixture
 def tmp_dir_19b():
     """Temporary directory for 19B atlas output."""
@@ -594,13 +620,19 @@ def tmp_dir_19b():
 class TestApronFeatureAtlasCoastlines:
     """Tests for coastline integration into build_apron_feature_atlas."""
 
-    def test_atlas_with_coastlines_creates_output(self, tmp_dir_19b):
+    @pytest.fixture(scope="class")
+    def globe_and_coll(self):
+        """Shared globe + detail collection for the whole class."""
+        globe = _cached_globe_grid_real(1)
+        coll = _shared_detail_collection(1, 2)
+        return globe, coll
+
+    def test_atlas_with_coastlines_creates_output(self, globe_and_coll, tmp_dir_19b):
         """Coastline-enabled atlas still produces a valid atlas."""
         from polygrid.apron_texture import build_apron_feature_atlas
         from polygrid.biome_pipeline import ForestRenderer, OceanRenderer
 
-        globe = _make_globe_grid_real(1)
-        coll = _make_detail_collection_real(globe, detail_rings=2)
+        globe, coll = globe_and_coll
 
         face_ids = list(globe.faces.keys())
         # Split: half forest, half ocean
@@ -631,13 +663,12 @@ class TestApronFeatureAtlasCoastlines:
         assert atlas_path.exists()
         assert len(uv_layout) == len(face_ids)
 
-    def test_coastline_disabled_backward_compatible(self, tmp_dir_19b):
+    def test_coastline_disabled_backward_compatible(self, globe_and_coll, tmp_dir_19b):
         """With enable_coastlines=False, behaviour matches Phase 18."""
         from polygrid.apron_texture import build_apron_feature_atlas
         from polygrid.biome_pipeline import ForestRenderer
 
-        globe = _make_globe_grid_real(1)
-        coll = _make_detail_collection_real(globe, detail_rings=2)
+        globe, coll = globe_and_coll
 
         face_ids = list(globe.faces.keys())
         density_map = {fid: 0.7 for fid in face_ids[:3]}
@@ -657,15 +688,14 @@ class TestApronFeatureAtlasCoastlines:
         assert atlas_path.exists()
         assert len(uv_layout) == len(face_ids)
 
-    def test_transition_tiles_differ_from_interior(self, tmp_dir_19b):
+    def test_transition_tiles_differ_from_interior(self, globe_and_coll, tmp_dir_19b):
         """Tiles at biome boundaries should look different from interior tiles."""
         from PIL import Image
         from polygrid.apron_texture import build_apron_feature_atlas
         from polygrid.biome_pipeline import ForestRenderer, OceanRenderer
         from polygrid.algorithms import get_face_adjacency
 
-        globe = _make_globe_grid_real(1)
-        coll = _make_detail_collection_real(globe, detail_rings=2)
+        globe, coll = globe_and_coll
 
         face_ids = list(globe.faces.keys())
         mid = len(face_ids) // 2
@@ -696,12 +726,11 @@ class TestApronFeatureAtlasCoastlines:
         tile_files = list(tmp_dir_19b.glob("tile_*.png"))
         assert len(tile_files) > 0
 
-    def test_no_biomes_no_crash_with_coastlines(self, tmp_dir_19b):
+    def test_no_biomes_no_crash_with_coastlines(self, globe_and_coll, tmp_dir_19b):
         """Coastline feature with empty biome_type_map doesn't crash."""
         from polygrid.apron_texture import build_apron_feature_atlas
 
-        globe = _make_globe_grid_real(1)
-        coll = _make_detail_collection_real(globe, detail_rings=2)
+        globe, coll = globe_and_coll
 
         atlas_path, uv_layout = build_apron_feature_atlas(
             coll, globe,
@@ -713,14 +742,13 @@ class TestApronFeatureAtlasCoastlines:
 
         assert atlas_path.exists()
 
-    def test_custom_coastline_config(self, tmp_dir_19b):
+    def test_custom_coastline_config(self, globe_and_coll, tmp_dir_19b):
         """Custom CoastlineConfig is accepted."""
         from polygrid.apron_texture import build_apron_feature_atlas
         from polygrid.biome_pipeline import ForestRenderer, OceanRenderer
         from polygrid.coastline import CoastlineConfig
 
-        globe = _make_globe_grid_real(1)
-        coll = _make_detail_collection_real(globe, detail_rings=2)
+        globe, coll = globe_and_coll
 
         face_ids = list(globe.faces.keys())
         mid = len(face_ids) // 2

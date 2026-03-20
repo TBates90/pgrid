@@ -44,6 +44,10 @@ from polygrid.tile_detail import (
 # Helpers
 # ═══════════════════════════════════════════════════════════════════
 
+import copy
+from functools import lru_cache
+
+
 def _make_globe_grid(frequency: int = 2) -> PolyGrid:
     grid = build_pure_hex_grid(frequency)
     return grid.with_neighbors()
@@ -66,6 +70,24 @@ def _make_detail_collection(
     return coll
 
 
+@lru_cache(maxsize=4)
+def _cached_globe_grid(frequency: int = 2) -> PolyGrid:
+    return _make_globe_grid(frequency)
+
+
+@lru_cache(maxsize=4)
+def _cached_collection_internals(frequency: int = 2, detail_rings: int = 2):
+    globe = _cached_globe_grid(frequency)
+    return _make_detail_collection(globe, detail_rings)
+
+
+def _shared_collection(frequency: int = 2, detail_rings: int = 2):
+    cached = _cached_collection_internals(frequency, detail_rings)
+    wrapper = copy.copy(cached)
+    wrapper._stores = copy.copy(cached._stores)
+    return wrapper
+
+
 @pytest.fixture
 def tmp_dir():
     """Temporary directory for atlas output."""
@@ -85,8 +107,8 @@ class TestRenderDetailTextureApron:
         """Produces a PIL Image of the correct size."""
         from PIL import Image
 
-        globe = _make_globe_grid(2)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(2)
+        coll = _shared_collection(2, 2)
 
         face_id = list(globe.faces.keys())[0]
         apron_grid, mapping = build_apron_grid(globe, face_id, coll)
@@ -104,8 +126,8 @@ class TestRenderDetailTextureApron:
 
     def test_no_sentinel_pixels(self):
         """No magenta sentinel pixels should remain in the output."""
-        globe = _make_globe_grid(2)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(2)
+        coll = _shared_collection(2, 2)
 
         face_id = list(globe.faces.keys())[0]
         apron_grid, mapping = build_apron_grid(globe, face_id, coll)
@@ -140,8 +162,8 @@ class TestRenderDetailTextureApron:
         from PIL import Image
         from polygrid.tile_texture import render_detail_texture_fullslot
 
-        globe = _make_globe_grid(2)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(2)
+        coll = _shared_collection(2, 2)
         face_id = list(globe.faces.keys())[0]
 
         # Standard rendering (no apron)
@@ -176,8 +198,8 @@ class TestRenderDetailTextureApron:
 
     def test_custom_biome_config(self):
         """Respects custom BiomeConfig."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         face_id = list(globe.faces.keys())[0]
         apron_grid, mapping = build_apron_grid(globe, face_id, coll)
@@ -197,8 +219,8 @@ class TestRenderDetailTextureApron:
 
     def test_disables_hex_softening(self):
         """Can disable all 16D features."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         face_id = list(globe.faces.keys())[0]
         apron_grid, mapping = build_apron_grid(globe, face_id, coll)
@@ -218,8 +240,8 @@ class TestRenderDetailTextureApron:
 
     def test_different_tile_sizes(self):
         """Works at various tile sizes."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         face_id = list(globe.faces.keys())[0]
         apron_grid, mapping = build_apron_grid(globe, face_id, coll)
@@ -243,8 +265,8 @@ class TestBuildApronAtlas:
 
     def test_creates_atlas(self, tmp_dir):
         """Produces an atlas PNG and UV layout."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         atlas_path, uv_layout = build_apron_atlas(
             coll, globe,
@@ -259,8 +281,8 @@ class TestBuildApronAtlas:
 
     def test_uv_layout_bounds(self, tmp_dir):
         """UV coordinates are within [0, 1]."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         _, uv_layout = build_apron_atlas(
             coll, globe,
@@ -281,8 +303,8 @@ class TestBuildApronAtlas:
         """Atlas dimensions match layout calculation."""
         from PIL import Image
 
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         tile_size = 64
         gutter = 4
@@ -307,8 +329,8 @@ class TestBuildApronAtlas:
 
     def test_individual_tiles_saved(self, tmp_dir):
         """Individual tile PNGs are saved alongside the atlas."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         build_apron_atlas(
             coll, globe,
@@ -324,8 +346,8 @@ class TestBuildApronAtlas:
         """Gutter pixels should not be default grey (128,128,128)."""
         from PIL import Image
 
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         gutter = 4
         tile_size = 64
@@ -350,8 +372,8 @@ class TestBuildApronAtlas:
 
     def test_zero_gutter(self, tmp_dir):
         """Works with gutter=0."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         atlas_path, uv_layout = build_apron_atlas(
             coll, globe,
@@ -373,8 +395,8 @@ class TestBuildApronFeatureAtlas:
 
     def test_creates_atlas_no_biomes(self, tmp_dir):
         """Works with no biome renderers (ground-only)."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         atlas_path, uv_layout = build_apron_feature_atlas(
             coll, globe,
@@ -390,8 +412,8 @@ class TestBuildApronFeatureAtlas:
         """Works with a ForestRenderer on some tiles."""
         from polygrid.biome_pipeline import ForestRenderer
 
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         face_ids = list(globe.faces.keys())
         density_map = {fid: 0.8 for fid in face_ids[:3]}
@@ -414,8 +436,8 @@ class TestBuildApronFeatureAtlas:
         """Works with an OceanRenderer on some tiles."""
         from polygrid.biome_pipeline import OceanRenderer
 
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         face_ids = list(globe.faces.keys())
         density_map = {fid: 1.0 for fid in face_ids[-2:]}
@@ -444,8 +466,8 @@ class TestSeamlessness:
 
     def test_apron_images_have_terrain_at_edges(self):
         """Edge pixels of apron-rendered tiles should have real terrain."""
-        globe = _make_globe_grid(1)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(1)
+        coll = _shared_collection(1, 2)
 
         face_id = list(globe.faces.keys())[0]
         apron_grid, mapping = build_apron_grid(globe, face_id, coll)
@@ -476,8 +498,8 @@ class TestSeamlessness:
 
     def test_adjacent_tile_edge_similarity(self):
         """Adjacent tiles should have similar colours near their shared edge."""
-        globe = _make_globe_grid(2)
-        coll = _make_detail_collection(globe, detail_rings=2)
+        globe = _cached_globe_grid(2)
+        coll = _shared_collection(2, 2)
 
         adj = get_face_adjacency(globe)
         face_a = list(globe.faces.keys())[0]

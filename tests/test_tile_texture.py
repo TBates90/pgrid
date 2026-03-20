@@ -28,8 +28,12 @@ except ImportError:
 needs_models = pytest.mark.skipif(_skip, reason="models library not installed")
 
 
-def _make_detail_grid_with_terrain(detail_rings: int = 2):
-    """Build one detail grid with terrain for testing rendering."""
+from functools import lru_cache
+
+
+@lru_cache(maxsize=4)
+def _cached_detail_grid_with_terrain(detail_rings: int = 2):
+    """Build and cache one detail grid with terrain for testing rendering."""
     from conftest import cached_build_globe
     from polygrid.mountains import MountainConfig, generate_mountains
     from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
@@ -49,6 +53,11 @@ def _make_detail_grid_with_terrain(detail_rings: int = 2):
     fid = coll.face_ids[0]
     detail_grid, detail_store = coll.get(fid)
     return detail_grid, detail_store
+
+
+def _make_detail_grid_with_terrain(detail_rings: int = 2):
+    """Return cached detail grid + store (immutable data, safe to share)."""
+    return _cached_detail_grid_with_terrain(detail_rings)
 
 
 # ═══════════════════════════════════════════════════════════════════

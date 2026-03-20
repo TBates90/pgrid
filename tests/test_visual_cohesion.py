@@ -6,6 +6,7 @@ import math
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 PIL = pytest.importorskip("PIL")
@@ -23,9 +24,8 @@ from polygrid.visual_cohesion import (
 # ── helpers ──────────────────────────────────────────────────────────
 
 def _make_fake_atlas(n_tiles: int = 4, tile_size: int = 64, gutter: int = 4):
-    """Create a synthetic atlas with known UV layout."""
-    import random
-    rng = random.Random(42)
+    """Create a synthetic atlas with known UV layout (numpy-accelerated)."""
+    rng = np.random.RandomState(42)
 
     slot = tile_size + 2 * gutter
     cols = max(1, math.isqrt(n_tiles))
@@ -35,7 +35,8 @@ def _make_fake_atlas(n_tiles: int = 4, tile_size: int = 64, gutter: int = 4):
 
     atlas_w = cols * slot
     atlas_h = rows * slot
-    atlas = Image.new("RGB", (atlas_w, atlas_h), (100, 100, 100))
+    # Start with gutter colour
+    arr = np.full((atlas_h, atlas_w, 3), 100, dtype=np.uint8)
 
     uv_layout = {}
     for idx in range(n_tiles):
@@ -46,15 +47,13 @@ def _make_fake_atlas(n_tiles: int = 4, tile_size: int = 64, gutter: int = 4):
         slot_y = row * slot
 
         # Paint tile interior with a random colour + noise
-        base_r = rng.randint(40, 200)
-        base_g = rng.randint(40, 200)
-        base_b = rng.randint(40, 200)
-        for x in range(tile_size):
-            for y in range(tile_size):
-                r = max(0, min(255, base_r + rng.randint(-15, 15)))
-                g = max(0, min(255, base_g + rng.randint(-15, 15)))
-                b = max(0, min(255, base_b + rng.randint(-15, 15)))
-                atlas.putpixel((slot_x + gutter + x, slot_y + gutter + y), (r, g, b))
+        base = rng.randint(40, 201, size=3).reshape(1, 1, 3)
+        noise = rng.randint(-15, 16, size=(tile_size, tile_size, 3))
+        tile = np.clip(base + noise, 0, 255).astype(np.uint8)
+        arr[
+            slot_y + gutter : slot_y + gutter + tile_size,
+            slot_x + gutter : slot_x + gutter + tile_size,
+        ] = tile
 
         inner_x = slot_x + gutter
         inner_y = slot_y + gutter
@@ -64,6 +63,7 @@ def _make_fake_atlas(n_tiles: int = 4, tile_size: int = 64, gutter: int = 4):
         v_max = 1.0 - inner_y / atlas_h
         uv_layout[fid] = (u_min, v_min, u_max, v_max)
 
+    atlas = Image.fromarray(arr, "RGB")
     return atlas, uv_layout
 
 
@@ -251,39 +251,49 @@ class TestBenchmarkStructure:
 class TestRunFullPipeline:
     """Integration test — runs the entire Phase 18 pipeline end-to-end."""
 
-    @pytest.mark.slow
-    def test_full_pipeline_no_features(self, tmp_path):
-        """Run pipeline without biome features."""
+    @pytest.fixture(scope="class")
+    def pipeline_no_features(self, tmp_path_factory):
+        """Run pipeline once without features, shared across tests."""
         from polygrid.visual_cohesion import run_full_pipeline
-
-        result = run_full_pipeline(
+        out = tmp_path_factory.mktemp("pipeline_no_feat")
+        return run_full_pipeline(
             frequency=2,
             detail_rings=3,
             tile_size=64,
             seed=42,
-            output_dir=tmp_path / "pipeline",
+            output_dir=out / "pipeline",
             enable_features=False,
             enable_export=False,
         )
+
+    @pytest.fixture(scope="class")
+    def pipeline_with_features(self, tmp_path_factory):
+        """Run pipeline once with features+export, shared across tests."""
+        from polygrid.visual_cohesion import run_full_pipeline
+        out = tmp_path_factory.mktemp("pipeline_full")
+        return run_full_pipeline(
+            frequency=2,
+            detail_rings=3,
+            tile_size=64,
+            seed=42,
+            output_dir=out / "full",
+            enable_features=True,
+            enable_export=True,
+        )
+
+    @pytest.mark.slow
+    def test_full_pipeline_no_features(self, pipeline_no_features):
+        """Run pipeline without biome features."""
+        result = pipeline_no_features
         assert result["n_tiles"] > 0
         assert result["uv_tile_count"] > 0
         assert result["seam_visibility"]["ratio"] >= 0
         assert Path(result["atlas_path"]).exists()
 
     @pytest.mark.slow
-    def test_full_pipeline_with_features(self, tmp_path):
+    def test_full_pipeline_with_features(self, pipeline_with_features):
         """Run pipeline with biome features + export."""
-        from polygrid.visual_cohesion import run_full_pipeline
-
-        result = run_full_pipeline(
-            frequency=2,
-            detail_rings=3,
-            tile_size=64,
-            seed=42,
-            output_dir=tmp_path / "full",
-            enable_features=True,
-            enable_export=True,
-        )
+        result = pipeline_with_features
         assert result["n_tiles"] > 0
         assert "feature_atlas_path" in result
         assert result["topology_verification"]["tree_centroid_check"] is True
@@ -297,19 +307,9 @@ class TestRunFullPipeline:
         assert result["pot_size"][0] > 0
 
     @pytest.mark.slow
-    def test_full_pipeline_timings(self, tmp_path):
+    def test_full_pipeline_timings(self, pipeline_no_features):
         """Verify timing data is collected."""
-        from polygrid.visual_cohesion import run_full_pipeline
-
-        result = run_full_pipeline(
-            frequency=2,
-            detail_rings=3,
-            tile_size=64,
-            seed=42,
-            output_dir=tmp_path / "timed",
-            enable_features=False,
-            enable_export=False,
-        )
+        result = pipeline_no_features
         assert "timings" in result
         assert result["timings"]["globe_build"] > 0
         assert result["timings"]["detail_terrain"] > 0

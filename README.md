@@ -103,7 +103,7 @@ This produces images for each stage:
 
 | Stage | What it shows |
 |-------|---------------|
-| **1. Globe topology** | All faces on the polyhedron with IDs, pentagon markers |
+| **1. Globe topology** | All faces on the polyhedron with IDs, pentagon markers flameshot gui|
 | **2. Detail grid** | Tutte embedding with boundary, macro-edge segments, detected corners with angles |
 | **3. Stitched composite** | Centre tile + neighbour aprons with the view-limits box overlaid |
 | **4. Corner matching** | Grid corners (macro-edge order) ↔ UV corners showing angular alignment |

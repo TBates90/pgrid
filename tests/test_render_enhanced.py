@@ -24,6 +24,8 @@ from typing import Dict
 
 import pytest
 
+from functools import lru_cache
+
 
 # ════════════════════════════════════════════════════════════════════
 # Helpers
@@ -38,25 +40,36 @@ def _require_globe():
         pytest.skip("models library not installed")
 
 
-def _build_collection(detail_rings: int = 3, seed: int = 42):
-    """Build a small DetailGridCollection with terrain generated."""
-    _require_globe()
+@lru_cache(maxsize=4)
+def _cached_raw_collection(detail_rings: int = 3):
+    """Cache the expensive DetailGridCollection.build (grids only, no terrain)."""
     from conftest import cached_build_globe
-    from polygrid import (
-        DetailGridCollection,
-        TileDetailSpec,
-        TileDataStore,
-        TileSchema,
-        FieldDef,
-    )
-    from polygrid.heightmap import sample_noise_field
-    from polygrid.noise import fbm
+    from polygrid import DetailGridCollection, TileDetailSpec
 
     globe = cached_build_globe(3)
     if globe is None:
-        pytest.skip("models library not installed")
+        return None
     spec = TileDetailSpec(detail_rings=detail_rings)
     coll = DetailGridCollection.build(globe, spec)
+    return globe, coll, spec
+
+
+def _build_collection(detail_rings: int = 3, seed: int = 42):
+    """Build a small DetailGridCollection with terrain generated."""
+    _require_globe()
+    import copy
+    from polygrid import TileDataStore, TileSchema, FieldDef
+    from polygrid.heightmap import sample_noise_field
+    from polygrid.noise import fbm
+
+    result = _cached_raw_collection(detail_rings)
+    if result is None:
+        pytest.skip("models library not installed")
+    globe, cached_coll, spec = result
+
+    # Fresh copy so terrain generation doesn't pollute cache
+    coll = copy.copy(cached_coll)
+    coll._stores = {}
 
     # Globe-level elevation
     schema = TileSchema([FieldDef("elevation", float, 0.0)])
@@ -77,20 +90,16 @@ def _build_single_tile_with_constant_elevation(
 ):
     """Return ``(detail_grid, store)`` with every sub-face at *elev_value*."""
     _require_globe()
-    from conftest import cached_build_globe
-    from polygrid import (
-        DetailGridCollection,
-        TileDetailSpec,
-        TileDataStore,
-        TileSchema,
-        FieldDef,
-    )
+    import copy
+    from polygrid import TileDataStore, TileSchema, FieldDef
 
-    globe = cached_build_globe(3)
-    if globe is None:
+    result = _cached_raw_collection(detail_rings)
+    if result is None:
         pytest.skip("models library not installed")
-    spec = TileDetailSpec(detail_rings=detail_rings)
-    coll = DetailGridCollection.build(globe, spec)
+    globe, cached_coll, spec = result
+
+    coll = copy.copy(cached_coll)
+    coll._stores = {}
 
     face_id = coll.face_ids[0]
     grid = coll.grids[face_id]
@@ -108,20 +117,16 @@ def _build_single_tile_with_constant_elevation(
 def _build_single_tile_with_gradient(detail_rings: int = 3):
     """Return a tile whose sub-faces have elevations 0→1 as a linear ramp."""
     _require_globe()
-    from conftest import cached_build_globe
-    from polygrid import (
-        DetailGridCollection,
-        TileDetailSpec,
-        TileDataStore,
-        TileSchema,
-        FieldDef,
-    )
+    import copy
+    from polygrid import TileDataStore, TileSchema, FieldDef
 
-    globe = cached_build_globe(3)
-    if globe is None:
+    result = _cached_raw_collection(detail_rings)
+    if result is None:
         pytest.skip("models library not installed")
-    spec = TileDetailSpec(detail_rings=detail_rings)
-    coll = DetailGridCollection.build(globe, spec)
+    globe, cached_coll, spec = result
+
+    coll = copy.copy(cached_coll)
+    coll._stores = {}
 
     face_id = coll.face_ids[0]
     grid = coll.grids[face_id]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import numpy as np
 import pytest
 
 from polygrid.biome_scatter import FeatureInstance, scatter_features_on_tile
@@ -97,10 +98,8 @@ class TestRenderUndergrowth:
         img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         render_undergrowth(img, density=0.8, config=TEMPERATE_FOREST, seed=42)
         # Should have some non-transparent pixels
-        non_transparent = sum(
-            1 for x in range(64) for y in range(64)
-            if img.getpixel((x, y))[3] > 0
-        )
+        arr = np.array(img)
+        non_transparent = int((arr[:, :, 3] > 0).sum())
         assert non_transparent > 100
 
     def test_density_affects_opacity(self):
@@ -110,13 +109,9 @@ class TestRenderUndergrowth:
         img_sparse = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         render_undergrowth(img_sparse, density=0.2, config=TEMPERATE_FOREST, seed=1)
 
-        def mean_alpha(img):
-            return sum(
-                img.getpixel((x, y))[3]
-                for x in range(64) for y in range(64)
-            ) / (64 * 64)
-
-        assert mean_alpha(img_dense) > mean_alpha(img_sparse)
+        dense_alpha = np.array(img_dense)[:, :, 3].mean()
+        sparse_alpha = np.array(img_sparse)[:, :, 3].mean()
+        assert dense_alpha > sparse_alpha
 
 
 @needs_pil
@@ -139,15 +134,9 @@ class TestRenderForestTile:
         )
         result = render_forest_tile(ground, instances, TEMPERATE_FOREST)
         # Convert both to comparable format
-        ground_rgba = ground.convert("RGBA")
-        # Count pixels that differ
-        diff_count = 0
-        for x in range(128):
-            for y in range(128):
-                gp = ground_rgba.getpixel((x, y))
-                rp = result.getpixel((x, y))
-                if gp != rp:
-                    diff_count += 1
+        ground_arr = np.array(ground.convert("RGBA"))
+        result_arr = np.array(result)
+        diff_count = int((ground_arr != result_arr).any(axis=2).sum())
         assert diff_count > 500, f"Only {diff_count} pixels changed"
 
     def test_empty_instances_minimal_change(self):
@@ -167,18 +156,11 @@ class TestRenderForestTile:
         dense_result = render_forest_tile(ground, dense_inst, TEMPERATE_FOREST, density=0.9)
         sparse_result = render_forest_tile(ground, sparse_inst, TEMPERATE_FOREST, density=0.2)
 
-        def mean_brightness(img):
-            total = 0
-            px = img.load()
-            w, h = img.size
-            for x in range(w):
-                for y in range(h):
-                    r, g, b, a = px[x, y]
-                    total += r + g + b
-            return total / (w * h * 3)
+        dense_brightness = np.array(dense_result)[:, :, :3].astype(float).mean()
+        sparse_brightness = np.array(sparse_result)[:, :, :3].astype(float).mean()
 
         # Dense forest (more shadow) should be darker
-        assert mean_brightness(dense_result) < mean_brightness(sparse_result)
+        assert dense_brightness < sparse_brightness
 
     def test_different_presets_produce_different_output(self):
         from polygrid.biome_render import (
@@ -191,10 +173,7 @@ class TestRenderForestTile:
         trop = render_forest_tile(ground, instances, TROPICAL_FOREST)
 
         # Count differing pixels
-        diff = sum(
-            1 for x in range(64) for y in range(64)
-            if temp.getpixel((x, y)) != trop.getpixel((x, y))
-        )
+        diff = int((np.array(temp) != np.array(trop)).any(axis=2).sum())
         assert diff > 100, f"Only {diff} pixels differ between presets"
 
 

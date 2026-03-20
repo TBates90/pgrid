@@ -648,10 +648,10 @@ class TestOceanGlobeRender:
 
     def test_ocean_world_generates_patches(self):
         """generate_terrain_patches with ocean_world should produce ocean tiles."""
-        from polygrid.globe import build_globe_grid
+        from conftest import cached_build_globe
         from polygrid.terrain_patches import generate_terrain_patches, OCEAN_WORLD
 
-        grid = build_globe_grid(1)
+        grid = cached_build_globe(1)
         patches = generate_terrain_patches(grid, distribution=OCEAN_WORLD, seed=42)
         ocean_faces = set()
         for p in patches:
@@ -679,7 +679,7 @@ class TestOceanGlobeRender:
 
     def test_combined_forest_ocean_atlas(self, tmp_path):
         """Atlas with both forest and ocean tiles renders correctly."""
-        from polygrid.globe import build_globe_grid
+        from conftest import cached_build_globe
         from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
         from polygrid.terrain_patches import generate_terrain_patches, EARTHLIKE
         from polygrid.tile_detail import TileDetailSpec, DetailGridCollection
@@ -695,7 +695,7 @@ class TestOceanGlobeRender:
         from polygrid.biome_continuity import build_biome_density_map
         import random
 
-        grid = build_globe_grid(1)
+        grid = cached_build_globe(1)
         schema = TileSchema([FieldDef("elevation", float, 0.0)])
         store = TileDataStore(grid=grid, schema=schema)
         rng = random.Random(42)
