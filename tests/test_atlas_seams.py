@@ -1,5 +1,3 @@
-# TODO REVIEW — Tests live atlas_utils module.
-#   Verify all tested functions are exercised by live scripts, then keep.
 """Tests for Phase 21B.1 — Atlas seam enforcement post-pass.
 
 Covers:
@@ -225,7 +223,7 @@ class TestBuildPolygonCutAtlasSeamParams:
         from polygrid.tile_uv_align import build_polygon_cut_atlas
         sig = inspect.signature(build_polygon_cut_atlas)
         assert "stitch_seams" in sig.parameters
-        assert sig.parameters["stitch_seams"].default is True
+        assert sig.parameters["stitch_seams"].default is False
 
     def test_signature_accepts_stitch_width_param(self):
         """build_polygon_cut_atlas should accept stitch_width kwarg."""
@@ -233,7 +231,7 @@ class TestBuildPolygonCutAtlasSeamParams:
         from polygrid.tile_uv_align import build_polygon_cut_atlas
         sig = inspect.signature(build_polygon_cut_atlas)
         assert "stitch_width" in sig.parameters
-        assert sig.parameters["stitch_width"].default == 2
+        assert sig.parameters["stitch_width"].default == 8
 
     def test_signature_accepts_equalise_sectors_param(self):
         """build_polygon_cut_atlas should accept equalise_sectors kwarg."""

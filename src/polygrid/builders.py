@@ -1,4 +1,3 @@
-# TODO REMOVE — Not used by any live script. Only used by assembly.py (also dead).
 """Grid builders for hex (6-sided) and pentagon-centred (5-sided) polygrids."""
 
 from __future__ import annotations

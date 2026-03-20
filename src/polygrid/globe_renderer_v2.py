@@ -42,6 +42,20 @@ except ImportError:
     _HAS_MODELS = False
 
 
+def _compute_tile_uvs(
+    tile_uv_vertices: List[Tuple[float, float]],
+    atlas_slot: Tuple[float, float, float, float],
+) -> List[Tuple[float, float]]:
+    """Map a tile's normalised UV vertices into an atlas slot."""
+    u_min, v_min, u_max, v_max = atlas_slot
+    u_span, v_span = u_max - u_min, v_max - v_min
+    return [
+        (u_min + max(0.0, min(1.0, u)) * u_span,
+         v_min + max(0.0, min(1.0, v)) * v_span)
+        for u, v in tile_uv_vertices
+    ]
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 12A — Texture bleeding (flood-fill black borders)
 # ═══════════════════════════════════════════════════════════════════
@@ -1061,8 +1075,6 @@ def build_batched_globe_mesh(
     if uv_inset_px > 0 and atlas_size is None:
         raise ValueError("atlas_size is required when uv_inset_px > 0")
 
-    from .texture_pipeline import compute_tile_uvs
-
     tiles = generate_goldberg_tiles(frequency=frequency, radius=radius)
 
     # Determine whether any tile is flagged as water
@@ -1101,7 +1113,7 @@ def build_batched_globe_mesh(
             )
 
         # Compute atlas-mapped UVs
-        mapped_uvs = compute_tile_uvs(list(tile.uv_vertices), slot)
+        mapped_uvs = _compute_tile_uvs(list(tile.uv_vertices), slot)
         center_u = sum(uv[0] for uv in mapped_uvs) / len(mapped_uvs)
         center_v = sum(uv[1] for uv in mapped_uvs) / len(mapped_uvs)
 
@@ -1417,8 +1429,6 @@ def build_lod_batched_globe_mesh(
     if uv_inset_px > 0 and atlas_size is None:
         raise ValueError("atlas_size is required when uv_inset_px > 0")
 
-    from .texture_pipeline import compute_tile_uvs
-
     tiles = generate_goldberg_tiles(frequency=frequency, radius=radius)
 
     # Determine whether any tile is flagged as water
@@ -1476,7 +1486,7 @@ def build_lod_batched_globe_mesh(
             )
 
         # Compute atlas-mapped UVs
-        mapped_uvs = compute_tile_uvs(list(tile.uv_vertices), slot)
+        mapped_uvs = _compute_tile_uvs(list(tile.uv_vertices), slot)
         center_u = sum(uv[0] for uv in mapped_uvs) / len(mapped_uvs)
         center_v = sum(uv[1] for uv in mapped_uvs) / len(mapped_uvs)
 

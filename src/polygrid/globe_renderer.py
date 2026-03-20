@@ -1,5 +1,3 @@
-# TODO REFACTOR — Deprecated v1 renderer, only reachable via --legacy-renderer
-#   flag in render_polygrids.py.  Consider removing entirely once v2 is validated.
 """Models renderer integration — terrain-coloured OpenGL rendering.
 
 .. deprecated::
@@ -620,7 +618,7 @@ def render_textured_globe_opengl(
     from models.core import VertexAttribute
     from models.objects.goldberg import generate_goldberg_tiles
     from models.rendering.opengl import SimpleMeshRenderer
-    from .texture_pipeline import compute_tile_uvs
+    from .globe_renderer_v2 import _compute_tile_uvs
     import numpy as np
     import math
     import ctypes
@@ -711,7 +709,7 @@ def render_textured_globe_opengl(
         colors = [color for _ in positions]
 
         if atlas_slot is not None and tile.uv_vertices:
-            mapped = compute_tile_uvs(list(tile.uv_vertices), atlas_slot)
+            mapped = _compute_tile_uvs(list(tile.uv_vertices), atlas_slot)
             center_u = sum(uv[0] for uv in mapped) / len(mapped)
             center_v = sum(uv[1] for uv in mapped) / len(mapped)
             uvs = [(center_u, center_v), *mapped]

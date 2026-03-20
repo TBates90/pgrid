@@ -1,5 +1,3 @@
-# TODO REVIEW — Tests live modules (tile_uv_align, globe_renderer_v2).
-#   Verify all tested functions are exercised by live scripts, then keep.
 """Tests for Phase 21B.2 — Corner-junction blending and subdivision fixes.
 
 Covers:
@@ -295,7 +293,7 @@ class TestBuildPolygonCutAtlasCornerParams:
     def test_signature_accepts_blend_corners_param(self):
         sig = inspect.signature(build_polygon_cut_atlas)
         assert "blend_corners" in sig.parameters
-        assert sig.parameters["blend_corners"].default is True
+        assert sig.parameters["blend_corners"].default is False
 
     def test_signature_accepts_blend_radius_param(self):
         sig = inspect.signature(build_polygon_cut_atlas)

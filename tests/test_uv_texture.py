@@ -29,7 +29,6 @@ from polygrid.uv_texture import (
     get_tile_uv_vertices,
     project_and_normalize,
     project_point_to_tile_uv,
-    render_tile_uv_aligned,
 )
 
 
@@ -445,107 +444,6 @@ class TestComputeDetailToUVTransform:
         assert uvs[:, 0].max() < 1.3, f"u_max = {uvs[:, 0].max()}"
         assert uvs[:, 1].min() > -0.3, f"v_min = {uvs[:, 1].min()}"
         assert uvs[:, 1].max() < 1.3, f"v_max = {uvs[:, 1].max()}"
-
-
-# ═══════════════════════════════════════════════════════════════════
-# 20A.3 — UV-aligned tile rasteriser
-# ═══════════════════════════════════════════════════════════════════
-
-class TestRenderTileUVAligned:
-    @pytest.fixture()
-    def hex_render_args(self, real_globe_f3):
-        """Set up everything needed to render a hex tile with UV alignment."""
-        from polygrid.builders import build_pure_hex_grid
-        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
-
-        fid = "t5"
-        center, normal, tangent, bitangent = compute_tile_basis(real_globe_f3, fid)
-        uv_bounds = compute_tile_uv_bounds(real_globe_f3, fid, center, tangent, bitangent)
-
-        detail = build_pure_hex_grid(2)
-
-        xf = compute_detail_to_uv_transform(
-            real_globe_f3, fid, detail, center, tangent, bitangent, uv_bounds,
-        )
-
-        schema = TileSchema([FieldDef("elevation", float, 0.0)])
-        store = TileDataStore(grid=detail, schema=schema)
-        for fid_d in detail.faces:
-            idx = int(fid_d.replace("f", "")) if fid_d.startswith("f") else 0
-            store.set(fid_d, "elevation", 0.1 + 0.05 * (idx % 5))
-
-        return detail, store, xf
-
-    def test_renders_rgb_image(self, hex_render_args):
-        grid, store, xf = hex_render_args
-        img = render_tile_uv_aligned(grid, store, xf, tile_size=64)
-        assert img.mode == "RGB"
-        assert img.size == (64, 64)
-
-    def test_non_black_pixels_present(self, hex_render_args):
-        grid, store, xf = hex_render_args
-        img = render_tile_uv_aligned(grid, store, xf, tile_size=64)
-        arr = np.array(img)
-        assert arr.max() > 0, "Image is completely black"
-
-    def test_no_magenta_sentinel_in_output(self, hex_render_args):
-        grid, store, xf = hex_render_args
-        img = render_tile_uv_aligned(
-            grid, store, xf, tile_size=64, gutter_pixels=2,
-        )
-        arr = np.array(img)
-        sentinel_mask = (
-            (arr[:, :, 0] == 255) &
-            (arr[:, :, 1] == 0) &
-            (arr[:, :, 2] == 255)
-        )
-        sentinel_frac = sentinel_mask.sum() / (arr.shape[0] * arr.shape[1])
-        assert sentinel_frac < 0.05, (
-            f"Sentinel pixels are {sentinel_frac:.1%} of image"
-        )
-
-    def test_tile_size_respected(self, hex_render_args):
-        grid, store, xf = hex_render_args
-        for ts in [32, 128]:
-            img = render_tile_uv_aligned(grid, store, xf, tile_size=ts)
-            assert img.size == (ts, ts)
-
-    def test_gutter_zero_still_works(self, hex_render_args):
-        grid, store, xf = hex_render_args
-        img = render_tile_uv_aligned(
-            grid, store, xf, tile_size=64, gutter_pixels=0,
-        )
-        assert img.size == (64, 64)
-
-    def test_pentagon_tile(self, real_globe_f3):
-        """Render works for pentagon tiles too."""
-        from polygrid.builders import build_pentagon_centered_grid
-        from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
-
-        pent_fid = None
-        for fid, face in real_globe_f3.faces.items():
-            if face.face_type == "pent":
-                pent_fid = fid
-                break
-        assert pent_fid is not None
-
-        center, normal, tangent, bitangent = compute_tile_basis(real_globe_f3, pent_fid)
-        uv_bounds = compute_tile_uv_bounds(real_globe_f3, pent_fid, center, tangent, bitangent)
-
-        detail = build_pentagon_centered_grid(2)
-        xf = compute_detail_to_uv_transform(
-            real_globe_f3, pent_fid, detail, center, tangent, bitangent, uv_bounds,
-        )
-
-        schema = TileSchema([FieldDef("elevation", float, 0.0)])
-        store = TileDataStore(grid=detail, schema=schema)
-        for fid_d in detail.faces:
-            store.set(fid_d, "elevation", 0.2)
-
-        img = render_tile_uv_aligned(detail, store, xf, tile_size=64)
-        assert img.mode == "RGB"
-        assert img.size == (64, 64)
-        assert np.array(img).max() > 0
 
 
 # ═══════════════════════════════════════════════════════════════════

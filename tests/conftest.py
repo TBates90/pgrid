@@ -1,5 +1,3 @@
-# TODO REFACTOR — _FILE_TIER dict has entries for 31 dead test files.
-#   Remove dead entries after deleting the dead test files.
 import sys
 from pathlib import Path
 from functools import lru_cache
@@ -15,60 +13,30 @@ if str(SRC) not in sys.path:
 # ═══════════════════════════════════════════════════════════════════
 # Auto-apply speed-tier markers based on test-file grouping
 # ═══════════════════════════════════════════════════════════════════
-# Mirrors the groupings in scripts/run_tests.py so that
 #   pytest -m fast        → only fast tests  (~3s total)
 #   pytest -m "not slow"  → skip the expensive globe tests
 #   pytest -m medium      → mid-tier only
 
 _FILE_TIER: dict[str, str] = {
-    # Phase 1-4 — fast
+    # Core — fast
     "test_core_topology.py": "fast",
-    "test_stitching.py": "fast",
-    "test_assembly.py": "fast",
-    "test_macro_edges.py": "fast",
-    "test_pentagon_centered.py": "fast",
-    "test_transforms.py": "fast",
-    "test_diagnostics.py": "fast",
-    "test_visualize.py": "fast",
-    # Phase 5-7 — fast
     "test_tile_data.py": "fast",
-    "test_regions.py": "fast",
     "test_noise.py": "fast",
     "test_heightmap.py": "fast",
     "test_mountains.py": "fast",
-    "test_rivers.py": "fast",
-    "test_pipeline.py": "fast",
-    "test_terrain_render.py": "fast",
-    "test_determinism.py": "fast",
-    # Phase 2 — medium
-    "test_goldberg.py": "medium",
-    # Phase 8-9 — slow
+    # Globe — slow
     "test_globe.py": "slow",
-    # Phase 10 — medium
+    # Detail grids — medium
     "test_tile_detail.py": "medium",
     "test_detail_render.py": "medium",
-    "test_detail_perf.py": "medium",
-    # Phase 11 — medium
     "test_detail_terrain.py": "medium",
-    "test_detail_terrain_3d.py": "medium",
-    "test_terrain_patches.py": "medium",
-    "test_globe_terrain.py": "medium",
-    "test_region_stitch.py": "medium",
-    "test_render_enhanced.py": "medium",
-    "test_texture_pipeline.py": "medium",
-    # These files are long-running / perf-oriented — treat them as slow by default
-    "test_detail_perf.py": "slow",
-    "test_terrain_patches.py": "slow",
-    # Phase 12-13 — medium
+    "test_grid_deformation.py": "medium",
+    # Globe renderer — medium
     "test_globe_renderer_v2.py": "medium",
-    "test_phase13_rendering.py": "medium",
-    # Phase 14 — biome features
-    "test_biome_scatter.py": "medium",
-    "test_biome_render.py": "fast",
-    "test_biome_pipeline.py": "medium",
-    "test_biome_continuity.py": "medium",
-    # Phase 20 — UV texture alignment
+    # UV / atlas — fast
     "test_uv_texture.py": "fast",
+    "test_atlas_seams.py": "fast",
+    "test_corner_blend.py": "fast",
 }
 
 

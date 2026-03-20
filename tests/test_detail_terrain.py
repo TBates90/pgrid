@@ -25,6 +25,7 @@ from polygrid.detail_terrain import (
     classify_detail_faces,
     generate_detail_terrain_bounded,
     generate_all_detail_terrain,
+    compute_neighbor_edge_mapping,
 )
 
 try:
@@ -48,6 +49,23 @@ def _make_globe_with_elevation(frequency: int = 3, seed: int = 42):
     config = MountainConfig(seed=seed)
     generate_mountains(grid, store, config)
     return grid, store
+
+
+def _compute_edge_mapping(globe_grid, face_id, detail_grid):
+    """Compute neighbour→macro-edge mapping, matching the batch pipeline."""
+    from polygrid.tile_uv_align import compute_pg_to_macro_edge_map
+
+    pg_map = compute_neighbor_edge_mapping(globe_grid, face_id)
+    corner_ids = detail_grid.metadata.get("corner_vertex_ids")
+    if corner_ids:
+        n_sides = len(corner_ids)
+        if not detail_grid.macro_edges:
+            detail_grid.compute_macro_edges(n_sides, corner_ids=corner_ids)
+        pg2macro = compute_pg_to_macro_edge_map(
+            globe_grid, face_id, detail_grid,
+        )
+        return {nid: pg2macro.get(idx, idx) for nid, idx in pg_map.items()}
+    return pg_map
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -155,9 +173,11 @@ class TestGenerateDetailTerrainBounded:
         parent_elev = store.get(fid, "elevation")
         boundary = compute_boundary_elevations(grid, store)
         nbr_elevs = boundary[fid]
+        edge_map = _compute_edge_mapping(grid, fid, detail_grid)
 
         result_store = generate_detail_terrain_bounded(
             detail_grid, parent_elev, nbr_elevs, spec, seed=42,
+            neighbor_edge_map=edge_map,
         )
         for sub_fid in detail_grid.faces:
             val = result_store.get(sub_fid, "elevation")
@@ -171,9 +191,11 @@ class TestGenerateDetailTerrainBounded:
         detail_grid, _ = coll.get(fid)
         parent_elev = store.get(fid, "elevation")
         boundary = compute_boundary_elevations(grid, store)
+        edge_map = _compute_edge_mapping(grid, fid, detail_grid)
 
         result_store = generate_detail_terrain_bounded(
             detail_grid, parent_elev, boundary[fid], spec, seed=42,
+            neighbor_edge_map=edge_map,
         )
         for sub_fid in detail_grid.faces:
             val = result_store.get(sub_fid, "elevation")
@@ -187,12 +209,15 @@ class TestGenerateDetailTerrainBounded:
         detail_grid, _ = coll.get(fid)
         parent_elev = store.get(fid, "elevation")
         boundary = compute_boundary_elevations(grid, store)
+        edge_map = _compute_edge_mapping(grid, fid, detail_grid)
 
         s1 = generate_detail_terrain_bounded(
             detail_grid, parent_elev, boundary[fid], spec, seed=42,
+            neighbor_edge_map=edge_map,
         )
         s2 = generate_detail_terrain_bounded(
             detail_grid, parent_elev, boundary[fid], spec, seed=42,
+            neighbor_edge_map=edge_map,
         )
         for sub_fid in detail_grid.faces:
             assert s1.get(sub_fid, "elevation") == s2.get(sub_fid, "elevation")

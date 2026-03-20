@@ -18,9 +18,6 @@ Usage
     # Show grid edges overlaid on terrain:
     python scripts/render_polygrids.py --edges
 
-    # Disable polygon-cut (plain stitched tiles):
-    python scripts/render_polygrids.py --no-polygon-cut --stitched
-
     # Custom output directory:
     python scripts/render_polygrids.py -o exports/my_polygrids
 
@@ -711,96 +708,6 @@ def _render_colour_debug_single(
     )
 
 
-def _render_tile(  # TODO REMOVE — Legacy single-tile renderer, only used by _main_simple/_main_neighbour_edges.
-    face_id: str,
-    detail_grid,
-    detail_store,
-    output_path: Path,
-    *,
-    biome,
-    tile_size: int,
-    show_edges: bool,
-    noise_seed: int,
-    neighbour_grid=None,
-    neighbour_store=None,
-):
-    """Render a single tile polygrid to PNG.
-
-    Parameters
-    ----------
-    neighbour_grid, neighbour_store : PolyGrid, TileDataStore, optional
-        If provided, the neighbour border grid is rendered first
-        (with edge outlines) as a background, then the tile grid is
-        rendered on top.
-    """
-    from polygrid.detail_render import render_detail_texture_enhanced
-
-    # Fast path: no extras — use existing renderer directly
-    if not show_edges and neighbour_grid is None:
-        render_detail_texture_enhanced(
-            detail_grid, detail_store, output_path,
-            biome=biome, tile_size=tile_size, noise_seed=noise_seed,
-        )
-        return
-
-    from polygrid.detail_render import _detail_hillshade
-    from matplotlib.collections import PatchCollection
-
-    # ── Layer 1: neighbour border grid (background, with outlines) ──
-    extra_layers = []
-    if neighbour_grid is not None and neighbour_store is not None:
-        nbr_colour_fn = _terrain_colour_fn(
-            neighbour_grid, neighbour_store, biome, noise_seed,
-        )
-        nbr_patches, nbr_colours = _build_face_patches(
-            neighbour_grid, nbr_colour_fn,
-        )
-        if nbr_patches:
-            extra_layers.append(PatchCollection(
-                nbr_patches, facecolors=nbr_colours,
-                edgecolors="#00000080", linewidths=0.8,
-            ))
-
-    # ── Layer 2: tile grid (foreground) ──────────────────────────────
-    hs = _detail_hillshade(
-        detail_grid, detail_store, "elevation",
-        azimuth=biome.azimuth, altitude=biome.altitude,
-    )
-    colour_fn = _terrain_colour_fn(
-        detail_grid, detail_store, biome, noise_seed, hs,
-    )
-    patches, colours = _build_face_patches(detail_grid, colour_fn)
-
-    if not patches:
-        return
-
-    edge_col, edge_lw = _edge_style(show_edges)
-
-    # View limits
-    if neighbour_grid is not None:
-        all_x, all_y = [], []
-        for g in (detail_grid, neighbour_grid):
-            for v in g.vertices.values():
-                if v.has_position():
-                    all_x.append(v.x)
-                    all_y.append(v.y)
-        pad = 0.5
-        xlim = (min(all_x) - pad, max(all_x) + pad)
-        ylim = (min(all_y) - pad, max(all_y) + pad)
-        bg = (0.15, 0.15, 0.15)
-    else:
-        xlim, ylim = _grid_bbox(detail_grid, pad=1.0)
-        bg = _SENTINEL_BG
-
-    _render_patches_to_png(
-        patches, colours, output_path,
-        tile_size=tile_size, xlim=xlim, ylim=ylim,
-        edge_colour=edge_col, edge_lw=edge_lw,
-        bg_colour=bg,
-        extra_layers=extra_layers,
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Render per-tile polygrid PNGs for a Goldberg globe.",
@@ -831,17 +738,6 @@ def main():
         help="Show grid edges overlaid on terrain colouring",
     )
     parser.add_argument(
-        "--stitched", action="store_true",
-        help="Render each tile stitched with all its neighbours "
-             "as a single merged polygrid (no gaps)",
-    )  # TODO REMOVE — Legacy flag, only triggers dead _main_stitched path.
-    parser.add_argument(
-        "--no-polygon-cut", action="store_true",
-        help="Disable polygon-cut rendering. By default, polygon-cut "
-             "UV-aligned tile textures are produced from stitched "
-             "renders, generating an atlas ready for 3D globe mapping.",
-    )
-    parser.add_argument(
         "--debug-labels", action="store_true",
         help="Draw tile-ID and per-edge neighbour labels on each "
              "polygon-cut tile.",
@@ -857,10 +753,6 @@ def main():
         help="Extra rotation steps for pentagon tiles (positive = CW). "
              "Use to correct residual pentagon orientation mismatch.",
     )
-    parser.add_argument(
-        "--with-neighbour-edges", action="store_true",
-        help="(Legacy) Show neighbour tile border faces around each tile",
-    )  # TODO REMOVE — Legacy flag, only triggers dead _main_neighbour_edges path.
     parser.add_argument(
         "--colour-debug", action="store_true",
         help="Skip terrain generation and colour each polygrid tile "
@@ -911,20 +803,8 @@ def main():
     # --outline-tiles is a synonym for --edges (both show sub-face outlines)
     show_edges = args.edges or args.outline_tiles
 
-    # Derive effective polygon_cut flag (default on, unless --no-polygon-cut)
-    polygon_cut = not args.no_polygon_cut
-
-    if polygon_cut:
-        _main_polygon_cut(args, output_dir, grid, store, coll, biome,
-                          face_ids, show_edges)
-    elif args.stitched:
-        _main_stitched(args, output_dir, grid, coll, biome,
-                       face_ids, show_edges)
-    elif args.with_neighbour_edges:
-        _main_neighbour_edges(args, output_dir, grid, coll, biome,
-                              face_ids, show_edges)
-    else:
-        _main_simple(args, output_dir, coll, biome, face_ids, show_edges)
+    _main_polygon_cut(args, output_dir, grid, store, coll, biome,
+                      face_ids, show_edges)
 
 
 # ---------------------------------------------------------------------------
@@ -1176,95 +1056,6 @@ def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
         detail_rings=args.detail_rings, tile_size=args.tile_size,
     )
 
-    print(f"Output: {output_dir}/")
-
-
-def _main_stitched(args, output_dir, grid, coll, biome,  # TODO REMOVE — Legacy path, needs --no-polygon-cut --stitched.
-                    face_ids, show_edges):
-    """Stitched tile rendering (no atlas)."""
-    from polygrid.tile_detail import build_tile_with_neighbours
-
-    mode = "stitched" + (" + edges" if show_edges else "")
-    print(f"Rendering {len(face_ids)} tiles ({mode}) to {output_dir}/...")
-    t0 = time.perf_counter()
-
-    # Global hillshade pre-computation
-    global_hs = _compute_global_hillshade(coll, grid, face_ids, biome)
-
-    for i, fid in enumerate(face_ids):
-        composite = build_tile_with_neighbours(coll, fid, grid)
-        stitched_store = _build_stitched_store(composite, coll, fid, grid)
-        hs = _resolve_hillshade_for_composite(composite, fid, global_hs)
-        out_path = output_dir / f"{fid}.png"
-        _render_stitched_tile(
-            fid, composite, stitched_store, out_path,
-            biome=biome,
-            tile_size=args.tile_size,
-            show_edges=show_edges,
-            noise_seed=args.seed,
-            hillshade=hs,
-            renderer=args.renderer,
-        )
-        if (i + 1) % 10 == 0 or i == 0:
-            print(f"  {i + 1}/{len(face_ids)}...")
-
-    elapsed = time.perf_counter() - t0
-    print(f"  → {len(face_ids)} tiles rendered in {elapsed:.2f}s")
-    print(f"Output: {output_dir}/")
-
-
-def _main_neighbour_edges(args, output_dir, grid, coll, biome,  # TODO REMOVE — Legacy path.
-                           face_ids, show_edges):
-    """Legacy neighbour-edge rendering."""
-    from polygrid.tile_detail import get_neighbour_border_grid
-
-    print(f"Rendering {len(face_ids)} tiles "
-          f"(with neighbour edges) to {output_dir}/...")
-    t0 = time.perf_counter()
-
-    for i, fid in enumerate(face_ids):
-        detail_grid, detail_store = coll.get(fid)
-        if detail_store is None:
-            print(f"  ⚠ {fid}: no terrain data, skipping")
-            continue
-        nbr_grid, nbr_store = get_neighbour_border_grid(coll, fid, grid)
-        out_path = output_dir / f"{fid}.png"
-        _render_tile(
-            fid, detail_grid, detail_store, out_path,
-            biome=biome,
-            tile_size=args.tile_size,
-            show_edges=show_edges,
-            noise_seed=args.seed,
-            neighbour_grid=nbr_grid,
-            neighbour_store=nbr_store,
-        )
-
-    elapsed = time.perf_counter() - t0
-    print(f"  → {len(face_ids)} tiles rendered in {elapsed:.2f}s")
-    print(f"Output: {output_dir}/")
-
-
-def _main_simple(args, output_dir, coll, biome, face_ids, show_edges):  # TODO REMOVE — Legacy path.
-    """Simple single-tile rendering (no stitching, no atlas)."""
-    print(f"Rendering {len(face_ids)} tile polygrids to {output_dir}/...")
-    t0 = time.perf_counter()
-
-    for i, fid in enumerate(face_ids):
-        detail_grid, detail_store = coll.get(fid)
-        if detail_store is None:
-            print(f"  ⚠ {fid}: no terrain data, skipping")
-            continue
-        out_path = output_dir / f"{fid}.png"
-        _render_tile(
-            fid, detail_grid, detail_store, out_path,
-            biome=biome,
-            tile_size=args.tile_size,
-            show_edges=show_edges,
-            noise_seed=args.seed,
-        )
-
-    elapsed = time.perf_counter() - t0
-    print(f"  → {len(face_ids)} tiles rendered in {elapsed:.2f}s")
     print(f"Output: {output_dir}/")
 
 

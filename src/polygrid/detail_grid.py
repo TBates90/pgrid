@@ -9,15 +9,13 @@ Functions
 ---------
 - :func:`build_detail_grid`  — build a detail grid for one globe face
 - :func:`generate_detail_terrain` — terrain gen seeded by parent tile
-- :func:`render_detail_texture` — render detail grid to a PNG tile texture
-- :func:`build_texture_atlas` — combine per-tile PNGs into an atlas
 """
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -166,12 +164,14 @@ def build_detail_grid(
     grid.metadata["parent_face_type"] = face.face_type
     grid.metadata["detail_rings"] = detail_rings
 
-    # For pentagon grids, propagate corner vertex IDs from the
-    # Goldberg topology so downstream UV matching can use exact
-    # corners instead of heuristic clustering.
-    if face.face_type == "pent" and "corner_vertex_ids" in grid.metadata:
-        # Already present from build_goldberg_grid — keep as-is.
-        pass
+    # Ensure corner_vertex_ids is always present.  Pentagon grids
+    # already have it from build_goldberg_grid; for hex grids (and
+    # as a safety net for pentagons) we extract the ordered corners
+    # from the macro edges that were computed above.
+    if "corner_vertex_ids" not in grid.metadata and grid.macro_edges:
+        grid.metadata["corner_vertex_ids"] = [
+            me.corner_start for me in grid.macro_edges
+        ]
 
     # Copy parent face metadata if available
     if face.metadata:
@@ -443,147 +443,3 @@ def generate_detail_terrain(
         store.set(fid, "elevation", elevation)
 
     return store
-
-
-# ═══════════════════════════════════════════════════════════════════
-# 9B.4 — Per-tile texture export
-# ═══════════════════════════════════════════════════════════════════
-
-def render_detail_texture(
-    detail_grid: PolyGrid,
-    store: TileDataStore,
-    output_path: Union[str, Path],
-    *,
-    field_name: str = "elevation",
-    ramp: str = "satellite",
-    texture_size: int = 128,
-    dpi: int = 100,
-) -> Path:
-    """Render a detail grid to a small PNG texture.
-
-    Produces a square image of the grid coloured by elevation,
-    suitable for UV-mapping onto a Goldberg tile surface.
-
-    Parameters
-    ----------
-    detail_grid : PolyGrid
-    store : TileDataStore
-    output_path : str or Path
-    field_name : str
-    ramp : str
-    texture_size : int
-        Width and height in pixels.
-    dpi : int
-
-    Returns
-    -------
-    Path
-        The output file path.
-    """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Polygon as MplPolygon
-
-    from .terrain_render import elevation_to_overlay
-
-    overlay = elevation_to_overlay(
-        detail_grid, store, field_name, ramp=ramp,
-    )
-
-    figsize = texture_size / dpi
-    fig, ax = plt.subplots(1, 1, figsize=(figsize, figsize))
-    ax.set_aspect("equal")
-
-    for region in overlay.regions:
-        if len(region.points) < 3:
-            continue
-        fid = region.source_vertex_id
-        color = overlay.metadata.get(f"color_{fid}", (0.5, 0.5, 0.5))
-        poly = MplPolygon(
-            region.points, closed=True, facecolor=color,
-            edgecolor=color, linewidth=0.3,
-        )
-        ax.add_patch(poly)
-
-    # Autofit
-    xs = [v.x for v in detail_grid.vertices.values() if v.has_position()]
-    ys = [v.y for v in detail_grid.vertices.values() if v.has_position()]
-    if xs and ys:
-        pad = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
-        ax.set_xlim(min(xs) - pad, max(xs) + pad)
-        ax.set_ylim(min(ys) - pad, max(ys) + pad)
-
-    ax.axis("off")
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=dpi, bbox_inches="tight", pad_inches=0)
-    plt.close(fig)
-    return out
-
-
-# ═══════════════════════════════════════════════════════════════════
-# 9B.5 — Texture atlas
-# ═══════════════════════════════════════════════════════════════════
-
-def build_texture_atlas(
-    texture_paths: Sequence[Path],
-    output_path: Union[str, Path],
-    *,
-    tile_size: int = 128,
-    columns: Optional[int] = None,
-) -> Tuple[Path, Dict[str, Tuple[int, int, int, int]]]:
-    """Combine per-tile PNG textures into a single atlas image.
-
-    Parameters
-    ----------
-    texture_paths : sequence of Path
-        Ordered list of tile texture PNGs.  The filename (stem) is used
-        as the tile key in the returned layout dict.
-    output_path : str or Path
-        Output atlas PNG path.
-    tile_size : int
-        Width/height of each tile slot in the atlas (pixels).
-    columns : int, optional
-        Number of columns.  Defaults to ``ceil(sqrt(N))``.
-
-    Returns
-    -------
-    (Path, dict)
-        ``(atlas_path, layout)`` where *layout* maps tile key →
-        ``(x, y, width, height)`` pixel rect in the atlas.
-    """
-    import numpy as np
-    from PIL import Image
-
-    n = len(texture_paths)
-    if n == 0:
-        raise ValueError("No texture paths provided")
-
-    cols = columns or math.ceil(math.sqrt(n))
-    rows = math.ceil(n / cols)
-
-    atlas_w = cols * tile_size
-    atlas_h = rows * tile_size
-    atlas = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 0))
-
-    layout: Dict[str, Tuple[int, int, int, int]] = {}
-    for idx, tex_path in enumerate(texture_paths):
-        col = idx % cols
-        row = idx // cols
-        x = col * tile_size
-        y = row * tile_size
-
-        tile_img = Image.open(tex_path).convert("RGBA")
-        tile_img = tile_img.resize((tile_size, tile_size), Image.LANCZOS)
-        atlas.paste(tile_img, (x, y))
-
-        key = tex_path.stem
-        layout[key] = (x, y, tile_size, tile_size)
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    atlas.save(out)
-    return out, layout

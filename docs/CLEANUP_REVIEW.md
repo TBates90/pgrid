@@ -63,27 +63,6 @@ __init__
 - `scripts/render_globe_from_tiles.py`
 - `scripts/debug_pipeline.py`
 
-### 🔴 TODO REMOVE — Not used by live pipeline
-- `scripts/demo_assembly.py` — early Phase 1–4 demo, uses assembly/visualize
-- `scripts/demo_terrain.py` — Phase 7 demo, uses terrain_render/rivers
-- `scripts/demo_mountains.py` — Phase 7 demo, standalone mountain vis
-- `scripts/demo_regions.py` — Phase 5–6 demo, uses regions/visualize
-- `scripts/demo_globe.py` — early globe vis using globe_render (flat map)
-- `scripts/demo_globe_3d.py` — matplotlib 3D globe, uses globe_mesh (not v2)
-- `scripts/demo_detail_globe.py` — Phase 10 demo, uses texture_pipeline/detail_perf
-- `scripts/demo_phase18_globe.py` — Phase 18 demo, uses old apron/biome pipeline
-- `scripts/demo_forest_globe.py` — Phase 14 demo, uses biome_pipeline
-- `scripts/demo_ocean_globe.py` — Phase 17A demo, uses ocean_render pipeline
-- `scripts/demo_coastline.py` — Phase 19 demo, uses coastline/apron pipeline
-- `scripts/demo_cohesive_globe.py` — Phase 11C/D demo, uses region_stitch/globe_terrain
-- `scripts/debug_globe_labels.py` — debug script for UV labels
-- `scripts/debug_polygrids.py` — older debug script, replaced by debug_pipeline.py
-- `scripts/validate_polygon_cut.py` — one-off validation script
-- `scripts/view_globe_v3.py` — standalone viewer, uses render_enhanced/texture_pipeline
-- `scripts/globe_generation.sh` — shell wrapper
-- `scripts/run_fast.sh` — shell wrapper
-- `scripts/archive/` — **entire directory** (36 diagnostic scripts from old iterations)
-
 ### 🟡 TODO REVIEW
 - `scripts/run_tests.py` — useful test runner utility, but consider if pytest alone is sufficient
 
@@ -127,44 +106,7 @@ __init__
 | `transforms.py` | Only `Overlay` and `OverlayRegion` types are used (by `regions.py`). The functions `apply_voronoi`, `apply_partition` are unused by live scripts. |
 | `__init__.py` | Re-exports ~200 symbols from 30+ modules. Most are from dead modules. Needs major pruning once dead modules are removed. |
 
-### 🔴 TODO REMOVE — Not in live dependency tree
-| Module | What it was |
-|--------|-------------|
-| `assembly.py` | Phase 1–4 pent+hex assembly. Not used by globe pipeline. |
-| `builders.py` | build_pure_hex_grid, build_pentagon_centered_grid — used only by assembly.py |
-| `composite.py` | CompositeGrid/StitchSpec — the old stitching model, used by assembly/visualize |
-| `visualize.py` | matplotlib panel rendering (render_exploded, render_stitched etc.) |
-| `io.py` | load_json/save_json — not used by any live script |
-| `cli.py` | CLI wrapper around io.py |
-| `goldberg_topology.py` | Stand-alone goldberg builder — globe.py has its own via models library |
-| `diagnostics.py` | Ring quality diagnostics — not used by live pipeline |
-| `pipeline.py` | TerrainPipeline/MountainStep/RiverStep — not used by live scripts |
-| `rivers.py` | River generation — not used by any live script |
-| `terrain_render.py` | Old terrain overlay renderer (elevation_to_overlay etc.) |
-| `detail_perf.py` | Parallel terrain gen / fast renderer / disk cache — not used by live scripts |
-| `texture_pipeline.py` | Old texture atlas builder — replaced by render_polygrids.py |
-| `render_enhanced.py` | Phase 11E biomes/normals — not used by live scripts |
-| `detail_terrain_3d.py` | Phase 11A 3D terrain — not used by live scripts |
-| `terrain_patches.py` | Phase 11B terrain patches — not used by live scripts |
-| `region_stitch.py` | Phase 11C stitched detail grids — not used by live scripts |
-| `globe_terrain.py` | Phase 11D globe terrain (mountains_3d, erosion) — not used by live scripts |
-| `globe_mesh.py` | Bridge to models library meshes — not used by live scripts |
-| `apron_grid.py` | Phase 18A apron grids — not used by live scripts |
-| `apron_texture.py` | Phase 18B apron texture rendering — not used by live scripts |
-| `biome_scatter.py` | Phase 14A feature scattering — not used by live scripts |
-| `biome_render.py` | Phase 14B forest rendering — not used by live scripts |
-| `biome_pipeline.py` | Phase 14D biome atlas pipeline — not used by live scripts |
-| `biome_continuity.py` | Phase 14C cross-tile biome continuity — not used by live scripts |
-| `biome_topology.py` | Phase 18C topology-aware biomes — not used by live scripts |
-| `ocean_render.py` | Phase 17A ocean rendering — not used by live scripts |
-| `coastline.py` | Phase 19 coastline transitions — not used by live scripts |
-| `tile_texture.py` | Phase 16A full-slot tile texture — not used by live scripts |
-| `texture_export.py` | Phase 18D KTX2/glTF export — not used by live scripts |
-| `visual_cohesion.py` | Phase 18E visual validation — not used by live scripts |
-
----
-
-## 4. Tests — Tagging
+## 4. Tests — TagginTODO REMOVEg
 
 ### ✅ KEEP — Tests for live modules
 | Test file | Tests module(s) |
@@ -192,58 +134,6 @@ __init__
 | `test_goldberg.py` | Tests standalone `goldberg_topology.py` which may be removed. BUT also tests core goldberg embedding maths that `globe.py` depends on indirectly. Check which tests exercise code actually used by `globe.py`. |
 | `test_globe.py` | Has pre-existing failures (3). Some tests exercise `pipeline.py`, `rivers.py` which are dead code. Audit individual test methods. |
 | `test_globe_renderer_v2.py` | Has 1 pre-existing failure. Some tests reference `globe_renderer.py` (v1) and `texture_pipeline.py`. Audit individual test methods. |
-
-### 🔴 TODO REMOVE — Tests for dead modules only
-| Test file | Tests module(s) |
-|-----------|-----------------|
-| `test_assembly.py` | assembly, composite, builders |
-| `test_stitching.py` | composite (stitch_grids etc.) |
-| `test_macro_edges.py` | macro edges on assembly grids |
-| `test_pentagon_centered.py` | builders (build_pentagon_centered_grid) |
-| `test_transforms.py` | transforms (apply_voronoi, apply_partition) |
-| `test_diagnostics.py` | diagnostics |
-| `test_visualize.py` | visualize |
-| `test_regions.py` | regions (partitioning functions) |
-| `test_rivers.py` | rivers |
-| `test_pipeline.py` | pipeline (TerrainPipeline) |
-| `test_terrain_render.py` | terrain_render |
-| `test_determinism.py` | builders (build_pentagon_centered_grid) |
-| `test_detail_perf.py` | detail_perf |
-| `test_detail_terrain_3d.py` | detail_terrain_3d |
-| `test_terrain_patches.py` | terrain_patches |
-| `test_globe_terrain.py` | globe_terrain |
-| `test_region_stitch.py` | region_stitch |
-| `test_render_enhanced.py` | render_enhanced |
-| `test_texture_pipeline.py` | texture_pipeline |
-| `test_phase13_rendering.py` | texture_pipeline, detail_perf |
-| `test_apron_grid.py` | apron_grid |
-| `test_apron_texture.py` | apron_texture |
-| `test_biome_scatter.py` | biome_scatter |
-| `test_biome_render.py` | biome_render |
-| `test_biome_pipeline.py` | biome_pipeline |
-| `test_biome_continuity.py` | biome_continuity |
-| `test_biome_topology.py` | biome_topology |
-| `test_ocean_render.py` | ocean_render |
-| `test_coastline.py` | coastline |
-| `test_tile_texture.py` | tile_texture |
-| `test_texture_export.py` | texture_export |
-| `test_visual_cohesion.py` | visual_cohesion |
-
----
-
-## 5. Other Files — Tagging
-
-### 🔴 TODO REMOVE
-- `notebooks/analytical_fill.ipynb` — one-off analysis
-- `notebooks/rendering_diagnostics.ipynb` — one-off analysis
-- `schemas/globe.schema.json` — JSON schema for old globe format
-- `schemas/polygrid.schema.json` — JSON schema for old polygrid format
-- `examples/minimal_grid.json` — example for io.py (which is dead)
-- `docs/POLYGRID_DISTORTION.md` — about old distortion issues
-- `docs/POLYGRID_DISTORTION_FOLLOWUP.md` — follow-up on above
-- `docs/RENDERING_ISSUES.md` — old rendering issue tracking
-- `docs/TILE_TEXTURE_MAPPING.md` — about old tile_texture.py approach
-- `exports/f3/` — old export artifacts
 
 ### 🟡 TODO REVIEW
 - `docs/ARCHITECTURE.md` — likely needs update to reflect stripped-down codebase

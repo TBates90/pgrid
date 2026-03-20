@@ -2997,76 +2997,7 @@ class TestTexturedRenderer:
         assert "#version 330" in _TEXTURED_VERTEX_SHADER
         assert "#version 330" in _TEXTURED_FRAGMENT_SHADER
 
-    # ── textured mesh stride ────────────────────────────────────────
-
-    def test_textured_mesh_has_uv_attribute(self, tmp_path):
-        from polygrid.texture_pipeline import (
-            build_detail_atlas, build_textured_tile_mesh,
-        )
-        from models.objects.goldberg import generate_goldberg_tiles
-
-        _, _, coll = self._make_collection(freq=1, rings=1)
-        _, uv_layout = build_detail_atlas(
-            coll, output_dir=tmp_path / "tiles", tile_size=64,
-        )
-        tiles = generate_goldberg_tiles(frequency=1)
-        tile = tiles[0]
-        fid = f"t{tile.index}"
-        if fid in uv_layout:
-            mesh = build_textured_tile_mesh(tile, uv_layout[fid])
-            attr_names = [a.name for a in mesh.attributes]
-            assert "uv" in attr_names
-            assert "position" in attr_names
-            assert "color" in attr_names
-
-    def test_textured_mesh_uvs_within_atlas_slot(self, tmp_path):
-        """UV coordinates in the mesh should fall within the atlas
-        slot bounds (approximately — center is the average)."""
-        from polygrid.texture_pipeline import (
-            build_detail_atlas, build_textured_tile_mesh,
-        )
-        from models.objects.goldberg import generate_goldberg_tiles
-
-        _, _, coll = self._make_collection(freq=1, rings=1)
-        _, uv_layout = build_detail_atlas(
-            coll, output_dir=tmp_path / "tiles", tile_size=64,
-        )
-        tiles = generate_goldberg_tiles(frequency=1)
-        tile = tiles[0]
-        fid = f"t{tile.index}"
-        if fid not in uv_layout:
-            pytest.skip("tile not in uv_layout")
-        mesh = build_textured_tile_mesh(tile, uv_layout[fid])
-        u_min, v_min, u_max, v_max = uv_layout[fid]
-        # Extract UVs from vertex data (stride = 8 floats, uv at offset 6)
-        n_verts = len(mesh.vertex_data) // 8
-        for i in range(n_verts):
-            u = mesh.vertex_data[i * 8 + 6]
-            v = mesh.vertex_data[i * 8 + 7]
-            assert u_min - 0.01 <= u <= u_max + 0.01, f"u={u}"
-            assert v_min - 0.01 <= v <= v_max + 0.01, f"v={v}"
-
-    # ── atlas texture loading (PIL side) ────────────────────────────
-
-    def test_atlas_image_loadable(self, tmp_path):
-        """The atlas PNG produced by build_detail_atlas can be loaded
-        and flipped (as the renderer does)."""
-        from PIL import Image
-        from polygrid.texture_pipeline import build_detail_atlas
-
-        _, _, coll = self._make_collection(freq=1, rings=1)
-        atlas_path, _ = build_detail_atlas(
-            coll, output_dir=tmp_path / "tiles", tile_size=64,
-        )
-        img = Image.open(str(atlas_path)).convert("RGBA").transpose(
-            Image.FLIP_TOP_BOTTOM,
-        )
-        assert img.size[0] > 0
-        assert img.size[1] > 0
-        raw = img.tobytes()
-        assert len(raw) == img.size[0] * img.size[1] * 4
-
-    # ── render_textured_globe_opengl signature check ────────────────
+    # ── textured mesh / render checks ─────────────────────────────
 
     def test_render_textured_globe_opengl_importable(self):
         from polygrid.globe_renderer import render_textured_globe_opengl
@@ -3076,17 +3007,6 @@ class TestTexturedRenderer:
         assert "payload" in params
         assert "atlas_path" in params
         assert "uv_layout" in params
-
-    # ── view_globe --textured flag ──────────────────────────────────
-
-    def test_view_globe_has_textured_flag(self):
-        """view_globe.py exposes _launch_textured and _launch_flat."""
-        script = Path(__file__).resolve().parent.parent / "scripts" / "view_globe.py"
-        source = script.read_text()
-        assert "def _launch_textured" in source
-        assert "def _launch_flat" in source
-        assert "--textured" in source
-        assert "--detail-rings" in source
 
     # ── helpers ──────────────────────────────────────────────────────
 

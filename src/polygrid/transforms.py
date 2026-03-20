@@ -1,5 +1,3 @@
-# TODO REFACTOR — Only Overlay and OverlayRegion types are used (by regions.py).
-#   The transform functions themselves are dead code.
 """Topological transforms that operate on PolyGrids.
 
 Each transform is a function ``PolyGrid → OverlayData`` (or similar)
