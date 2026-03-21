@@ -20,50 +20,39 @@ A separate `models` package provides the Goldberg polyhedron geometry primitives
 
 ## Separation of Concerns
 
-The project is organised around strict layering:
+The project is organised into seven sub-packages under `src/polygrid/`:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           scripts / CLI                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  globe_renderer_v2.py │ visualize.py │ render.py                     │  GPU + 2D rendering
-├─────────────────────────────────────────────────────────────────────────┤
-│  texture_pipeline.py │ detail_render.py │ detail_perf.py              │  Texture pipeline
-├─────────────────────────────────────────────────────────────────────────┤
-│  detail_grid.py │ tile_detail.py │ detail_terrain.py                  │  Sub-tile detail
-│                                  │ detail_terrain_3d.py               │
-├─────────────────────────────────────────────────────────────────────────┤
-│  globe.py │ globe_terrain.py │ globe_export.py │ globe_mesh.py       │  Globe scale
-├─────────────────────────────────────────────────────────────────────────┤
-│  noise.py │ heightmap.py │ mountains.py │ rivers.py │ pipeline.py    │  Terrain generation
-│  terrain_render.py │ terrain_patches.py │ render_enhanced.py         │
-├─────────────────────────────────────────────────────────────────────────┤
-│  transforms.py │ regions.py │ region_stitch.py                       │  Algorithms
-├─────────────────────────────────────────────────────────────────────────┤
-│  tile_data.py                                                         │  Per-tile data
-├─────────────────────────────────────────────────────────────────────────┤
-│  assembly.py │ composite.py │ builders.py │ goldberg_topology.py     │  Composition
-├─────────────────────────────────────────────────────────────────────────┤
-│  polygrid.py │ models.py │ algorithms.py │ geometry.py │ io.py       │  Core topology
-└─────────────────────────────────────────────────────────────────────────┘
+src/polygrid/
+├── core/          models.py  polygrid.py  algorithms.py  geometry.py
+├── building/      builders.py  goldberg_topology.py  composite.py  assembly.py
+├── data/          tile_data.py  transforms.py
+├── terrain/       noise.py  heightmap.py  mountains.py  regions.py
+├── globe/         globe.py  globe_export.py
+├── detail/        detail_grid.py  tile_detail.py  detail_terrain.py  detail_render.py
+├── rendering/     atlas_utils.py  uv_texture.py  tile_uv_align.py  globe_renderer_v2.py
+├── __init__.py    (re-exports public API from all sub-packages except rendering/)
+└── *.py shims     (backward-compat re-exports at old flat paths)
 ```
 
 ### Layer rules
 
 | Layer | Knows about | Does NOT know about |
 |-------|------------|---------------------|
-| **Core** (`models`, `polygrid`, `algorithms`, `geometry`, `io`) | Vertices, edges, faces, adjacency | Rendering, assembly, transforms, tile data |
-| **Building** (`builders`, `goldberg_topology`, `composite`, `assembly`) | Core layer | Rendering, game-specific data |
-| **Tile Data** (`tile_data`) | Core layer | Rendering, transforms, regions |
-| **Transforms** (`transforms`, `regions`, `region_stitch`) | Core layer, tile data | Rendering |
-| **Terrain** (`noise`, `heightmap`, `mountains`, `rivers`, `pipeline`) | Core, tile data, transforms | Rendering, globe topology |
-| **Globe** (`globe`, `globe_terrain`, `globe_export`, `globe_mesh`) | Core, tile data, terrain, `models` lib | Rendering |
-| **Detail** (`detail_grid`, `tile_detail`, `detail_terrain`, `detail_render`, `detail_perf`) | Core, terrain, globe | GPU rendering |
-| **Texture** (`texture_pipeline`) | Detail, globe | GPU rendering |
-| **Rendering** (`globe_renderer_v2`, `visualize`) | Everything above | Nothing below it depends on rendering |
+| **core/** (`models`, `polygrid`, `algorithms`, `geometry`) | Vertices, edges, faces, adjacency | Rendering, assembly, transforms, tile data |
+| **building/** (`builders`, `goldberg_topology`, `composite`, `assembly`) | Core layer | Rendering, game-specific data |
+| **data/** (`tile_data`, `transforms`) | Core layer | Rendering, terrain |
+| **terrain/** (`noise`, `heightmap`, `mountains`, `regions`) | Core, data | Rendering, globe topology |
+| **globe/** (`globe`, `globe_export`) | Core, data, terrain, `models` lib | Rendering |
+| **detail/** (`detail_grid`, `tile_detail`, `detail_terrain`, `detail_render`) | Core, building, data, terrain, rendering (lazy) | GPU rendering |
+| **rendering/** (`atlas_utils`, `uv_texture`, `tile_uv_align`, `globe_renderer_v2`) | Everything above | Nothing below it depends on rendering |
 | **Scripts / CLI** | Everything | — |
 
 **Key principle:** the core topology layer has **zero rendering dependencies**. Matplotlib and pyglet are optional installs. All algorithm work operates on the abstract `PolyGrid` graph.
+
+Backward-compatibility shims at the old flat paths (e.g. `polygrid.builders`,
+`polygrid.noise`, `polygrid.tile_uv_align`) re-export from the canonical
+sub-package location so existing imports continue to work.
 
 ---
 
@@ -223,18 +212,19 @@ Each Goldberg tile is expanded into a local hex sub-grid:
 
 ## Testing
 
-1,101 tests across 36 test files, covering:
+605 tests across 14 test files, covering:
 
 - Core topology: model validation, serialisation, adjacency
 - Goldberg grids: face counts, vertex degrees, embedding quality
 - Composition: stitching, assembly, boundary alignment
-- Terrain: noise, heightmaps, mountains, rivers, pipeline
+- Terrain: noise, heightmaps, mountains
 - Globe: globe builder, terrain generation, export, rendering
 - Detail: sub-tile grids, boundary continuity, texture atlas
 - Renderer v2: subdivision, batching, UV clamping, colour harmonisation, normal maps, water, atmosphere, bloom, LOD
 - Partitioning: all 4 algorithms, validation, constraints
+- UV mapping: corner blending, atlas seams, grid deformation
 
-Tests run in ~3 min with caching via `conftest.py` (globe grid + detail grid collection cached with `lru_cache`).
+Tests run in ~15 s with caching via `conftest.py` (globe grid + detail grid collection cached with `lru_cache`).
 
 ---
 
@@ -242,18 +232,15 @@ Tests run in ~3 min with caching via `conftest.py` (globe grid + detail grid col
 
 ### What pgrid owns (library API)
 
-| Layer | Modules | Description |
-|-------|---------|-------------|
-| **Core topology** | `polygrid`, `models`, `algorithms`, `geometry`, `io` | PolyGrid container, vertices/edges/faces, adjacency, serialisation |
-| **Building** | `builders`, `goldberg_topology`, `composite`, `assembly` | Grid constructors, Goldberg embedding, stitching |
-| **Tile data** | `tile_data` | Per-tile key-value storage (`TileDataStore`) |
-| **Transforms** | `transforms`, `regions`, `region_stitch` | Overlays, partitioning, region stitching |
-| **Terrain** | `noise`, `heightmap`, `mountains`, `rivers`, `pipeline`, `terrain_patches` | Procedural terrain generation |
-| **Globe** | `globe`, `globe_terrain`, `globe_export` | Globe-scale topology, terrain, JSON export |
-| **Detail** | `detail_grid`, `tile_detail`, `detail_terrain`, `detail_terrain_3d`, `detail_render`, `detail_perf` | Sub-tile detail grids and terrain |
-| **Texture** | `tile_texture`, `uv_texture`, `tile_uv_align`, `texture_export`, `apron_grid`, `apron_texture` | Texture atlas building, UV alignment, polygon-cut, export |
-| **Biome** | `biome_scatter`, `biome_render`, `biome_pipeline`, `biome_continuity`, `biome_topology`, `coastline`, `ocean_render`, `render_enhanced` | Biome-aware terrain rendering |
-| **Visual QA** | `visual_cohesion`, `diagnostics` | Seam checks, quality gates |
+| Layer | Sub-package | Modules | Description |
+|-------|-------------|---------|-------------|
+| **Core topology** | `core/` | `polygrid`, `models`, `algorithms`, `geometry` | PolyGrid container, vertices/edges/faces, adjacency, serialisation |
+| **Building** | `building/` | `builders`, `goldberg_topology`, `composite`, `assembly` | Grid constructors, Goldberg embedding, stitching |
+| **Data** | `data/` | `tile_data`, `transforms` | Per-tile key-value storage, overlays, partitioning |
+| **Terrain** | `terrain/` | `noise`, `heightmap`, `mountains`, `regions` | Procedural terrain generation |
+| **Globe** | `globe/` | `globe`, `globe_export` | Globe-scale topology, JSON export |
+| **Detail** | `detail/` | `detail_grid`, `tile_detail`, `detail_terrain`, `detail_render` | Sub-tile detail grids and terrain |
+| **Rendering** | `rendering/` | `atlas_utils`, `uv_texture`, `tile_uv_align`, `globe_renderer_v2` | Texture atlas building, UV alignment, 3D rendering |
 
 ### What pgrid does NOT own
 
@@ -271,13 +258,10 @@ imported by `playground`.
 
 | Module | Purpose |
 |--------|---------|
-| `globe_renderer_v2.py` | Globe renderer: subdivision, batching, PBR, water, atmosphere, LOD, bloom |
-| `globe_mesh.py` | Builds `ShapeMesh` objects for the 3D renderer |
-| `texture_pipeline.py` | Builds textured globe meshes for the 3D renderers |
-| `visualize.py` | 2D matplotlib rendering |
+| `rendering/globe_renderer_v2.py` | Globe renderer: subdivision, batching, PBR, water, atmosphere, LOD, bloom |
 
 These are gated behind optional extras (`[demo]`, `[globe]`, `[render]`)
-and are exposed in `__init__.py` via `try/except ImportError` blocks.
+and are exposed via `try/except ImportError` blocks.
 
 ### Data contracts with playground
 
@@ -287,30 +271,27 @@ for the full specification.
 
 | Artifact | Format | Producer | Consumer |
 |----------|--------|----------|----------|
-| Globe payload | JSON (`globe_export.py`) | pgrid | playground |
-| Texture atlas | PNG (`tile_uv_align.py`, `detail_perf.py`) | pgrid | playground |
+| Globe payload | JSON (`globe/globe_export.py`) | pgrid | playground |
+| Texture atlas | PNG (`rendering/tile_uv_align.py`) | pgrid | playground |
 | UV layout | JSON `{ tile_id: [u_min, v_min, u_max, v_max] }` | pgrid | playground |
-| Normal map atlas | PNG (`render_enhanced.py`) | pgrid | playground |
 
 ### Playground's expected pgrid imports
 
-When integration is complete, playground will import from these pgrid modules:
+When integration is complete, playground will import from these pgrid modules
+(all backward-compat shims at the old flat paths also work):
 
 - `polygrid.globe` — `build_globe_grid`, `GlobeGrid`
-- `polygrid.tile_data` — `TileDataStore`, `TileSchema`, `FieldDef`
-- `polygrid.globe_export` — `export_globe_payload`, `validate_globe_payload`
-- `polygrid.tile_detail` — `DetailGridCollection`, `TileDetailSpec`
-- `polygrid.detail_terrain` — `generate_all_detail_terrain`
-- `polygrid.detail_render` — `BiomeConfig`, `render_detail_texture_enhanced`
-- `polygrid.tile_uv_align` — `build_polygon_cut_atlas`
-- `polygrid.uv_texture` — `compute_tile_uv_bounds`, `UVTransform`
-- `polygrid.mountains` — `generate_mountains`, `MountainConfig`
-- `polygrid.noise` — `fbm`, `ridged_noise`
-- `polygrid.terrain_patches` — `TERRAIN_PRESETS`, `generate_patched_terrain`
-- `polygrid.coastline` — `CoastlineConfig`, `classify_all_tiles`
+- `polygrid.data.tile_data` — `TileDataStore`, `TileSchema`, `FieldDef`
+- `polygrid.globe.globe_export` — `export_globe_payload`, `validate_globe_payload`
+- `polygrid.detail.tile_detail` — `DetailGridCollection`, `TileDetailSpec`
+- `polygrid.detail.detail_terrain` — `generate_all_detail_terrain`
+- `polygrid.detail.detail_render` — `BiomeConfig`, `render_detail_texture_enhanced`
+- `polygrid.rendering.tile_uv_align` — `build_polygon_cut_atlas`
+- `polygrid.rendering.uv_texture` — `compute_tile_uv_bounds`, `UVTransform`
+- `polygrid.terrain.mountains` — `generate_mountains`, `MountainConfig`
+- `polygrid.terrain.noise` — `fbm`, `ridged_noise`
 
-Playground must **never** import pgrid rendering modules (`globe_renderer_v2`,
-`globe_mesh`, `visualize`).
+Playground must **never** import pgrid rendering modules (`globe_renderer_v2`).
 
 ---
 
@@ -318,11 +299,8 @@ Playground must **never** import pgrid rendering modules (`globe_renderer_v2`,
 
 | Dependency | Required for | Install group |
 |-----------|-------------|--------------|
-| (none) | Core topology | default |
+| numpy, scipy | Embedding, optimisation, terrain | default |
+| opensimplex | Noise-based terrain & boundaries | default |
+| Pillow | Texture rendering | default |
 | pytest | Testing | `dev` |
-| matplotlib | 2D rendering | `render` |
-| numpy, scipy | Embedding & optimisation | `embed` |
-| opensimplex | Noise-based terrain & boundaries | `noise` |
-| Pillow | Texture rendering | `render` |
-| pyglet | Interactive 3D viewer | `globe` |
 | models | Goldberg polyhedron geometry | `globe` |

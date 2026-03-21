@@ -1538,7 +1538,7 @@ class TestBuildNormalMapAtlas:
     @pytest.fixture
     def _small_collection(self, tmp_path):
         """Build a tiny 2-tile detail grid collection mock for testing."""
-        from polygrid.polygrid import PolyGrid, Vertex, Face
+        from polygrid.core.polygrid import PolyGrid, Vertex, Face
         from polygrid.tile_data import TileDataStore, TileSchema, FieldDef
 
         # Build a minimal collection with 2 face IDs

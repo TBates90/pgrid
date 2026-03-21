@@ -63,8 +63,8 @@ def _make_two_slot_atlas(
 
 def _make_mock_globe_grid(face_ids: List[str], n_sides: int = 6):
     """Create a minimal mock globe grid with adjacency."""
-    from polygrid.models import Face, Vertex, Edge
-    from polygrid.polygrid import PolyGrid
+    from polygrid.core.models import Face, Vertex, Edge
+    from polygrid.core.polygrid import PolyGrid
 
     verts = {}
     faces = []
@@ -99,7 +99,7 @@ class TestStitchAtlasSeams:
         globe = _make_mock_globe_grid(["t0", "t1"])
 
         with patch(
-            "polygrid.uv_texture._find_shared_edges", return_value=[]
+            "polygrid.rendering.uv_texture._find_shared_edges", return_value=[]
         ):
             result = _stitch_atlas_seams(
                 atlas, uv_layout, globe, ["t0", "t1"],
@@ -134,10 +134,10 @@ class TestStitchAtlasSeams:
         shared_edges = [("t0", "t1", [(1, 0), (2, 3)])]
 
         with patch(
-            "polygrid.uv_texture._find_shared_edges",
+            "polygrid.rendering.uv_texture._find_shared_edges",
             return_value=shared_edges,
         ), patch(
-            "polygrid.uv_texture.get_tile_uv_vertices",
+            "polygrid.rendering.uv_texture.get_tile_uv_vertices",
             return_value=hex_uv,
         ):
             result = _stitch_atlas_seams(
@@ -179,10 +179,10 @@ class TestStitchAtlasSeams:
         shared_edges = [("t0", "t1", [(1, 0), (2, 3)])]
 
         with patch(
-            "polygrid.uv_texture._find_shared_edges",
+            "polygrid.rendering.uv_texture._find_shared_edges",
             return_value=shared_edges,
         ), patch(
-            "polygrid.uv_texture.get_tile_uv_vertices",
+            "polygrid.rendering.uv_texture.get_tile_uv_vertices",
             return_value=hex_uv,
         ):
             result = _stitch_atlas_seams(
@@ -202,7 +202,7 @@ class TestStitchAtlasSeams:
         shared_edges = [("t0", "t2", [(1, 0), (2, 3)])]
 
         with patch(
-            "polygrid.uv_texture._find_shared_edges",
+            "polygrid.rendering.uv_texture._find_shared_edges",
             return_value=shared_edges,
         ):
             result = _stitch_atlas_seams(

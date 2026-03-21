@@ -5,24 +5,31 @@ By default, produces polygon-cut UV-aligned tile textures with a packed
 texture atlas ready for 3D globe rendering. All metadata needed by
 ``render_globe_from_tiles.py`` is exported alongside the tiles.
 
+The output directory is derived from ``EXPORT_DIR`` in ``.env`` plus an
+auto-generated sub-directory named ``f{freq}-d{rings}`` (or
+``f{freq}-d{rings}-cd`` in colour-debug mode).
+
 Usage
 -----
 ::
 
-    # Basic (frequency 3, detail_rings 4, polygon-cut atlas):
+    # Basic (frequency 3, detail_rings 4, gutter 4, no-neighbours):
     python scripts/render_polygrids.py
 
     # Higher resolution:
     python scripts/render_polygrids.py -f 4 --detail-rings 6
 
+    # Enable neighbour closure (overrides default --no-neighbours):
+    python scripts/render_polygrids.py --neighbours
+
     # Show grid edges overlaid on terrain:
     python scripts/render_polygrids.py --edges
 
-    # Custom output directory:
-    python scripts/render_polygrids.py -o exports/my_polygrids
-
     # Different terrain preset:
     python scripts/render_polygrids.py --preset alpine_peaks
+
+    # Skip the 3D viewer at the end:
+    python scripts/render_polygrids.py --no-view
 
 Outputs one PNG per tile plus ``atlas.png``, ``uv_layout.json``,
 ``globe_payload.json``, and ``metadata.json`` to the output directory.
@@ -37,19 +44,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _script_utils import load_env as _load_env, _PROJECT_ROOT
+
 # Sentinel background colour used by stitched-tile renderers.
 # Any image pixels with this colour were NOT covered by polygon patches
 # and must be replaced (nearest-neighbour fill) before atlas warping.
 # Bright magenta is chosen because it never appears in terrain or
 # colour-debug renders.
 _SENTINEL_BG: tuple[float, float, float] = (1.0, 0.0, 1.0)
-_SENTINEL_BG_RGB: tuple[int, int, int] = (255, 0, 255)
 
 
 def _build_globe_and_terrain(frequency: int, preset: str, seed: int):
     """Build globe grid with mountain terrain."""
+    from dataclasses import replace
+
     from polygrid.globe import build_globe_grid
-    from polygrid.mountains import MountainConfig, generate_mountains
+    from polygrid.mountains import (
+        ALPINE_PEAKS, MOUNTAIN_RANGE, ROLLING_HILLS, generate_mountains,
+    )
     from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
 
     print(f"Building globe (freq={frequency}, preset={preset}, seed={seed})...")
@@ -58,21 +70,12 @@ def _build_globe_and_terrain(frequency: int, preset: str, seed: int):
     store = TileDataStore(grid=grid, schema=schema)
 
     presets = {
-        "mountain_range": MountainConfig(
-            seed=seed, ridge_frequency=2.0, ridge_octaves=4,
-            peak_elevation=1.0, base_elevation=0.0,
-        ),
-        "alpine_peaks": MountainConfig(
-            seed=seed, ridge_frequency=3.0, ridge_octaves=5,
-            peak_elevation=1.0, base_elevation=0.1,
-        ),
-        "rolling_hills": MountainConfig(
-            seed=seed, ridge_frequency=1.5, ridge_octaves=3,
-            peak_elevation=0.5, base_elevation=0.2,
-        ),
+        "mountain_range": MOUNTAIN_RANGE,
+        "alpine_peaks": ALPINE_PEAKS,
+        "rolling_hills": ROLLING_HILLS,
     }
 
-    config = presets.get(preset, presets["mountain_range"])
+    config = replace(presets.get(preset, MOUNTAIN_RANGE), seed=seed)
     generate_mountains(grid, store, config)
     print(f"  → {len(grid.faces)} tiles")
     return grid, store
@@ -127,39 +130,26 @@ def _build_stitched_store(composite, coll, face_id, globe_grid):
 # Global hillshade pre-computation
 # ---------------------------------------------------------------------------
 
-def _compute_global_hillshade(coll, grid, face_ids, biome):
+def _compute_global_hillshade(coll, grid, face_ids, biome,
+                               composites):
     """Pre-compute hillshade for every detail face across all tiles.
 
-    For each globe tile, builds the composite (centre + neighbours),
-    computes hillshade on the full composite grid, and records the
-    values for the **centre tile's** faces only.  This means every
-    face gets its hillshade computed with the maximum available
+    Uses pre-built *composites* dict (``{face_id: composite}``) to
+    avoid redundantly calling ``build_tile_with_neighbours`` again.
+    Each face gets its hillshade computed with the maximum available
     neighbour context, eliminating boundary truncation artefacts.
 
-    Returns a dict ``{prefixed_face_id: float}`` keyed by the
-    merged-grid face IDs used by each composite.  Since the prefix
-    changes per composite, the caller must look up values using the
-    face IDs from the composite they are rendering.
-
-    We return one dict per globe tile:
-    ``{globe_face_id: {merged_face_id: hillshade_value}}``.
-    The centre-tile faces have authoritative values; neighbour faces
-    get their values from the composite where *they* are the centre.
+    Returns ``{(globe_face_id, detail_face_id): hillshade_value}``.
     """
     from polygrid.detail_render import _detail_hillshade
-    from polygrid.tile_detail import build_tile_with_neighbours
 
     print("Pre-computing global hillshade...")
     t0 = time.perf_counter()
 
-    # Step 1: for each tile, compute hillshade on its composite and
-    # store the ORIGINAL (un-prefixed) face_id → hillshade value.
-    # This gives every detail face its hillshade from the composite
-    # where it was the centre tile (best neighbour context).
     authoritative_hs: dict[str, float] = {}
 
     for fid in face_ids:
-        composite = build_tile_with_neighbours(coll, fid, grid)
+        composite = composites[fid]
         stitched_store = _build_stitched_store(composite, coll, fid, grid)
         mg = composite.merged
 
@@ -244,7 +234,7 @@ def _build_face_patches(grid, colour_fn: ColourFunc):
     return patches, colours
 
 
-def _render_patches_to_png(
+def _render_patches_to_png(  # NOTE: only used when --renderer=matplotlib; analytical renderer is now default
     patches,
     colours,
     output_path: Path,
@@ -293,7 +283,7 @@ def _render_patches_to_png(
     plt.close(fig)
 
 
-def _render_analytical_to_png(
+def _render_analytical_to_png(  # NOTE: per-face contains_points loop is O(faces×pixels); consider vectorising with rasterio or GPU
     grid,
     colour_fn,
     output_path: Path,
@@ -395,21 +385,6 @@ def _render_analytical_to_png(
     Image.fromarray(img).save(str(output_path))
 
 
-def _avg_colour(
-    colours: list[tuple[float, float, float]],
-    fallback: tuple[float, float, float] = (0.15, 0.15, 0.15),
-) -> tuple[float, float, float]:
-    """Return the channel-wise mean of *colours*, or *fallback*."""
-    if not colours:
-        return fallback
-    n = len(colours)
-    return (
-        sum(c[0] for c in colours) / n,
-        sum(c[1] for c in colours) / n,
-        sum(c[2] for c in colours) / n,
-    )
-
-
 def _grid_bbox(grid, pad: float = 1.15):
     """Return (xlim, ylim) covering all vertices in *grid*.
 
@@ -473,11 +448,29 @@ def _compute_component_gradient_info(composite):
     return comp_centroids, comp_max_dist
 
 
+def _radial_debug_colour(
+    hue: float, cx: float, cy: float, max_d: float,
+    fx: float, fy: float,
+) -> tuple[float, float, float]:
+    """Compute a radial-gradient HLS colour for colour-debug rendering.
+
+    *hue* selects the base colour; lightness and saturation vary with
+    the normalised distance ``(fx, fy)`` from ``(cx, cy)`` relative to
+    *max_d*.
+    """
+    import colorsys
+
+    dist = ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5
+    t = min(dist / max_d, 1.0)
+    lightness = 0.72 - 0.20 * t
+    saturation = 0.65 + 0.15 * t
+    return colorsys.hls_to_rgb(hue, lightness, saturation)
+
+
 def _colour_debug_fn(
     composite, tile_hues, comp_centroids, comp_max_dist,
 ):
     """Return a colour callback for colour-debug rendering."""
-    import colorsys
     from polygrid.geometry import face_center as _face_center
 
     comp_hues = {
@@ -493,22 +486,18 @@ def _colour_debug_fn(
                 break
         if comp_name is None:
             return None
-        hue = comp_hues[comp_name]
-        cx, cy = comp_centroids[comp_name]
         c = _face_center(grid.vertices, face)
+        cx, cy = comp_centroids[comp_name]
         fx, fy = c if c else (cx, cy)
-        dist = ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5
-        t = min(dist / comp_max_dist[comp_name], 1.0)
-        lightness = 0.72 - 0.20 * t
-        saturation = 0.65 + 0.15 * t
-        return colorsys.hls_to_rgb(hue, lightness, saturation)
+        return _radial_debug_colour(
+            comp_hues[comp_name], cx, cy, comp_max_dist[comp_name], fx, fy,
+        )
 
     return _colour
 
 
 def _colour_debug_single_fn(grid, hue: float):
     """Return a colour callback for a standalone colour-debug tile."""
-    import colorsys
     from polygrid.geometry import face_center as _face_center
 
     xs, ys = [], []
@@ -530,10 +519,7 @@ def _colour_debug_single_fn(grid, hue: float):
     def _colour(fid, grid, face):
         c = _face_center(grid.vertices, face)
         fx, fy = c if c else (cx, cy)
-        t = min(((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5 / max_d, 1.0)
-        lightness = 0.72 - 0.20 * t
-        saturation = 0.65 + 0.15 * t
-        return colorsys.hls_to_rgb(hue, lightness, saturation)
+        return _radial_debug_colour(hue, cx, cy, max_d, fx, fy)
 
     return _colour
 
@@ -582,6 +568,7 @@ def _render_stitched_tile(
     noise_seed: int,
     hillshade: dict[str, float] | None = None,
     renderer: str = "matplotlib",
+    uniform_half_span: float | None = None,
 ):
     """Render a stitched tile+neighbours grid to PNG.
 
@@ -623,7 +610,9 @@ def _render_stitched_tile(
         hs = hillshade
 
     colour_fn = _terrain_colour_fn(mg, stitched_store, biome, noise_seed, hs)
-    xlim, ylim = compute_tile_view_limits(composite, face_id)
+    xlim, ylim = compute_tile_view_limits(
+        composite, face_id, uniform_half_span=uniform_half_span,
+    )
 
     if renderer == "analytical":
         _render_analytical_to_png(
@@ -652,6 +641,7 @@ def _render_colour_debug_tile(
     tile_size: int,
     outline_tiles: bool,
     tile_hues: dict[str, float],
+    uniform_half_span: float | None = None,
 ):
     """Render a stitched tile with each component in a distinct colour.
 
@@ -671,7 +661,9 @@ def _render_colour_debug_tile(
     if not patches:
         return
 
-    xlim, ylim = compute_tile_view_limits(composite, face_id)
+    xlim, ylim = compute_tile_view_limits(
+        composite, face_id, uniform_half_span=uniform_half_span,
+    )
     edge_col, edge_lw = _edge_style(outline_tiles, "#00000030", 0.4)
 
     _render_patches_to_png(
@@ -743,6 +735,12 @@ def main():
              "polygon-cut tile.",
     )
     parser.add_argument(
+        "--debug-uv-cut", action="store_true",
+        help="Save *_uvcut.png debug images showing the UV inner "
+             "rectangle (red) and polygon outline (green) overlaid "
+             "on each warped tile.",
+    )
+    parser.add_argument(
         "--polygon-mask", action="store_true",
         help="Apply black masking to pixels outside the UV polygon "
              "in polygon-cut tiles. Off by default; useful for "
@@ -752,6 +750,44 @@ def main():
         "--pent-rot", type=int, default=0, metavar="N",
         help="Extra rotation steps for pentagon tiles (positive = CW). "
              "Use to correct residual pentagon orientation mismatch.",
+    )
+    parser.add_argument(
+        "--pent-scale", type=float, default=None, metavar="S",
+        help="Override the pentagon grid-corner scale factor. "
+             "Controls how 'zoomed in' pentagon tiles are relative to "
+             "hex neighbours. Auto-computed (~1.08) when omitted. "
+             "Values > 1.0 expand the sample region (coarser/larger "
+             "terrain features); values < 1.0 tighten it (finer "
+             "detail). Try 0.95–1.15 to taste.",
+    )
+    parser.add_argument(
+        "--pent-uv-scale", type=float, default=1.0, metavar="S",
+        help="Scale the pentagon UV polygon (green outline) from its "
+             "centroid. Values > 1.0 enlarge the cut-out region; "
+             "values < 1.0 shrink it. Default 1.0 (no change). "
+             "Use with --debug-uv-cut to visualise the effect.",
+    )
+    parser.add_argument(
+        "--pent-uv-rotation", type=float, default=9.0, metavar="DEG",
+        help="Rotate the pentagon UV polygon (green outline) "
+             "anticlockwise by this many degrees. Default 9. "
+             "Use with --debug-uv-cut to visualise the effect.",
+    )
+    parser.add_argument(
+        "--pent-uv-x", type=float, default=0.0, metavar="PX",
+        help="Nudge the pentagon UV polygon horizontally in pixels. "
+             "Positive → right. Default 0.",
+    )
+    parser.add_argument(
+        "--pent-uv-y", type=float, default=0.0, metavar="PX",
+        help="Nudge the pentagon UV polygon vertically in pixels. "
+             "Positive → up. Default 0.",
+    )
+    parser.add_argument(
+        "--pent-twist", type=float, default=0.0, metavar="DEG",
+        help="Rotate pentagon polygrid content clockwise by DEG degrees "
+             "around its centre. Useful for levelling the central "
+             "pentagon so its flat top is horizontal. Default 0.",
     )
     parser.add_argument(
         "--colour-debug", action="store_true",
@@ -766,8 +802,46 @@ def main():
              "within each polygrid tile.",
     )
     parser.add_argument(
-        "-o", "--output-dir", type=str, default=None,
-        help="Output directory (default: exports/polygrids/)",
+        "--no-view", action="store_true",
+        help="Don't launch the 3D globe viewer after rendering.",
+    )
+    parser.add_argument(
+        "--stitch", action="store_true",
+        help="Enable atlas seam-stitching and corner-blending. "
+             "Averages pixels along shared tile edges and at multi-tile "
+             "vertex junctions to hide texture discontinuities. "
+             "Off by default.",
+    )
+    parser.add_argument(
+        "--no-neighbours", action="store_true", default=True,
+        help="Disable neighbour↔neighbour closure in tile composites. "
+             "Apron grids are still positioned and stitched to the "
+             "centre tile, but adjacent apron grids are not snapped "
+             "or stitched to each other. This is now the default.",
+    )
+    parser.add_argument(
+        "--neighbours", action="store_true",
+        help="Enable neighbour↔neighbour closure in tile composites "
+             "(overrides the default --no-neighbours).",
+    )
+    parser.add_argument(
+        "--gutter", type=int, default=4, metavar="PX",
+        help="Atlas gutter width in pixels around each tile slot. "
+             "Sets the default for both pentagon and hexagon tiles. "
+             "Default: 4. Overridden per face type by --pent-gutter "
+             "/ --hex-gutter.",
+    )
+    parser.add_argument(
+        "--pent-gutter", type=int, default=None, metavar="PX",
+        help="Gutter width for pentagon tile slots (overrides --gutter "
+             "for pentagons only). Pentagon polygons are smaller than "
+             "the bounding hex UV square, so they often benefit from a "
+             "larger gutter. Default: uses --gutter value (4).",
+    )
+    parser.add_argument(
+        "--hex-gutter", type=int, default=None, metavar="PX",
+        help="Gutter width for hexagon tile slots (overrides --gutter "
+             "for hexagons only). Default: uses --gutter value (4).",
     )
     parser.add_argument(
         "--renderer", default="analytical",
@@ -780,11 +854,21 @@ def main():
 
     args = parser.parse_args()
 
+    # --neighbours overrides the default --no-neighbours
+    if args.neighbours:
+        args.no_neighbours = False
+
     from polygrid.detail_render import BiomeConfig
 
-    output_dir = Path(args.output_dir) if args.output_dir else (
-        Path(__file__).resolve().parent.parent / "exports" / "polygrids"
-    )
+    # ── Derive output directory from .env EXPORT_DIR ──
+    # Sub-directory pattern: f{freq}-d{rings}[-cd]
+    export_root = Path(_load_env("EXPORT_DIR", "./exports"))
+    if not export_root.is_absolute():
+        export_root = _PROJECT_ROOT / export_root
+    subdir = f"f{args.frequency}-d{args.detail_rings}"
+    if args.colour_debug:
+        subdir += "-cd"
+    output_dir = export_root / subdir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Colour-debug mode: skip terrain, colour tiles by identity ──
@@ -813,7 +897,7 @@ def main():
 
 def _build_atlas(
     tile_images, composites, detail_grids, grid, face_ids, args,
-    output_dir,
+    output_dir, *, uniform_half_span=None,
 ):
     """Build polygon-cut atlas and write atlas.png + uv_layout.json.
 
@@ -823,18 +907,34 @@ def _build_atlas(
     from polygrid.tile_uv_align import build_polygon_cut_atlas
 
     print("Building polygon-cut atlas...")
-    gutter = 4
+    default_gutter = args.gutter
+    pent_gutter = args.pent_gutter if args.pent_gutter is not None else default_gutter
+    hex_gutter = args.hex_gutter if args.hex_gutter is not None else default_gutter
     debug_dir = output_dir / "warped"
     debug_dir.mkdir(parents=True, exist_ok=True)
 
     atlas, uv_layout = build_polygon_cut_atlas(
         tile_images, composites, detail_grids, grid, face_ids,
         tile_size=args.tile_size,
-        gutter=gutter,
+        pent_gutter=pent_gutter,
+        hex_gutter=hex_gutter,
         mask_outside=args.polygon_mask,
         debug_labels=args.debug_labels,
+        debug_uv_cut=args.debug_uv_cut,
         output_dir=debug_dir,
         pentagon_rotation_steps=args.pent_rot,
+        stitch_seams=args.stitch,
+        stitch_width=max(16, args.tile_size // 8),
+        equalise_sectors=True,
+        blend_corners=args.stitch,
+        blend_radius=max(3, args.tile_size // 128),
+        pentagon_scale_override=args.pent_scale,
+        pent_uv_scale=args.pent_uv_scale,
+        pent_uv_rotation=args.pent_uv_rotation,
+        pent_uv_x=args.pent_uv_x,
+        pent_uv_y=args.pent_uv_y,
+        pent_twist=args.pent_twist,
+        uniform_half_span=uniform_half_span,
     )
 
     atlas_path = output_dir / "atlas.png"
@@ -885,6 +985,39 @@ def _export_payload_and_metadata(
     metadata_path = output_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2))
     print(f"  → Metadata: {metadata_path}")
+
+
+# ---------------------------------------------------------------------------
+# 3D viewer launcher
+# ---------------------------------------------------------------------------
+
+def _launch_viewer(output_dir: Path) -> None:
+    """Launch ``render_globe_from_tiles.py`` on *output_dir*."""
+    import json as _json
+
+    atlas_path = output_dir / "atlas.png"
+    uv_path = output_dir / "uv_layout.json"
+    payload_path = output_dir / "globe_payload.json"
+
+    for required in (atlas_path, uv_path, payload_path):
+        if not required.exists():
+            print(f"Warning: {required} not found — skipping 3D viewer")
+            return
+
+    payload = _json.loads(payload_path.read_text())
+    uv_layout = _json.loads(uv_path.read_text())
+    freq = payload["metadata"]["frequency"]
+    tile_count = payload["metadata"]["tile_count"]
+    title = f"Polygrid Globe — freq={freq}, {tile_count} tiles"
+
+    print("\nLaunching 3D viewer...")
+    from polygrid.globe_renderer_v2 import render_globe_v2
+
+    render_globe_v2(
+        payload, atlas_path, uv_layout,
+        title=title,
+        subdivisions=5,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -956,17 +1089,28 @@ def _main_colour_debug(args, output_dir):
     detail_grids: dict = {}
 
     for i, fid in enumerate(face_ids):
-        composite = build_tile_with_neighbours(coll, fid, grid)
+        composite = build_tile_with_neighbours(
+            coll, fid, grid,
+            skip_neighbour_closure=args.no_neighbours,
+        )
+        composites[fid] = composite
+        detail_grids[fid] = coll.get(fid)[0]
+
+    from polygrid.tile_uv_align import compute_uniform_half_span
+    uniform_hs = compute_uniform_half_span(composites, face_ids)
+    print(f"  Uniform half-span: {uniform_hs:.4f}")
+
+    for i, fid in enumerate(face_ids):
+        composite = composites[fid]
         out_path = output_dir / f"{fid}.png"
         _render_colour_debug_tile(
             fid, composite, out_path,
             tile_size=args.tile_size,
             outline_tiles=args.outline_tiles,
             tile_hues=tile_hues,
+            uniform_half_span=uniform_hs,
         )
         tile_images[fid] = Image.open(str(out_path)).convert("RGB")
-        composites[fid] = composite
-        detail_grids[fid] = coll.get(fid)[0]
 
         if (i + 1) % 10 == 0 or i == 0:
             print(f"  rendered {i + 1}/{len(face_ids)}...")
@@ -977,7 +1121,7 @@ def _main_colour_debug(args, output_dir):
     # Phase 2: build polygon-cut atlas
     _build_atlas(
         tile_images, composites, detail_grids, grid, face_ids,
-        args, output_dir,
+        args, output_dir, uniform_half_span=uniform_hs,
     )
 
     # Phase 3: export payload + metadata
@@ -998,28 +1142,51 @@ def _main_colour_debug(args, output_dir):
 
     print(f"Output: {output_dir}/")
 
+    # Phase 3: launch 3D globe viewer
+    if not args.no_view:
+        _launch_viewer(output_dir)
+
 
 def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
                        face_ids, show_edges):
     """Default polygon-cut atlas pipeline."""
     from PIL import Image
     from polygrid.tile_detail import build_tile_with_neighbours
+    from polygrid.tile_uv_align import compute_tile_view_limits, compute_uniform_half_span
 
     mode = "polygon-cut" + (" + edges" if show_edges else "")
     print(f"Rendering {len(face_ids)} tiles ({mode}) to {output_dir}/...")
     t0 = time.perf_counter()
 
-    # Phase 0: global hillshade pre-computation (eliminates boundary
-    # truncation — each face gets hillshade from the composite where
-    # it was the centre tile, with full neighbour context).
-    global_hs = _compute_global_hillshade(coll, grid, face_ids, biome)
-
-    # Phase 1: render stitched tiles + collect composites & detail grids
-    tile_images = {}
+    # Phase 0: build composites upfront — shared by hillshade and
+    # rendering phases, eliminating redundant build_tile_with_neighbours
+    # calls.  Also needed to compute the uniform half-span that ensures
+    # every tile is rendered at the same pixels-per-grid-unit.
     composites = {}
     detail_grids = {}
+    for fid in face_ids:
+        composites[fid] = build_tile_with_neighbours(
+            coll, fid, grid,
+            skip_neighbour_closure=args.no_neighbours,
+        )
+        detail_grids[fid] = coll.get(fid)[0]
+
+    # Phase 0b: global hillshade pre-computation (eliminates boundary
+    # truncation — each face gets hillshade from the composite where
+    # it was the centre tile, with full neighbour context).
+    global_hs = _compute_global_hillshade(
+        coll, grid, face_ids, biome,
+        composites=composites,
+    )
+
+    uniform_hs = compute_uniform_half_span(composites, face_ids)
+    print(f"  Uniform half-span: {uniform_hs:.4f} "
+          f"(eliminates per-tile scale variation)")
+
+    # Phase 1: render stitched tiles
+    tile_images = {}
     for i, fid in enumerate(face_ids):
-        composite = build_tile_with_neighbours(coll, fid, grid)
+        composite = composites[fid]
         stitched_store = _build_stitched_store(composite, coll, fid, grid)
         # Resolve pre-computed hillshade for this composite's merged grid
         hs = _resolve_hillshade_for_composite(composite, fid, global_hs)
@@ -1032,10 +1199,9 @@ def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
             noise_seed=args.seed,
             hillshade=hs,
             renderer=args.renderer,
+            uniform_half_span=uniform_hs,
         )
         tile_images[fid] = Image.open(str(out_path)).convert("RGB")
-        composites[fid] = composite
-        detail_grids[fid] = coll.get(fid)[0]
 
         if (i + 1) % 10 == 0 or i == 0:
             print(f"  rendered {i + 1}/{len(face_ids)}...")
@@ -1046,7 +1212,7 @@ def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
     # Phase 2: build polygon-cut atlas
     _build_atlas(
         tile_images, composites, detail_grids, grid, face_ids,
-        args, output_dir,
+        args, output_dir, uniform_half_span=uniform_hs,
     )
 
     # Phase 3: export payload + metadata
@@ -1057,6 +1223,10 @@ def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
     )
 
     print(f"Output: {output_dir}/")
+
+    # Phase 4: launch 3D globe viewer
+    if not args.no_view:
+        _launch_viewer(output_dir)
 
 
 if __name__ == "__main__":

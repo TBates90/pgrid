@@ -15,8 +15,8 @@ from typing import Dict, Tuple
 import numpy as np
 import pytest
 
-from polygrid.models import Edge, Face, Vertex
-from polygrid.polygrid import PolyGrid
+from polygrid.core.models import Edge, Face, Vertex
+from polygrid.core.polygrid import PolyGrid
 from polygrid.uv_texture import (
     UVTransform,
     _find_polygon_corners,

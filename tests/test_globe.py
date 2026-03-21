@@ -7,13 +7,13 @@ import json
 from pathlib import Path
 import pytest
 
-from polygrid.models import Vertex, Face
-from polygrid.polygrid import PolyGrid
+from polygrid.core.models import Vertex, Face
+from polygrid.core.polygrid import PolyGrid
 from polygrid.noise import fbm_3d, ridged_noise_3d, _init_noise3
 from polygrid.heightmap import sample_noise_field_3d
-from polygrid.geometry import face_center_3d
+from polygrid.core.geometry import face_center_3d
 from polygrid.tile_data import FieldDef, TileSchema, TileDataStore
-from polygrid.algorithms import get_face_adjacency
+from polygrid.core.algorithms import get_face_adjacency
 
 # ── Gate globe-specific tests behind models availability ────────────
 try:
@@ -493,7 +493,7 @@ class TestGlobeTerrain:
 @needs_models
 class TestGetFaceAdjacency:
     def test_globe_adjacency_via_helper(self):
-        from polygrid.algorithms import get_face_adjacency
+        from polygrid.core.algorithms import get_face_adjacency
 
         grid = build_globe_grid(2)
         adj = get_face_adjacency(grid)
@@ -503,7 +503,7 @@ class TestGetFaceAdjacency:
             assert len(nbrs) in (5, 6), f"{fid} has {len(nbrs)} neighbours"
 
     def test_flat_grid_adjacency_via_helper(self):
-        from polygrid.algorithms import get_face_adjacency
+        from polygrid.core.algorithms import get_face_adjacency
         from polygrid import build_pure_hex_grid
 
         grid = build_pure_hex_grid(2)
@@ -515,7 +515,7 @@ class TestGetFaceAdjacency:
         assert has_nbrs > 0
 
     def test_flat_grid_with_neighbors_via_helper(self):
-        from polygrid.algorithms import get_face_adjacency
+        from polygrid.core.algorithms import get_face_adjacency
         from polygrid import build_pure_hex_grid
 
         grid = build_pure_hex_grid(2).with_neighbors()

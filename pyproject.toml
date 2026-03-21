@@ -21,9 +21,6 @@ terrain = ["opensimplex>=0.4", "numpy>=1.26", "scipy>=1.12", "Pillow>=10"]
 globe = []
 demo = ["pyglet>=2.0"]
 
-[project.scripts]
-polygrid = "polygrid.cli:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["polygrid*"]

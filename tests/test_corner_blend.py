@@ -49,8 +49,8 @@ def _make_mock_globe_grid(
         the grid is constructed so that the specified vertices are
         shared at the given positions.  All other vertices are unique.
     """
-    from polygrid.models import Face, Vertex, Edge
-    from polygrid.polygrid import PolyGrid
+    from polygrid.core.models import Face, Vertex, Edge
+    from polygrid.core.polygrid import PolyGrid
 
     verts = {}
     face_vids: Dict[str, list] = {fid: [] for fid in face_ids}

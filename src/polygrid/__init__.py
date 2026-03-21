@@ -1,36 +1,41 @@
 """PolyGrid — topology-first polygon grid toolkit.
 
-Public API is organised into layers:
+Public API is organised into sub-packages:
 
-- **Core** — models, container, algorithms, geometry
-- **Building** — grid constructors, Goldberg topology, stitching, assembly
-- **Transforms** — overlay model and transform functions
-- **Terrain** — noise, heightmaps, mountains, regions
-- **Globe** — globe generation, export (requires *models* library)
-- **Detail** — detail grids, tile detail, terrain, rendering
+- **core/** — models, container, algorithms, geometry
+- **building/** — grid constructors, Goldberg topology, stitching, assembly
+- **data/** — tile data store, overlay model, transform functions
+- **terrain/** — noise, heightmaps, mountains, regions
+- **globe/** — globe generation, export (requires *models* library)
+- **detail/** — detail grids, tile detail, terrain, rendering
+- **rendering/** — UV mapping, texture rendering, globe visualization
 
-Specialised subsystems (globe_renderer_v2, uv_texture, tile_uv_align,
-atlas_utils) are **not** re-exported here — import them directly::
+The rendering sub-package (globe_renderer_v2, uv_texture, tile_uv_align,
+atlas_utils) is **not** re-exported here — import directly::
 
-    from polygrid.globe_renderer_v2 import render_globe_v2
-    from polygrid.tile_uv_align import build_polygon_cut_atlas
+    from polygrid.rendering.globe_renderer_v2 import render_globe_v2
+    from polygrid.rendering.tile_uv_align import build_polygon_cut_atlas
+
+Backward-compat shims at the old flat paths still work::
+
+    from polygrid.globe_renderer_v2 import render_globe_v2  # also OK
 """
 
 import warnings as _warnings
 
 # ── Core ────────────────────────────────────────────────────────────
-from .models import Vertex, Edge, Face, MacroEdge, Region
-from .polygrid import PolyGrid
-from .algorithms import build_face_adjacency, get_face_adjacency, ring_faces
+from .core.models import Vertex, Edge, Face, MacroEdge, Region
+from .core.polygrid import PolyGrid
+from .core.algorithms import build_face_adjacency, get_face_adjacency, ring_faces
 
 # ── Building ────────────────────────────────────────────────────────
-from .builders import (
+from .building.builders import (
     build_pure_hex_grid,
     build_pentagon_centered_grid,
     hex_face_count,
     validate_pentagon_topology,
 )
-from .goldberg_topology import (
+from .building.goldberg_topology import (
     build_goldberg_grid,
     goldberg_topology,
     goldberg_face_count,
@@ -38,11 +43,11 @@ from .goldberg_topology import (
     goldberg_optimise,
     fix_face_winding,
 )
-from .composite import CompositeGrid, StitchSpec, stitch_grids, join_grids, split_composite
-from .assembly import AssemblyPlan, pent_hex_assembly, translate_grid, rotate_grid, scale_grid
+from .building.composite import CompositeGrid, StitchSpec, stitch_grids, join_grids, split_composite
+from .building.assembly import AssemblyPlan, pent_hex_assembly, translate_grid, rotate_grid, scale_grid
 
 # ── Transforms ──────────────────────────────────────────────────────
-from .transforms import (
+from .data.transforms import (
     Overlay,
     OverlayPoint,
     OverlaySegment,
@@ -51,7 +56,7 @@ from .transforms import (
 )
 
 # ── Tile Data ───────────────────────────────────────────────────────
-from .tile_data import (
+from .data.tile_data import (
     FieldDef,
     TileSchema,
     TileData,
@@ -61,7 +66,7 @@ from .tile_data import (
 )
 
 # ── Regions ─────────────────────────────────────────────────────────
-from .regions import (
+from .terrain.regions import (
     RegionMap,
     RegionValidation,
     partition_angular,
@@ -75,7 +80,7 @@ from .regions import (
 )
 
 # ── Terrain Generation ──────────────────────────────────────────────
-from .noise import (
+from .terrain.noise import (
     fbm,
     ridged_noise,
     domain_warp,
@@ -86,7 +91,7 @@ from .noise import (
     fbm_3d,
     ridged_noise_3d,
 )
-from .heightmap import (
+from .terrain.heightmap import (
     sample_noise_field,
     sample_noise_field_region,
     sample_noise_field_3d,
@@ -95,7 +100,7 @@ from .heightmap import (
     clamp_field,
     normalize_field,
 )
-from .mountains import (
+from .terrain.mountains import (
     MountainConfig,
     generate_mountains,
     MOUNTAIN_RANGE,
@@ -106,7 +111,7 @@ from .mountains import (
 
 # ── Globe (requires models library) ────────────────────────────────
 try:
-    from .globe import build_globe_grid, GlobeGrid
+    from .globe.globe import build_globe_grid, GlobeGrid
 except ImportError:
     _warnings.warn(
         "polygrid.globe requires the 'models' library.  "
@@ -116,7 +121,7 @@ except ImportError:
     )
 
 try:
-    from .globe_export import (
+    from .globe.globe_export import (
         export_globe_payload,
         export_globe_json,
         validate_globe_payload,
@@ -126,26 +131,26 @@ except ImportError:
     pass  # globe_export depends on globe → already warned above
 
 # ── Detail grids ────────────────────────────────────────────────────
-from .detail_grid import (
+from .detail.detail_grid import (
     build_detail_grid,
     deform_grid_to_uv_shape,
     detail_face_count,
     generate_detail_terrain,
 )
-from .tile_detail import (
+from .detail.tile_detail import (
     TileDetailSpec,
     build_all_detail_grids,
     DetailGridCollection,
     find_polygon_corners,
     build_tile_with_neighbours,
 )
-from .detail_terrain import (
+from .detail.detail_terrain import (
     compute_boundary_elevations,
     classify_detail_faces,
     generate_detail_terrain_bounded,
     generate_all_detail_terrain,
 )
-from .detail_render import (
+from .detail.detail_render import (
     BiomeConfig,
     detail_elevation_to_colour,
     render_detail_texture_enhanced,

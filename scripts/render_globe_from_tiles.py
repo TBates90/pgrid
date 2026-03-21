@@ -4,21 +4,24 @@
 Skips all terrain/detail generation and goes straight from tile images
 to the interactive 3D viewer.
 
+The tile directory is resolved relative to ``EXPORT_DIR`` from
+``.env``, so you only need to pass the sub-directory name.
+
 Usage
 -----
 ::
 
     # Generate tiles first:
-    python scripts/render_polygrids.py -f 3 --detail-rings 3 -o exports/my_tiles
+    python scripts/render_polygrids.py -f 3 --detail-rings 4
 
     # Then view as a 3D globe (reads metadata from the export directory):
-    python scripts/render_globe_from_tiles.py exports/my_tiles
+    python scripts/render_globe_from_tiles.py f3-d4
 
     # Save a flat atlas without launching the viewer:
-    python scripts/render_globe_from_tiles.py exports/my_tiles --no-view
+    python scripts/render_globe_from_tiles.py f3-d4 --no-view
 
     # Custom tile/atlas size:
-    python scripts/render_globe_from_tiles.py exports/my_tiles --tile-size 256
+    python scripts/render_globe_from_tiles.py f3-d4 --tile-size 256
 
 The tile directory must contain the polygon-cut atlas (``atlas.png``,
 ``uv_layout.json``) and metadata (``metadata.json``,
@@ -31,11 +34,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from _script_utils import load_env as _load_env, _PROJECT_ROOT
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -122,8 +128,12 @@ def _pack_atlas(
 
 def _build_payload(frequency: int, seed: int, preset: str):
     """Build the globe grid + payload needed for 3D rendering."""
+    from dataclasses import replace
+
     from polygrid.globe import build_globe_grid
-    from polygrid.mountains import MountainConfig, generate_mountains
+    from polygrid.mountains import (
+        ALPINE_PEAKS, MOUNTAIN_RANGE, ROLLING_HILLS, generate_mountains,
+    )
     from polygrid.tile_data import FieldDef, TileDataStore, TileSchema
     from polygrid.globe_export import export_globe_payload
 
@@ -133,20 +143,11 @@ def _build_payload(frequency: int, seed: int, preset: str):
     store = TileDataStore(grid=grid, schema=schema)
 
     presets = {
-        "mountain_range": MountainConfig(
-            seed=seed, ridge_frequency=2.0, ridge_octaves=4,
-            peak_elevation=1.0, base_elevation=0.0,
-        ),
-        "alpine_peaks": MountainConfig(
-            seed=seed, ridge_frequency=3.0, ridge_octaves=5,
-            peak_elevation=1.0, base_elevation=0.1,
-        ),
-        "rolling_hills": MountainConfig(
-            seed=seed, ridge_frequency=1.5, ridge_octaves=3,
-            peak_elevation=0.5, base_elevation=0.2,
-        ),
+        "mountain_range": MOUNTAIN_RANGE,
+        "alpine_peaks": ALPINE_PEAKS,
+        "rolling_hills": ROLLING_HILLS,
     }
-    config = presets.get(preset, presets["mountain_range"])
+    config = replace(presets.get(preset, MOUNTAIN_RANGE), seed=seed)
     generate_mountains(grid, store, config)
 
     payload = export_globe_payload(grid, store, ramp="satellite")
@@ -164,7 +165,8 @@ def main():
     )
     parser.add_argument(
         "tile_dir", type=str,
-        help="Directory containing tile PNGs (t0.png, t1.png, ...)",
+        help="Sub-directory name under EXPORT_DIR (e.g. 'f3-d4'), "
+             "or a full path to the tile directory.",
     )
     parser.add_argument(
         "-f", "--frequency", type=int, default=None,
@@ -188,8 +190,8 @@ def main():
         help="Atlas gutter pixels (default: 4)",
     )
     parser.add_argument(
-        "--subdivisions", type=int, default=3,
-        help="Triangle subdivision level for sphere projection (default: 3)",
+        "--subdivisions", type=int, default=5,
+        help="Triangle subdivision level for sphere projection (default: 5)",
     )
     parser.add_argument(
         "--width", type=int, default=900,
@@ -220,7 +222,17 @@ def main():
     )
     args = parser.parse_args()
 
-    tile_dir = Path(args.tile_dir)
+    # Resolve tile directory: if the argument is a bare name (no path
+    # separators), treat it as a sub-directory of EXPORT_DIR from .env.
+    raw = args.tile_dir
+    if os.sep not in raw and "/" not in raw:
+        export_root = Path(_load_env("EXPORT_DIR", "./exports"))
+        if not export_root.is_absolute():
+            export_root = _PROJECT_ROOT / export_root
+        tile_dir = export_root / raw
+    else:
+        tile_dir = Path(raw)
+
     if not tile_dir.is_dir():
         print(f"Error: {tile_dir} is not a directory", file=sys.stderr)
         sys.exit(1)

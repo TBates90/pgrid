@@ -269,7 +269,7 @@ class TestGenerateAllDetailTerrain:
         This is a soft check: we verify the max difference is below a
         reasonable threshold rather than expecting exact equality.
         """
-        from polygrid.algorithms import get_face_adjacency
+        from polygrid.core.algorithms import get_face_adjacency
 
         grid, store = _make_globe_with_elevation(3)
         spec = TileDetailSpec(detail_rings=3, boundary_smoothing=2)

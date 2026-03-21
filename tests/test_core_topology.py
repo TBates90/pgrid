@@ -13,10 +13,10 @@ of the PolyGrid data-model:
 All originals deleted — see Phase 15D in TASKLIST.md.
 """
 
-from polygrid.models import Edge, Face, Vertex
-from polygrid.polygrid import PolyGrid
+from polygrid.core.models import Edge, Face, Vertex
+from polygrid.core.polygrid import PolyGrid
 from polygrid.builders import build_pure_hex_grid, hex_face_count
-from polygrid.algorithms import ring_faces
+from polygrid.core.algorithms import ring_faces
 from polygrid.composite import join_grids, split_composite
 
 
