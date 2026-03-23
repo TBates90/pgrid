@@ -108,6 +108,65 @@ from .terrain.mountains import (
     ROLLING_HILLS,
     MESA_PLATEAU,
 )
+from .terrain.temperature import (
+    compute_temperature,
+    generate_temperature_field,
+    LATITUDE_WEIGHT,
+    LAPSE_RATE,
+)
+from .terrain.moisture import (
+    compute_ocean_distance,
+    generate_moisture_field,
+    OCEAN_PROXIMITY_WEIGHT,
+    ELEVATION_PENALTY,
+    MAX_OCEAN_DISTANCE,
+)
+from .terrain.classification import (
+    classify_tile,
+    generate_terrain_field,
+    TERRAIN_TYPES,
+    OCEAN,
+    SNOW,
+    TUNDRA,
+    MOUNTAINS,
+    DESERT,
+    WETLAND,
+    HILLS,
+    PLAINS,
+)
+from .terrain.features import (
+    detect_coast,
+    detect_lakes,
+    place_forests,
+    generate_features,
+    get_features,
+    add_feature,
+    COAST,
+    LAKE,
+    FOREST,
+    FEATURE_TYPES,
+)
+
+# ── Integration API ─────────────────────────────────────────────────
+try:
+    from .integration import (
+        PlanetParams,
+        RegionParams,
+        TileResult,
+        GenerationResult,
+        generate_planet,
+        parse_layout,
+    )
+except ImportError:
+    pass  # integration depends on globe → warned below
+
+try:
+    from .integration_atlas import (
+        PlanetAtlasResult,
+        generate_planet_atlas,
+    )
+except ImportError:
+    pass  # atlas generation has heavier deps (scipy, matplotlib)
 
 # ── Globe (requires models library) ────────────────────────────────
 try:
@@ -185,6 +244,22 @@ __all__ = [
     "smooth_field", "blend_fields", "clamp_field", "normalize_field",
     "MountainConfig", "generate_mountains",
     "MOUNTAIN_RANGE", "ALPINE_PEAKS", "ROLLING_HILLS", "MESA_PLATEAU",
+    # Temperature & Moisture
+    "compute_temperature", "generate_temperature_field",
+    "LATITUDE_WEIGHT", "LAPSE_RATE",
+    "compute_ocean_distance", "generate_moisture_field",
+    "OCEAN_PROXIMITY_WEIGHT", "ELEVATION_PENALTY", "MAX_OCEAN_DISTANCE",
+    # Terrain Classification
+    "classify_tile", "generate_terrain_field", "TERRAIN_TYPES",
+    "OCEAN", "SNOW", "TUNDRA", "MOUNTAINS", "DESERT", "WETLAND", "HILLS", "PLAINS",
+    # Features
+    "detect_coast", "detect_lakes", "place_forests", "generate_features",
+    "get_features", "add_feature",
+    "COAST", "LAKE", "FOREST", "FEATURE_TYPES",
+    # Integration API
+    "PlanetParams", "RegionParams", "TileResult", "GenerationResult",
+    "generate_planet", "parse_layout",
+    "PlanetAtlasResult", "generate_planet_atlas",
     # Globe (available when models library is installed)
     "build_globe_grid", "GlobeGrid",
     "export_globe_payload", "export_globe_json", "validate_globe_payload",

@@ -567,6 +567,59 @@ class TestGlobeColourMap:
         assert len(colours) == len(grid.faces)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# 8E — Tile slug bridge (Phase 0.4 / 0.6)
+# ═══════════════════════════════════════════════════════════════════
+
+@needs_models
+class TestTileSlugBridge:
+    """Tests for tile_slug(), build_slug_lookup(), and build_reverse_slug_lookup()."""
+
+    def test_tile_slug_returns_string(self):
+        grid = build_globe_grid(2)
+        slug = grid.tile_slug("t0")
+        assert isinstance(slug, str)
+        assert slug  # non-empty
+
+    def test_tile_slug_format(self):
+        """Slug should be ``freq:f<face>:i-j-k``."""
+        grid = build_globe_grid(2)
+        slug = grid.tile_slug("t0")
+        parts = slug.split(":")
+        assert len(parts) == 3
+        assert parts[0] == "2"  # frequency
+        assert parts[1].startswith("f")  # base face
+        assert "-" in parts[2]  # grid coords
+
+    def test_tile_slug_unknown_face_returns_none(self):
+        grid = build_globe_grid(1)
+        assert grid.tile_slug("t9999") is None
+
+    def test_build_slug_lookup_covers_all_faces(self):
+        grid = build_globe_grid(2)
+        lookup = grid.build_slug_lookup()
+        assert set(lookup.keys()) == set(grid.faces.keys())
+
+    def test_build_slug_lookup_values_unique(self):
+        grid = build_globe_grid(3)
+        lookup = grid.build_slug_lookup()
+        slugs = list(lookup.values())
+        assert len(slugs) == len(set(slugs)), "duplicate slugs detected"
+
+    def test_build_reverse_slug_lookup_round_trips(self):
+        grid = build_globe_grid(2)
+        forward = grid.build_slug_lookup()
+        reverse = grid.build_reverse_slug_lookup()
+        for fid, slug in forward.items():
+            assert reverse[slug] == fid
+
+    def test_slug_lookup_different_frequencies(self):
+        """Slug frequency prefix should match the grid frequency."""
+        for freq in (1, 2, 3):
+            grid = build_globe_grid(freq)
+            for fid, slug in grid.build_slug_lookup().items():
+                assert slug.startswith(f"{freq}:"), f"{fid} → {slug}"
+
 
 @needs_models
 class TestGlobeExport:
@@ -619,11 +672,26 @@ class TestGlobeExport:
 
         grid, store = self._make_globe_with_terrain()
         payload = export_globe_payload(grid, store)
-        required = {"id", "face_type", "vertices_3d", "center_3d",
+        required = {"id", "face_type", "tile_slug", "vertices_3d", "center_3d",
                      "elevation", "color", "neighbor_ids"}
         for tile in payload["tiles"]:
             missing = required - set(tile.keys())
             assert not missing, f"Tile {tile.get('id')}: missing {missing}"
+
+    def test_tile_slug_present_and_valid(self):
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain(freq=2)
+        payload = export_globe_payload(grid, store)
+        slugs = set()
+        for tile in payload["tiles"]:
+            slug = tile["tile_slug"]
+            assert slug is not None, f"Tile {tile['id']}: tile_slug is None"
+            assert isinstance(slug, str)
+            assert slug.startswith("2:"), f"{tile['id']}: {slug}"
+            slugs.add(slug)
+        # All slugs must be unique
+        assert len(slugs) == len(payload["tiles"])
 
     def test_tile_colour_is_valid_rgb(self):
         from polygrid.globe_export import export_globe_payload
@@ -753,6 +821,81 @@ class TestGlobeExport:
         payload = export_globe_payload(grid, store, extra_fields=["no_such_field"])
         for tile in payload["tiles"]:
             assert tile["no_such_field"] is None
+
+    # ── biome pipeline fields (Phase 0.5) ───────────────────────────
+
+    def test_biome_fields_null_when_not_in_schema(self):
+        """When the store has no biome fields, export emits None."""
+        from polygrid.globe_export import export_globe_payload
+
+        grid, store = self._make_globe_with_terrain()
+        payload = export_globe_payload(grid, store)
+        for tile in payload["tiles"]:
+            assert tile["temperature"] is None
+            assert tile["moisture"] is None
+            assert tile["terrain"] is None
+            assert tile["features"] is None
+            assert tile["region_id"] is None
+
+    def test_biome_fields_present_when_in_schema(self):
+        """When the store has biome fields, export includes their values."""
+        from polygrid.globe_export import export_globe_payload
+        from polygrid.mountains import MountainConfig, generate_mountains
+
+        grid = build_globe_grid(2)
+        schema = TileSchema([
+            FieldDef("elevation", float, 0.0),
+            FieldDef("temperature", float, 0.5),
+            FieldDef("moisture", float, 0.5),
+            FieldDef("terrain", str, "plains"),
+            FieldDef("features", str, ""),
+            FieldDef("region_id", str, ""),
+        ])
+        store = TileDataStore(grid=grid, schema=schema)
+        config = MountainConfig(seed=42, ridge_frequency=2.0, ridge_octaves=3)
+        generate_mountains(grid, store, config)
+
+        # Set some biome data on one tile
+        fid = list(grid.faces.keys())[0]
+        store.set(fid, "temperature", 0.7)
+        store.set(fid, "moisture", 0.3)
+        store.set(fid, "terrain", "desert")
+        store.set(fid, "features", "coast,city")
+        store.set(fid, "region_id", "region-abc")
+
+        payload = export_globe_payload(grid, store)
+        tile = next(t for t in payload["tiles"] if t["id"] == fid)
+        assert tile["temperature"] == 0.7
+        assert tile["moisture"] == 0.3
+        assert tile["terrain"] == "desert"
+        assert tile["features"] == ["coast", "city"]
+        assert tile["region_id"] == "region-abc"
+
+    def test_features_exported_as_list(self):
+        """Features stored as comma-separated string should export as a list."""
+        from polygrid.globe_export import export_globe_payload
+        from polygrid.mountains import MountainConfig, generate_mountains
+
+        grid = build_globe_grid(1)
+        schema = TileSchema([
+            FieldDef("elevation", float, 0.0),
+            FieldDef("features", str, ""),
+        ])
+        store = TileDataStore(grid=grid, schema=schema)
+        config = MountainConfig(seed=42, ridge_frequency=2.0, ridge_octaves=3)
+        generate_mountains(grid, store, config)
+
+        fid = list(grid.faces.keys())[0]
+        store.set(fid, "features", "forest, river")
+
+        payload = export_globe_payload(grid, store)
+        tile = next(t for t in payload["tiles"] if t["id"] == fid)
+        assert tile["features"] == ["forest", "river"]
+
+        # Empty features should be empty list
+        fid2 = list(grid.faces.keys())[1]
+        tile2 = next(t for t in payload["tiles"] if t["id"] == fid2)
+        assert tile2["features"] == []
 
     # ── JSON file export ────────────────────────────────────────────
 

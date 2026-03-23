@@ -118,8 +118,9 @@ def export_globe_payload(
     ``metadata``
         Frequency, radius, tile counts, generator info.
     ``tiles``
-        List of per-tile dicts with id, face_type, centre, normal,
-        lat/lon, vertices, elevation, colour, and any extra fields.
+        List of per-tile dicts with id, face_type, tile_slug, centre,
+        normal, lat/lon, vertices, elevation, colour, and any extra
+        fields.
     ``adjacency``
         Edge-list representation of the full tile graph.
 
@@ -143,6 +144,7 @@ def export_globe_payload(
         JSON-serialisable payload.
     """
     colour_map = globe_to_colour_map(globe_grid, store, field_name=field_name, ramp=ramp)
+    slug_lookup = globe_grid.build_slug_lookup()
     extra = list(extra_fields or [])
 
     # ── Metadata ────────────────────────────────────────────────────
@@ -185,6 +187,7 @@ def export_globe_payload(
             "id": fid,
             "face_type": face.face_type,
             "models_tile_id": tile_id,
+            "tile_slug": slug_lookup.get(fid),
             "vertices_3d": verts_3d,
             "center_3d": [round(c, 8) for c in center_3d] if center_3d else None,
             "normal_3d": [round(n, 8) for n in normal_3d] if normal_3d else None,
@@ -194,6 +197,33 @@ def export_globe_payload(
             "color": [round(c, 4) for c in rgb],
             "neighbor_ids": list(face.neighbor_ids),
         }
+
+        # Well-known biome pipeline fields — included when present in the store.
+        for biome_key in ("temperature", "moisture", "terrain", "region_id"):
+            if store.schema.has_field(biome_key):
+                try:
+                    val = store.get(fid, biome_key)
+                    if isinstance(val, float):
+                        entry[biome_key] = round(val, 6)
+                    else:
+                        entry[biome_key] = val
+                except (KeyError, ValueError):
+                    entry[biome_key] = None
+            else:
+                entry[biome_key] = None
+
+        # Features list — stored as comma-separated string in TileDataStore
+        if store.schema.has_field("features"):
+            try:
+                raw = store.get(fid, "features")
+                if isinstance(raw, str) and raw:
+                    entry["features"] = [f.strip() for f in raw.split(",") if f.strip()]
+                else:
+                    entry["features"] = []
+            except (KeyError, ValueError):
+                entry["features"] = []
+        else:
+            entry["features"] = None
 
         # Extra fields from the store
         for key in extra:
@@ -300,6 +330,8 @@ def validate_globe_payload(payload: Dict[str, Any]) -> List[str]:
         for i, tile in enumerate(tiles):
             if "id" not in tile:
                 errors.append(f"Tile {i}: missing 'id'")
+            if "tile_slug" not in tile:
+                errors.append(f"Tile {i}: missing 'tile_slug'")
             if "elevation" not in tile:
                 errors.append(f"Tile {i}: missing 'elevation'")
             if "color" not in tile:

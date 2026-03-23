@@ -252,3 +252,39 @@ class GlobeGrid(PolyGrid):
         if face is None:
             return None
         return face.metadata.get("tile_id")
+
+    def tile_slug(self, face_id: str) -> str | None:
+        """Canonical Goldberg slug (e.g. ``'2:f1:2-0-0'``) for *face_id*.
+
+        Requires the source :class:`GoldbergPolyhedron` to be available
+        (i.e. the grid was built with :func:`build_globe_grid`, not
+        deserialised from JSON).
+        """
+        if self._polyhedron is None:
+            return None
+        tile_id = self.tile_models_id(face_id)
+        if tile_id is None:
+            return None
+        return self._polyhedron.tile_slug(tile_id)
+
+    # ── Tile-ID bridge ──────────────────────────────────────────────
+
+    def build_slug_lookup(self) -> Dict[str, str]:
+        """Build a ``{face_id: tile_slug}`` mapping for every tile.
+
+        Returns an empty dict if the polyhedron is unavailable.
+        """
+        if self._polyhedron is None:
+            return {}
+        return {
+            fid: self._polyhedron.tile_slug(face.metadata["tile_id"])
+            for fid, face in self.faces.items()
+            if "tile_id" in face.metadata
+        }
+
+    def build_reverse_slug_lookup(self) -> Dict[str, str]:
+        """Build a ``{tile_slug: face_id}`` mapping for every tile.
+
+        Returns an empty dict if the polyhedron is unavailable.
+        """
+        return {slug: fid for fid, slug in self.build_slug_lookup().items()}

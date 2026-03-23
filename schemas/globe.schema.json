@@ -80,6 +80,10 @@
             "type": ["integer", "null"],
             "description": "Integer tile ID in the models library."
           },
+          "tile_slug": {
+            "type": ["string", "null"],
+            "description": "Canonical Goldberg slug (e.g. '2:f1:2-0-0') for cross-referencing with the models library and playground."
+          },
           "vertices_3d": {
             "type": "array",
             "description": "3D vertex positions [[x,y,z], ...].",
@@ -135,6 +139,31 @@
             "items": { "type": "string" },
             "minItems": 5,
             "maxItems": 6
+          },
+          "temperature": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Per-tile temperature (0=frozen, 1=scorching). Present when terrain pipeline has run."
+          },
+          "moisture": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Per-tile moisture (0=arid, 1=saturated). Present when terrain pipeline has run."
+          },
+          "terrain": {
+            "type": ["string", "null"],
+            "description": "Terrain classification (ocean, snow, tundra, mountains, desert, wetland, hills, plains). Present when terrain pipeline has run."
+          },
+          "features": {
+            "type": ["array", "null"],
+            "description": "Feature tags (e.g. ['coast', 'forest']). Present when terrain pipeline has run.",
+            "items": { "type": "string" }
+          },
+          "region_id": {
+            "type": ["string", "null"],
+            "description": "ID of the region this tile belongs to. Present when regions have been assigned."
           }
         },
         "additionalProperties": true

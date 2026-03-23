@@ -1,4 +1,4 @@
-"""Noise generation, heightmaps, mountains, and region partitioning."""
+"""Noise generation, heightmaps, mountains, region partitioning, and climate."""
 
 from .noise import (
     fbm,
@@ -28,6 +28,44 @@ from .mountains import (
     ROLLING_HILLS,
     MESA_PLATEAU,
 )
+from .temperature import (
+    compute_temperature,
+    generate_temperature_field,
+    LATITUDE_WEIGHT,
+    LAPSE_RATE,
+)
+from .moisture import (
+    compute_ocean_distance,
+    generate_moisture_field,
+    OCEAN_PROXIMITY_WEIGHT,
+    ELEVATION_PENALTY,
+    MAX_OCEAN_DISTANCE,
+)
+from .classification import (
+    classify_tile,
+    generate_terrain_field,
+    TERRAIN_TYPES,
+    OCEAN,
+    SNOW,
+    TUNDRA,
+    MOUNTAINS,
+    DESERT,
+    WETLAND,
+    HILLS,
+    PLAINS,
+)
+from .features import (
+    detect_coast,
+    detect_lakes,
+    place_forests,
+    generate_features,
+    get_features,
+    add_feature,
+    COAST,
+    LAKE,
+    FOREST,
+    FEATURE_TYPES,
+)
 from .regions import (
     RegionMap,
     RegionValidation,
@@ -48,6 +86,15 @@ __all__ = [
     "smooth_field", "blend_fields", "clamp_field", "normalize_field",
     "MountainConfig", "generate_mountains",
     "MOUNTAIN_RANGE", "ALPINE_PEAKS", "ROLLING_HILLS", "MESA_PLATEAU",
+    "compute_temperature", "generate_temperature_field",
+    "LATITUDE_WEIGHT", "LAPSE_RATE",
+    "compute_ocean_distance", "generate_moisture_field",
+    "OCEAN_PROXIMITY_WEIGHT", "ELEVATION_PENALTY", "MAX_OCEAN_DISTANCE",
+    "classify_tile", "generate_terrain_field", "TERRAIN_TYPES",
+    "OCEAN", "SNOW", "TUNDRA", "MOUNTAINS", "DESERT", "WETLAND", "HILLS", "PLAINS",
+    "detect_coast", "detect_lakes", "place_forests", "generate_features",
+    "get_features", "add_feature",
+    "COAST", "LAKE", "FOREST", "FEATURE_TYPES",
     "RegionMap", "RegionValidation",
     "partition_angular", "partition_flood_fill", "partition_voronoi", "partition_noise",
     "assign_field", "assign_biome", "regions_to_overlay", "validate_region_map",
