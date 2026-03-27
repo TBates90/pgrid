@@ -16,7 +16,7 @@ import io
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -235,6 +235,7 @@ def generate_planet_atlas(
     detail_rings: int = 2,
     tile_size: int = 128,
     gutter: int = 4,
+    ramp_fn: Optional[Callable[[float], Tuple[float, float, float]]] = None,
 ) -> PlanetAtlasResult:
     """Generate a complete planet with a texture atlas for 3D rendering.
 
@@ -320,9 +321,17 @@ def generate_planet_atlas(
             azimuth=biome.azimuth, altitude=biome.altitude,
         )
 
-        colour_fn = _terrain_colour_fn(
-            mg, stitched_store, biome, params.seed, hs,
-        )
+        if ramp_fn is not None:
+            # Use the caller-supplied ramp for solid-colour / custom rendering.
+            def _custom_colour(fid_inner, _grid, _face,
+                               _store=stitched_store, _fn=ramp_fn):
+                elev = _store.get(fid_inner, "elevation")
+                return _fn(max(0.0, min(1.0, float(elev))))
+            colour_fn = _custom_colour
+        else:
+            colour_fn = _terrain_colour_fn(
+                mg, stitched_store, biome, params.seed, hs,
+            )
         xlim, ylim = compute_tile_view_limits(
             composite, fid, uniform_half_span=uniform_hs,
         )
@@ -347,7 +356,7 @@ def generate_planet_atlas(
     # ── 7. Export globe payload ─────────────────────────────────────
     from .globe.globe_export import export_globe_payload
 
-    payload = export_globe_payload(grid, store, ramp="satellite")
+    payload = export_globe_payload(grid, store, ramp="satellite", ramp_fn=ramp_fn)
 
     # ── 8. Build batched globe mesh ─────────────────────────────────
     from .rendering.globe_renderer_v2 import build_batched_globe_mesh

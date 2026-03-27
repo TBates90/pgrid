@@ -13,6 +13,7 @@ Functions
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -81,18 +82,45 @@ _RAMPS: Dict[str, Callable[[float], Tuple[float, float, float]]] = {
 }
 
 
+def make_solid_ramp(
+    base_color: Tuple[float, float, float],
+    *,
+    noise_amount: float = 0.08,
+    seed: int = 0,
+) -> Callable[[float], Tuple[float, float, float]]:
+    """Create a ramp that returns *base_color* with slight brightness noise.
+
+    The ``elevation`` parameter is used as a hash input (combined with
+    *seed*) to produce deterministic per-tile jitter of ±\ *noise_amount*.
+    """
+
+    def _ramp(elevation: float) -> Tuple[float, float, float]:
+        # Deterministic jitter derived from elevation value + seed.
+        h = hashlib.md5(f"{seed}:{elevation:.8f}".encode()).digest()
+        jitter = (h[0] / 255.0 - 0.5) * 2.0 * noise_amount
+        r = max(0.0, min(1.0, base_color[0] + jitter))
+        g = max(0.0, min(1.0, base_color[1] + jitter))
+        b = max(0.0, min(1.0, base_color[2] + jitter))
+        return (r, g, b)
+
+    return _ramp
+
+
 def globe_to_colour_map(
     globe_grid: GlobeGrid,
     store: TileDataStore,
     *,
     field_name: str = "elevation",
     ramp: str = "satellite",
+    ramp_fn: Optional[Callable[[float], Tuple[float, float, float]]] = None,
 ) -> Dict[str, Tuple[float, float, float]]:
     """Map per-tile data to RGB colours.
 
     Returns ``{face_id: (r, g, b)}`` where each component is in ``[0, 1]``.
+    If *ramp_fn* is provided it takes precedence over *ramp*.
     """
-    ramp_fn = _RAMPS.get(ramp, _ramp_satellite)
+    if ramp_fn is None:
+        ramp_fn = _RAMPS.get(ramp, _ramp_satellite)
     colours: Dict[str, Tuple[float, float, float]] = {}
     for fid in globe_grid.faces:
         val = store.get(fid, field_name)
@@ -109,6 +137,7 @@ def export_globe_payload(
     *,
     field_name: str = "elevation",
     ramp: str = "satellite",
+    ramp_fn: Optional[Callable[[float], Tuple[float, float, float]]] = None,
     extra_fields: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Build a comprehensive JSON-serialisable export of a globe grid.
@@ -143,7 +172,7 @@ def export_globe_payload(
     dict
         JSON-serialisable payload.
     """
-    colour_map = globe_to_colour_map(globe_grid, store, field_name=field_name, ramp=ramp)
+    colour_map = globe_to_colour_map(globe_grid, store, field_name=field_name, ramp=ramp, ramp_fn=ramp_fn)
     slug_lookup = globe_grid.build_slug_lookup()
     extra = list(extra_fields or [])
 
