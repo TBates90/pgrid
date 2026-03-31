@@ -72,6 +72,8 @@ class PlanetAtlasResult:
     frequency: int
     atlas_width: int
     atlas_height: int
+    detail_cells: Dict[str, Any]
+
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -367,6 +369,15 @@ def generate_planet_atlas(
         subdivisions=3,
     )
 
+    # ── 9. Compute sub-tile detail cell 3D centres ──────────────────
+    from .rendering.detail_centers import build_slug_keyed_detail_centers
+
+    try:
+        detail_cells = build_slug_keyed_detail_centers(grid, detail_rings=detail_rings)
+    except Exception:
+        LOGGER.warning("Failed to compute detail cell centres", exc_info=True)
+        detail_cells = {}
+
     t_elapsed = time.monotonic() - t_start
     LOGGER.info("Atlas generation complete in %.2fs", t_elapsed)
 
@@ -380,4 +391,5 @@ def generate_planet_atlas(
         frequency=frequency,
         atlas_width=atlas.size[0],
         atlas_height=atlas.size[1],
+        detail_cells=detail_cells,
     )

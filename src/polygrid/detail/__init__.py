@@ -6,6 +6,10 @@ from .detail_grid import (
     detail_face_count,
     generate_detail_terrain,
 )
+from .column import (
+    build_hex_prism,
+    extrude_polygrid_column,
+)
 from .tile_detail import (
     TileDetailSpec,
     build_all_detail_grids,
@@ -29,6 +33,7 @@ from .detail_render import (
 
 __all__ = [
     "build_detail_grid", "deform_grid_to_uv_shape", "detail_face_count",
+    "build_hex_prism", "extrude_polygrid_column",
     "generate_detail_terrain",
     "TileDetailSpec", "build_all_detail_grids", "DetailGridCollection",
     "find_polygon_corners", "build_tile_with_neighbours",

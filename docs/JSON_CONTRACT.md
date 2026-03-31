@@ -119,3 +119,36 @@ The Phase 12-13 renderer uses several vertex formats depending on enabled featur
 Where:
 - `T(3)` = tangent vector, `B(3)` = bitangent vector (for TBN normal mapping)
 - `water(1)` = per-vertex water flag (1.0 = water, 0.0 = land)
+
+---
+
+## 5. Detail Cells Export
+
+`detail_cells.json` is an auxiliary export used for sub-tile picking and
+selection overlays.
+
+### Top-level keys
+
+- `metadata`: includes `frequency` and `detail_rings`
+- `tiles`: map of Goldberg tile slug (preferred) to detail-cell list
+
+### Per-cell fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Local detail-face ID (usually `f<index>`) |
+| `detail_index` | int | Canonical 1-based detail index for packed selection IDs |
+| `center_3d` | `[x,y,z]` | Sphere-projected center point |
+| `canonical_center_3d` | `[x,y,z]` | Stable canonical anchor derived from spherical vertex centroid |
+| `vertices_3d` | `[[x,y,z], ...]` | Sphere-projected polygon vertices |
+| `sides` | int | Polygon side count |
+| `ring_index` | int | BFS ring from center cell (`0` for center) |
+| `position_in_ring` | int | Deterministic clockwise index within ring |
+
+### Contract notes
+
+- `detail_index` is contiguous and starts at `1` for each tile.
+- Runtime decoders should prefer `detail_index` when present and only fall
+  back to deriving from local IDs for legacy payloads.
+- Migration coverage can be measured with
+  `python scripts/audit_detail_cells.py exports/`.

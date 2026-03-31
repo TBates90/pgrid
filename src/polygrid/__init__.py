@@ -196,6 +196,10 @@ from .detail.detail_grid import (
     detail_face_count,
     generate_detail_terrain,
 )
+from .detail.column import (
+    build_hex_prism,
+    extrude_polygrid_column,
+)
 from .detail.tile_detail import (
     TileDetailSpec,
     build_all_detail_grids,
@@ -265,6 +269,7 @@ __all__ = [
     "export_globe_payload", "export_globe_json", "validate_globe_payload",
     "globe_to_colour_map",
     # Detail grids
+    "build_hex_prism", "extrude_polygrid_column",
     "build_detail_grid", "deform_grid_to_uv_shape",
     "detail_face_count", "generate_detail_terrain",
     "TileDetailSpec", "build_all_detail_grids", "DetailGridCollection",

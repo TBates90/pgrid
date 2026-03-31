@@ -986,6 +986,31 @@ def _export_payload_and_metadata(
     metadata_path.write_text(json.dumps(metadata, indent=2))
     print(f"  → Metadata: {metadata_path}")
 
+    # Export detail cell 3D centres for sub-tile hover identification.
+    try:
+        from polygrid.rendering.detail_centers import build_slug_keyed_detail_centers
+
+        print(f"Computing detail cell centres (rings={detail_rings})...")
+        t0 = time.perf_counter()
+        all_centres = build_slug_keyed_detail_centers(
+            grid,
+            detail_rings=detail_rings,
+        )
+        elapsed = time.perf_counter() - t0
+        detail_cells = {
+            "metadata": {"frequency": frequency, "detail_rings": detail_rings},
+            "tiles": all_centres,
+        }
+        detail_cells_path = output_dir / "detail_cells.json"
+        detail_cells_path.write_text(json.dumps(detail_cells, indent=2))
+        sample_count = next(iter(all_centres.values()), [])
+        print(
+            f"  → Detail cells: {detail_cells_path} "
+            f"({len(all_centres)} tiles × ~{len(sample_count)} cells, {elapsed:.2f}s)"
+        )
+    except Exception as exc:
+        print(f"  ⚠  detail_cells.json skipped: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # 3D viewer launcher
