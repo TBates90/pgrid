@@ -1769,6 +1769,8 @@ def warp_tile_to_uv(
     tile_size: Optional[int] = None,
     gutter: int = 0,
     src_centroid_override: Optional[np.ndarray] = None,
+    sample_order: int = 1,
+    dilate_cval: bool = True,
 ) -> "Image.Image":
     """Warp a stitched tile image so its polygon maps to the UV layout.
 
@@ -1827,11 +1829,12 @@ def warp_tile_to_uv(
         src_arr = np.array(img.convert("RGB"), dtype=np.float64)
         # map_coordinates expects (row, col) = (y, x)
         out_channels = []
+        order = 0 if int(sample_order) <= 0 else 1
         for ch in range(3):
             warped_ch = map_coordinates(
                 src_arr[:, :, ch],
                 [map_y, map_x],
-                order=1,          # bilinear
+                order=order,
                 mode="constant",
                 cval=128.0,
             )
@@ -1842,7 +1845,8 @@ def warp_tile_to_uv(
         # Dilate any remaining cval-fill pixels (bounding-box corners
         # outside the polygon) so bilinear/mipmap sampling never
         # encounters the grey fallback colour.
-        out_arr = _dilate_cval_pixels(out_arr)
+        if dilate_cval:
+            out_arr = _dilate_cval_pixels(out_arr)
 
         return Image.fromarray(out_arr, "RGB")
 
@@ -2338,6 +2342,8 @@ def build_polygon_cut_atlas(
     equalise_sectors: bool = False,
     blend_corners: bool = False,
     blend_radius: int = 2,
+    warp_sample_order: int = 1,
+    warp_dilate_cval: bool = True,
     pentagon_scale_override: Optional[float] = None,
     pent_uv_scale: float = 1.0,
     pent_uv_rotation: float = 9.0,
@@ -2635,6 +2641,8 @@ def build_polygon_cut_atlas(
             tile_size=tile_size,
             gutter=g,
             src_centroid_override=src_centroid,
+            sample_order=warp_sample_order,
+            dilate_cval=warp_dilate_cval,
         )
 
         # Fill any remaining fallback-colour pixels left by the

@@ -382,3 +382,115 @@ def generate_planet(params: PlanetParams) -> GenerationResult:
     }
 
     return GenerationResult(tiles=tiles, metadata=metadata)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Placeholder atlas spec (fast path — no terrain pipeline)
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class PlaceholderAtlasSpec:
+    """Parameters for a fast solid-colour placeholder atlas.
+
+    Only *frequency*, *detail_rings*, *tile_size*, and *gutter* affect the
+    precomputed topology artifact (and its disk cache key).  *base_color*,
+    *noise_amount*, and *seed* are applied at recolour time and do not
+    invalidate the cached artifact.
+
+    Attributes
+    ----------
+    frequency : int
+        Goldberg polyhedron subdivision frequency (≥ 1).
+    detail_rings : int
+        Detail-ring density used by consumers to keep quick-atlas LOD
+        aligned with UI planet-size settings.
+    tile_size : int
+        Per-tile texture size in pixels.
+    gutter : int
+        Atlas gutter in pixels.
+    base_color : (r, g, b)
+        RGB base colour, each channel in ``[0, 1]``.
+    noise_amount : float
+        Per-tile brightness jitter magnitude (symmetric, ``[0, 1]``).
+    seed : int
+        Deterministic seed for per-tile colour variation.
+    """
+
+    frequency: int = 2
+    detail_rings: int = 2
+    tile_size: int = 128
+    gutter: int = 4
+    base_color: Tuple[float, float, float] = (0.133, 0.400, 0.667)
+    noise_amount: float = 0.05
+    seed: int = 0
+
+
+def ocean_default_spec(
+    *,
+    water_color: Optional[Tuple[float, float, float]] = None,
+    seed: int = 0,
+    frequency: int = 2,
+    detail_rings: int = 2,
+    tile_size: int = 128,
+) -> PlaceholderAtlasSpec:
+    """Return a :class:`PlaceholderAtlasSpec` for an all-ocean planet.
+
+    Parameters
+    ----------
+    water_color : (r, g, b) or None
+        Override base water colour.  Defaults to a mid-ocean blue
+        ``(0.133, 0.400, 0.667)`` (≈ ``#2266AA``).
+    seed : int
+        Deterministic seed for per-tile brightness jitter.
+    frequency : int
+        Goldberg subdivision frequency (must match the planet layout).
+    detail_rings : int
+        Detail ring density from UI size tier.
+    tile_size : int
+        Per-tile texture resolution in pixels.
+    """
+    base = water_color if water_color is not None else (0.133, 0.400, 0.667)
+    return PlaceholderAtlasSpec(
+        frequency=frequency,
+        detail_rings=detail_rings,
+        tile_size=tile_size,
+        base_color=base,
+        noise_amount=0.05,
+        seed=seed,
+    )
+
+
+def rocky_default_spec(
+    *,
+    rock_color: Optional[Tuple[float, float, float]] = None,
+    seed: int = 0,
+    frequency: int = 2,
+    detail_rings: int = 2,
+    tile_size: int = 128,
+) -> PlaceholderAtlasSpec:
+    """Return a :class:`PlaceholderAtlasSpec` for an all-rock planet.
+
+    Parameters
+    ----------
+    rock_color : (r, g, b) or None
+        Override base rock colour.  Defaults to a sandstone brown
+        ``(0.545, 0.451, 0.333)`` (≈ ``#8B7355``).
+    seed : int
+        Deterministic seed for per-tile brightness jitter.
+    frequency : int
+        Goldberg subdivision frequency.
+    detail_rings : int
+        Detail ring density from UI size tier.
+    tile_size : int
+        Per-tile texture resolution in pixels.
+    """
+    base = rock_color if rock_color is not None else (0.545, 0.451, 0.333)
+    return PlaceholderAtlasSpec(
+        frequency=frequency,
+        detail_rings=detail_rings,
+        tile_size=tile_size,
+        base_color=base,
+        noise_amount=0.06,
+        seed=seed,
+    )

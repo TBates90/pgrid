@@ -1,0 +1,33 @@
+{
+  "spec": {
+    "frequency": 2,
+    "detail_rings": 2,
+    "tile_size": 32,
+    "gutter": 2,
+    "seed": 0,
+    "noise_amount": 0.05
+  },
+  "artifact": {
+    "topology_key": "e7e0ed3cd3778282",
+    "topology_mode": "detail-cell-indexed-seam-aligned",
+    "face_count": 42,
+    "index_key_count": 762,
+    "seam_mask_coverage": 0.5369635508524397,
+    "seam_partner_coverage": 0.5131540270429159,
+    "atlas_width": 252,
+    "atlas_height": 216
+  },
+  "metadata": {
+    "mode": "placeholder",
+    "topology_mode": "detail-cell-indexed-seam-aligned",
+    "seam_blend": true,
+    "frequency": 2,
+    "detail_rings": 2,
+    "seed": 0,
+    "tile_count": 42,
+    "index_key_count": 762,
+    "atlas_width": 252,
+    "atlas_height": 216,
+    "generation_time_s": 0.008
+  }
+}

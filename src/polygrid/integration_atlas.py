@@ -22,6 +22,7 @@ import numpy as np
 
 from .integration import (
     GenerationResult,
+    PlaceholderAtlasSpec,
     PlanetParams,
     generate_planet,
 )
@@ -392,4 +393,47 @@ def generate_planet_atlas(
         atlas_width=atlas.size[0],
         atlas_height=atlas.size[1],
         detail_cells=detail_cells,
+    )
+
+
+def generate_placeholder_atlas(
+    spec: PlaceholderAtlasSpec,
+) -> PlanetAtlasResult:
+    """Fast placeholder atlas from *spec* — no terrain pipeline.
+
+    Delegates to :mod:`polygrid.placeholder_atlas`, which maintains a
+    per-process memory cache and an on-disk artifact cache keyed by
+    ``(frequency, detail_rings, tile_size, gutter)``.  Subsequent calls with the same
+    topology skip all geometry and warp computation.
+
+    Parameters
+    ----------
+    spec : PlaceholderAtlasSpec
+        Colour, topology, and seed parameters.
+
+    Returns
+    -------
+    PlanetAtlasResult
+        Same shape as :func:`generate_planet_atlas`.
+    """
+    from .placeholder_atlas import generate_placeholder_atlas as _gen
+
+    return _gen(spec)
+
+
+def bootstrap_placeholder_atlas(
+    *,
+    frequency: int,
+    detail_rings: int,
+    tile_sizes: tuple[int, ...] = (128, 512),
+    gutter: int = 4,
+) -> Dict[str, Any]:
+    """Prewarm placeholder artifacts and detail-cell caches."""
+    from .placeholder_atlas import bootstrap_placeholder_artifacts as _bootstrap
+
+    return _bootstrap(
+        frequency=frequency,
+        detail_rings=detail_rings,
+        tile_sizes=tile_sizes,
+        gutter=gutter,
     )
