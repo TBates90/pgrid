@@ -1,5 +1,15 @@
 # PolyGrid Architecture
 
+Scope:
+- Canonical system design, package boundaries, and phase-level architecture.
+
+Related docs:
+- Rendering workflow: [RENDERING_PIPELINE.md](RENDERING_PIPELINE.md)
+- Deep UV mapping details: [TILE_TEXTURE_MAPPING.md](TILE_TEXTURE_MAPPING.md)
+- Data payload contracts: [JSON_CONTRACT.md](JSON_CONTRACT.md)
+- Module index: [MODULE_REFERENCE.md](MODULE_REFERENCE.md)
+- Test guidance: [../TESTING.md](../TESTING.md)
+
 ## Project Vision
 
 PolyGrid is a **topology-first toolkit** for building, composing, and running algorithms on polygon grids — primarily **hex grids** and **pentagon-centred Goldberg grids**. The end goal is **procedural terrain generation for a game** where each tile sits on a Goldberg polyhedron (a sphere tiled by hexagons and 12 pentagons).
@@ -154,7 +164,7 @@ Each Goldberg tile is expanded into a local hex sub-grid:
 1. **`tile_detail.py`** — `TileDetailSpec` + `DetailGridCollection` manage per-tile detail grids.
 2. **`detail_terrain.py`** — boundary-aware terrain generation that ensures continuity between adjacent tiles.
 3. **`detail_render.py`** — satellite-style texture rendering with biome-aware colour palettes.
-4. **`texture_pipeline.py`** — packs individual tile textures into a GPU-ready texture atlas with UV layout.
+4. **`tile_uv_align.py` + `uv_texture.py`** — polygon-cut atlas packing and per-tile UV-aligned warp transforms.
 5. **`detail_perf.py`** — parallel generation, PIL fast-path rendering, caching.
 
 ---
@@ -207,24 +217,6 @@ Each Goldberg tile is expanded into a local hex sub-grid:
 | `TileSchema` | Field set declaration, validates on write |
 | `TileData` | Raw data container, JSON-serialisable |
 | `TileDataStore` | Binds data to grid; neighbour/ring queries, bulk ops |
-
----
-
-## Testing
-
-605 tests across 14 test files, covering:
-
-- Core topology: model validation, serialisation, adjacency
-- Goldberg grids: face counts, vertex degrees, embedding quality
-- Composition: stitching, assembly, boundary alignment
-- Terrain: noise, heightmaps, mountains
-- Globe: globe builder, terrain generation, export, rendering
-- Detail: sub-tile grids, boundary continuity, texture atlas
-- Renderer v2: subdivision, batching, UV clamping, colour harmonisation, normal maps, water, atmosphere, bloom, LOD
-- Partitioning: all 4 algorithms, validation, constraints
-- UV mapping: corner blending, atlas seams, grid deformation
-
-Tests run in ~15 s with caching via `conftest.py` (globe grid + detail grid collection cached with `lru_cache`).
 
 ---
 
@@ -295,12 +287,6 @@ Playground must **never** import pgrid rendering modules (`globe_renderer_v2`).
 
 ---
 
-## Dependencies
+## External Dependencies
 
-| Dependency | Required for | Install group |
-|-----------|-------------|--------------|
-| numpy, scipy | Embedding, optimisation, terrain | default |
-| opensimplex | Noise-based terrain & boundaries | default |
-| Pillow | Texture rendering | default |
-| pytest | Testing | `dev` |
-| models | Goldberg polyhedron geometry | `globe` |
+Dependency installation and optional extras are documented in [../README.md](../README.md).

@@ -1,24 +1,13 @@
 # Biome Bible
 
----
+Scope:
+- Terrain/biome attribute rules and generation semantics.
 
-## Resolved Decisions
+Related docs:
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [JSON_CONTRACT.md](JSON_CONTRACT.md)
+- [RENDERING_PIPELINE.md](RENDERING_PIPELINE.md)
 
-> Decisions made from the initial design review — kept here as a reference.
-
-| # | Topic | Decision |
-|---|-------|----------|
-| 1 | **Star/Planet hierarchy ownership** | Lives in `playground` (World → AstralBody → System → Planet → Region). pgrid receives planet/region-level parameters as inputs — it does not model the star/system hierarchy itself. Integration planning is a separate task (see backlog). |
-| 2 | **Temperature model** | Physics-lite: inverse-square luminosity → equilibrium temperature → latitude bands → elevation lapse rate. Lower priority — implement after core terrain pipeline. |
-| 3 | **Minerals** | Start simple: a small palette enum (`iron`, `copper`, `crystal`, `volcanic`) mapped to colour tints in `BiomeConfig`. Expand later if gameplay needs dictate. |
-| 4 | **Region modifiers** | Multiplicative scalars as default. Expect some trial-and-error tuning; the API should make it easy to swap to additive if needed. |
-| 5 | **Temperature modifier on regions** | Dropped for now. Temperature is derived from latitude + elevation + planet heat. May revisit for volcanic hotspots later. |
-| 6 | **Feature weights** | Weight map per feature type, e.g. `{"forests": 1.5, "lakes": 0.5}`. Maps naturally to per-feature UI sliders in `playground`. |
-| 7 | **Wetness vs Humidity** | Consolidated into a single **`moisture`** field per tile. Represents how wet the tile is overall — derived from planet `water_abundance` × region `humidity_modifier`, distance-to-ocean, and elevation. Drives lake/river frequency and marsh/wetland classification. No separate humidity vs wetness split needed. |
-| 8 | **Wetland variants** | Ship with **Marsh** (renamed to **Wetland** in the terrain table to match playground's existing `BiomeClassificationStyle`). Future variants (swamp, bog, mangrove) noted in backlog. |
-| 9 | **Cities** | Backlogged. pgrid reserves a `features` list field on tiles; `playground` owns placement. |
-| 10 | **Snow / Tundra** | First-class terrain types: **Tundra** (frozen ground, low temp) and **Snow** (high elevation + low temp mountain caps). |
-| 11 | **Volcanic terrain** | Backlogged. Potential future work with tectonic plate simulation. |
 
 ---
 
@@ -315,49 +304,10 @@ Pass 4 — Detail Features
 
 ---
 
-## Mapping to Existing Code
+## Tracking Notes
 
-### pgrid
+Implementation status and integration planning should be tracked in GitHub issues rather than long-lived status tables in this document.
 
-| Concept | Current Module | Status |
-|---------|---------------|--------|
-| Elevation generation | `terrain/noise.py`, `terrain/heightmap.py`, `terrain/mountains.py` | ✅ Implemented |
-| Region partitioning | `terrain/regions.py` | ✅ Implemented |
-| Biome assignment | `terrain/regions.py` → `assign_biome()` | ✅ Basic (string label only) |
-| Per-tile data storage | `data/tile_data.py` | ✅ Implemented |
-| Detail terrain | `detail/detail_terrain.py` | ✅ Implemented |
-| Detail rendering | `detail/detail_render.py` → `BiomeConfig` | ✅ Implemented |
-| Temperature field | — | ❌ Not yet implemented |
-| Moisture field | — | ❌ Not yet implemented |
-| Terrain classification rules | — | ❌ Not yet implemented (terrain is currently just a string label) |
-| Feature generation (coast, lakes, rivers, forests) | — | ❌ Not yet implemented |
-| Mineral colour tints | — | ❌ Not yet implemented |
-
-### playground
-
-| Concept | Current Module | Status |
-|---------|---------------|--------|
-| World → System → Planet → Region hierarchy | `app/world_models/` | ✅ Implemented |
-| Biome catalog (classification, colours, patterns) | `app/world_models/biome.py` | ✅ Implemented |
-| Region painting + tile assignment | `controllers/region_paint_controller.py` | ✅ Implemented |
-| Planet rendering (per-tile Goldberg) | `opengl/rendering/`, `PlanetTileController` | ✅ Implemented |
-| Biome texture generation | `BiomeTileRenderer`, `BiomeTextureCache` | ✅ Implemented |
-| Star/System attributes (heat, distance) | `app/world_models/system.py` | ⚠️ Partial (size/glow/colour, no heat/distance for biome purposes) |
-| Planet biome attributes (water_abundance, roughness) | `app/world_models/planet.py` | ❌ Not yet implemented |
-| Region modifiers (elevation, moisture, feature weights) | `app/world_models/region.py` | ❌ Not yet implemented |
-| pgrid ↔ playground integration (procedural terrain pipeline) | — | ❌ Not yet implemented |
-
----
-
-## Backlog
-
-Items deferred from this design for future work:
-
-| Item | Notes |
-|------|-------|
-| **Volcanic terrain** | Potential tectonic plate simulation. Terrain type influenced by minerals + temperature. |
-| **City placement** | `playground`-owned. pgrid reserves `features` field; placement logic TBD. |
-| **Wetland variants** | Swamp (forested), bog (acidic/cold), mangrove (coastal tropical). |
-| **Physics-lite temperature** | Inverse-square luminosity → equilibrium temp. Lower priority. |
-| **Mineral gameplay stats** | Expand beyond colour tints if gameplay needs dictate. |
-| **pgrid ↔ playground integration** | Major task: design the API boundary, refactor both repos, create integration pipeline. **See [`INTEGRATION_PLAN.md`](./INTEGRATION_PLAN.md)** for the full phased roadmap. |
+Guideline:
+- Link active implementation tasks from planning docs.
+- Keep this file focused on biome rules and generation semantics.

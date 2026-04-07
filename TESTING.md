@@ -1,6 +1,13 @@
 # Testing quickguide
 
+Scope:
+- Test prerequisites, tiers, and run commands.
+
 This repository has a test suite of **605 tests across 14 files**. Use these quick commands to avoid long runs while iterating.
+
+Related docs:
+- [README.md](README.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 Prerequisites
 - Install the sibling `models` package in editable mode (required for globe tests):

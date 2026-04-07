@@ -2,6 +2,14 @@
 
 This document describes the JSON formats used across PolyGrid for serialisation and data exchange.
 
+Scope:
+- Export/interchange schemas and payload contracts.
+
+Related docs:
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [RENDERING_PIPELINE.md](RENDERING_PIPELINE.md)
+- [TILE_TEXTURE_MAPPING.md](TILE_TEXTURE_MAPPING.md)
+
 ---
 
 ## 1. PolyGrid JSON Format
