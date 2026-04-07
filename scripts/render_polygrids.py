@@ -806,13 +806,6 @@ def main():
         help="Don't launch the 3D globe viewer after rendering.",
     )
     parser.add_argument(
-        "--stitch", action="store_true",
-        help="Enable atlas seam-stitching and corner-blending. "
-             "Averages pixels along shared tile edges and at multi-tile "
-             "vertex junctions to hide texture discontinuities. "
-             "Off by default.",
-    )
-    parser.add_argument(
         "--no-neighbours", action="store_true", default=True,
         help="Disable neighbour↔neighbour closure in tile composites. "
              "Apron grids are still positioned and stitched to the "
@@ -923,11 +916,7 @@ def _build_atlas(
         debug_uv_cut=args.debug_uv_cut,
         output_dir=debug_dir,
         pentagon_rotation_steps=args.pent_rot,
-        stitch_seams=args.stitch,
-        stitch_width=max(16, args.tile_size // 8),
         equalise_sectors=True,
-        blend_corners=args.stitch,
-        blend_radius=max(3, args.tile_size // 128),
         pentagon_scale_override=args.pent_scale,
         pent_uv_scale=args.pent_uv_scale,
         pent_uv_rotation=args.pent_uv_rotation,

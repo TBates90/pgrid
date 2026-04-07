@@ -8,10 +8,22 @@ from .detail_centers import (
     compute_detail_cell_centers_3d,
 )
 from .detail_cells_audit import audit_detail_cells_payload
+from .detail_cell_contract import (
+    DetailCellNormalizationReport,
+    normalize_detail_cells_tiles,
+    normalize_detail_cells_tiles_with_report,
+)
 from .detail_topology import (
     DetailCellAddress,
     build_detail_cell_addresses,
     build_detail_ring_positions,
+)
+from .seam_strips import (
+    SeamStripRecord,
+    build_seam_strip_payload_from_globe_payload,
+    build_seam_strip_manifest,
+    build_seam_strip_payload,
+    canonical_seam_id,
 )
 from .uv_texture import (
     UVTransform,
@@ -40,9 +52,17 @@ __all__ = [
     "compute_all_detail_centers",
     "build_slug_keyed_detail_centers",
     "audit_detail_cells_payload",
+    "DetailCellNormalizationReport",
+    "normalize_detail_cells_tiles",
+    "normalize_detail_cells_tiles_with_report",
     "DetailCellAddress",
     "build_detail_ring_positions",
     "build_detail_cell_addresses",
+    "SeamStripRecord",
+    "canonical_seam_id",
+    "build_seam_strip_manifest",
+    "build_seam_strip_payload",
+    "build_seam_strip_payload_from_globe_payload",
     "UVTransform",
     "compute_detail_to_uv_transform",
     "compute_tile_basis",

@@ -96,6 +96,23 @@ def test_spec_color_override():
     assert spec.base_color == (0.1, 0.2, 0.3)
 
 
+@needs_models
+def test_generate_placeholder_atlas_emits_seam_strips() -> None:
+    from polygrid.placeholder_atlas import generate_placeholder_atlas
+
+    spec = _make_spec(frequency=2, detail_rings=2, tile_size=32, gutter=2)
+    result = generate_placeholder_atlas(spec)
+    seam_strips = getattr(result, "seam_strips", {})
+
+    assert isinstance(seam_strips, dict)
+    metadata = seam_strips.get("metadata") or {}
+    seams = seam_strips.get("seams")
+    assert isinstance(metadata, dict)
+    assert isinstance(seams, list)
+    assert int(metadata.get("seam_count", 0) or 0) > 0
+    assert len(seams) > 0
+
+
 # ── _topology_key ────────────────────────────────────────────────────────────
 
 

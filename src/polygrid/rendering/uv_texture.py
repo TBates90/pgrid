@@ -28,6 +28,8 @@ Functions
 from __future__ import annotations
 
 import math
+import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
@@ -45,6 +47,11 @@ if TYPE_CHECKING:
 
 # Sentinel colour for background pixels.
 _BG_SENTINEL = (255, 0, 255)
+LOGGER = logging.getLogger(__name__)
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 # ── Models library availability ─────────────────────────────────
 try:
@@ -120,6 +127,17 @@ def compute_tile_basis(
             np.array(tile.normal, dtype=np.float64),
             np.array(tile.tangent, dtype=np.float64),
             np.array(tile.bitangent, dtype=np.float64),
+        )
+
+    if _env_flag("PGRID_REQUIRE_MODELS_BASIS"):
+        raise RuntimeError(
+            "Authoritative GoldbergTile basis unavailable: models library is required "
+            "(PGRID_REQUIRE_MODELS_BASIS=1)"
+        )
+    if _env_flag("PGRID_ORIENTATION_AUDIT"):
+        LOGGER.warning(
+            "orientation-audit face=%s stage=tile-basis mode=fallback-from-grid reason=models-unavailable",
+            face_id,
         )
 
     # Fallback: derive from globe_grid polygon vertices

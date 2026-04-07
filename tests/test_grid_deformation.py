@@ -275,6 +275,15 @@ class TestBuildDetailGridIntegration:
         for me in dg.macro_edges:
             assert len(me.vertex_ids) >= 2
 
+    def test_match_grid_corners_to_uv_rejects_too_few_corners(self, globe):
+        with pytest.raises(ValueError, match="at least 3 corners"):
+            match_grid_corners_to_uv([(0.0, 0.0), (1.0, 0.0)], globe, "t1")
+
+    def test_match_grid_corners_to_uv_rejects_non_finite(self, globe):
+        bad = [(0.0, 0.0), (1.0, 0.0), (float("nan"), 1.0), (0.0, 1.0), (0.2, 0.8), (0.8, 0.2)]
+        with pytest.raises(ValueError, match="non-finite"):
+            match_grid_corners_to_uv(bad, globe, "t1")
+
     @pytest.mark.parametrize("rings", [1, 2, 3, 4, 5])
     def test_various_ring_counts(self, globe, rings):
         """Deformation should work for all ring counts."""

@@ -8,12 +8,12 @@
     "noise_amount": 0.05
   },
   "artifact": {
-    "topology_key": "ff1acac5adb63f1f",
+    "topology_key": "dca4d5d2ce422a01",
     "topology_mode": "detail-cell-indexed-seam-aligned",
     "face_count": 42,
     "index_key_count": 762,
     "seam_mask_coverage": 0.5369635508524397,
-    "seam_partner_coverage": 0.5131540270429159,
+    "seam_partner_coverage": 0.5101227219282775,
     "atlas_width": 252,
     "atlas_height": 216
   },

@@ -52,6 +52,7 @@ from .uv_texture import (
     compute_detail_to_uv_transform,
 )
 from .detail_topology import build_detail_cell_addresses, build_detail_ring_positions
+from .detail_cell_contract import normalize_detail_cells_tiles
 from ..detail.detail_grid import build_detail_grid
 
 LOGGER = logging.getLogger(__name__)
@@ -278,4 +279,4 @@ def build_slug_keyed_detail_centers(
     for face_id, cells in raw.items():
         key = slug_lookup.get(face_id, face_id)
         result[key] = cells
-    return result
+    return normalize_detail_cells_tiles(result)

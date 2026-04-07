@@ -150,5 +150,35 @@ selection overlays.
 - `detail_index` is contiguous and starts at `1` for each tile.
 - Runtime decoders should prefer `detail_index` when present and only fall
   back to deriving from local IDs for legacy payloads.
+- Export pipelines normalize payloads through `polygrid.rendering.detail_cell_contract.normalize_detail_cells_tiles`, which enforces finite unit vectors for centers/vertices, canonical lowercase tile keys, and contiguous per-tile `detail_index` values.
+- Atlas generation metadata now includes `detail_cells_normalization` summary counters (drops/repairs), useful for spotting malformed legacy payloads that were auto-repaired during export.
+- Set `PGRID_DETAIL_CELLS_STRICT=1` to fail export generation when normalization would drop cells, drop tiles, or repair indices.
 - Migration coverage can be measured with
   `python scripts/audit_detail_cells.py exports/`.
+
+---
+
+## 6. Seam Strip Manifest (Phase 2 Kickoff)
+
+`polygrid.rendering.seam_strips` now provides a deterministic seam manifest scaffold:
+
+- `canonical_seam_id(tile_a, tile_b)`
+- `build_seam_strip_manifest(tile_neighbors)`
+- `build_seam_strip_payload(tile_neighbors, frequency, detail_rings)`
+
+Current schema (`seam-strips.v1`) is metadata-only and intended as a stable naming/indexing contract before geometry baking lands.
+
+Current records now include deterministic sphere-anchored geometry scaffolding:
+- `center_3d`
+- `tangent_3d`
+- `bitangent_3d`
+- `corners_3d` (quad corners on unit sphere)
+- optional `edge_vertices_3d` when a shared boundary edge is detected
+- `status` (`edge-geometry` or `geometry`) and `source` (`shared-edge` or `center-pair`)
+
+Metadata also reports geometry mode counts:
+- `geometry_count`
+- `edge_geometry_count`
+- `fallback_geometry_count`
+
+This is an interim approximation built from adjacent tile centers; edge-accurate seam baking remains the next step.

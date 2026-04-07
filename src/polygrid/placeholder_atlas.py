@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from .rendering.detail_cell_contract import normalize_detail_cells_tiles_with_report
 
 if TYPE_CHECKING:
     from .integration import PlaceholderAtlasSpec
@@ -47,12 +48,22 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+
+def _detail_cells_strict_mode() -> bool:
+    return os.environ.get("PGRID_DETAIL_CELLS_STRICT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 # Increment to invalidate all cached artifacts across all machines.
-ARTIFACT_VERSION: int = 6
+ARTIFACT_VERSION: int = 18
 
 # Per-process in-memory cache: topology_key → PlaceholderAtlasArtifact
 _ARTIFACT_CACHE: Dict[str, "PlaceholderAtlasArtifact"] = {}
 _DETAIL_CELLS_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
+_SEAM_STRIPS_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
 # uint16 sentinel for atlas pixels that belong to no tile.
 _BACKGROUND_IDX: int = 0xFFFF
@@ -570,10 +581,21 @@ def _build_detail_index_map_seam_aligned(
         tile_size=tile_size,
         gutter=gutter,
         uniform_half_span=uniform_hs,
-        stitch_seams=False,
-        blend_corners=False,
         warp_sample_order=0,
         warp_dilate_cval=False,
+        # Placeholder path: keep pentagon UV transform neutral so orientation
+        # matches strict corner pairing from current atlas alignment logic.
+        pent_uv_rotation=0.0,
+        pent_edge_interior_pull=(
+            0.12
+            if int((getattr(globe_grid, "metadata", {}) or {}).get("frequency", 0) or 0) <= 2
+            else 0.0
+        ),
+        hex_pent_edge_interior_pull=(
+            0.06
+            if int((getattr(globe_grid, "metadata", {}) or {}).get("frequency", 0) or 0) <= 2
+            else 0.0
+        ),
     )
 
     atlas_rgb = np.array(atlas_img.convert("RGB"), dtype=np.uint8)
@@ -1115,19 +1137,31 @@ def _detail_cells_cache_path(frequency: int, detail_rings: int) -> Optional[Path
     return arc_dir / f"detail_cells_f{frequency}_r{detail_rings}.json"
 
 
-def _get_or_build_detail_cells(frequency: int, detail_rings: int) -> Dict[str, Any]:
+def _get_or_build_detail_cells(
+    frequency: int,
+    detail_rings: int,
+) -> Tuple[Dict[str, Any], Dict[str, int]]:
     key = (frequency, detail_rings)
     cached = _DETAIL_CELLS_CACHE.get(key)
     if cached is not None:
-        return cached
+        normalized_cached, report = normalize_detail_cells_tiles_with_report(
+            cached,
+            strict=_detail_cells_strict_mode(),
+        )
+        _DETAIL_CELLS_CACHE[key] = normalized_cached
+        return normalized_cached, report.to_dict()
 
     path = _detail_cells_cache_path(frequency, detail_rings)
     if path is not None and path.exists():
         try:
             loaded = json.loads(path.read_text())
             if isinstance(loaded, dict):
-                _DETAIL_CELLS_CACHE[key] = loaded
-                return loaded
+                normalized_loaded, report = normalize_detail_cells_tiles_with_report(
+                    loaded,
+                    strict=_detail_cells_strict_mode(),
+                )
+                _DETAIL_CELLS_CACHE[key] = normalized_loaded
+                return normalized_loaded, report.to_dict()
         except Exception:
             LOGGER.debug("Failed loading detail-cell cache %s", path, exc_info=True)
 
@@ -1135,14 +1169,58 @@ def _get_or_build_detail_cells(frequency: int, detail_rings: int) -> Dict[str, A
     from .rendering.detail_centers import build_slug_keyed_detail_centers
 
     grid = build_globe_grid(frequency)
-    built = build_slug_keyed_detail_centers(grid, detail_rings=detail_rings)
+    built, report = normalize_detail_cells_tiles_with_report(
+        build_slug_keyed_detail_centers(grid, detail_rings=detail_rings),
+        strict=_detail_cells_strict_mode(),
+    )
     _DETAIL_CELLS_CACHE[key] = built
     if path is not None:
         try:
             path.write_text(json.dumps(built))
         except Exception:
             LOGGER.debug("Failed writing detail-cell cache %s", path, exc_info=True)
-    return built
+    return built, report.to_dict()
+
+
+def _get_or_build_seam_strips(
+    frequency: int,
+    detail_rings: int,
+) -> Dict[str, Any]:
+    key = (frequency, detail_rings)
+    cached = _SEAM_STRIPS_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
+
+    from .data.tile_data import FieldDef, TileDataStore, TileSchema
+    from .globe.globe import build_globe_grid
+    from .globe.globe_export import export_globe_payload
+    from .rendering.seam_strips import build_seam_strip_payload_from_globe_payload
+
+    try:
+        grid = build_globe_grid(frequency)
+        schema = TileSchema([FieldDef("elevation", float, 0.0)])
+        store = TileDataStore(grid=grid, schema=schema)
+        globe_payload = export_globe_payload(grid, store, ramp="satellite")
+        seam_strips = build_seam_strip_payload_from_globe_payload(
+            globe_payload,
+            frequency=frequency,
+            detail_rings=detail_rings,
+        )
+    except Exception:
+        LOGGER.warning("Failed to build placeholder seam-strip payload", exc_info=True)
+        seam_strips = {
+            "metadata": {
+                "frequency": int(frequency),
+                "detail_rings": int(detail_rings),
+                "seam_count": 0,
+                "geometry_count": 0,
+                "schema": "seam-strips.v1",
+            },
+            "seams": [],
+        }
+
+    _SEAM_STRIPS_CACHE[key] = dict(seam_strips)
+    return dict(seam_strips)
 
 
 def bootstrap_placeholder_artifacts(
@@ -1169,13 +1247,14 @@ def bootstrap_placeholder_artifacts(
         artifact = get_or_build_artifact(spec)
         built_keys.append(artifact.topology_key)
 
-    cells = _get_or_build_detail_cells(frequency, detail_rings)
+    cells, detail_cells_report = _get_or_build_detail_cells(frequency, detail_rings)
     return {
         "frequency": frequency,
         "detail_rings": detail_rings,
         "tile_sizes": list(tile_sizes),
         "artifact_keys": built_keys,
         "detail_tile_count": len(cells),
+        "detail_cells_normalization": detail_cells_report,
     }
 
 
@@ -1206,9 +1285,12 @@ def generate_placeholder_atlas(spec: "PlaceholderAtlasSpec") -> "PlanetAtlasResu
     atlas_png = recolor_atlas(artifact, spec)
 
     try:
-        detail_cells = _get_or_build_detail_cells(spec.frequency, spec.detail_rings)
+        detail_cells, detail_cells_report = _get_or_build_detail_cells(spec.frequency, spec.detail_rings)
     except Exception:
         detail_cells = {}
+        detail_cells_report = {}
+
+    seam_strips = _get_or_build_seam_strips(spec.frequency, spec.detail_rings)
 
     metadata: Dict[str, Any] = {
         "mode": "placeholder",
@@ -1221,6 +1303,7 @@ def generate_placeholder_atlas(spec: "PlaceholderAtlasSpec") -> "PlanetAtlasResu
         "index_key_count": len(artifact.index_keys),
         "atlas_width": artifact.atlas_width,
         "atlas_height": artifact.atlas_height,
+        "detail_cells_normalization": detail_cells_report,
         "generation_time_s": round(time.monotonic() - t0, 3),
     }
 
@@ -1237,4 +1320,5 @@ def generate_placeholder_atlas(spec: "PlaceholderAtlasSpec") -> "PlanetAtlasResu
         atlas_width=artifact.atlas_width,
         atlas_height=artifact.atlas_height,
         detail_cells=detail_cells,
+        seam_strips=seam_strips,
     )

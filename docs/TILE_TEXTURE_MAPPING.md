@@ -16,8 +16,8 @@ between adjacent tiles.
 
 ### What we have
 
-1. **Stitched polygrid PNGs** — `render_polygrids.py --stitched` produces
-   one PNG per globe tile.  Each image contains the tile's detail grid
+1. **Stitched polygrid PNGs** — `render_polygrids.py` produces
+  one PNG per globe tile in its stitched render stage. Each image contains the tile's detail grid
    **plus all its neighbours** merged into a single PolyGrid.  The view
    is cropped to the centre tile's extent with ~25 % padding, so
    neighbour terrain is visible around the edges.

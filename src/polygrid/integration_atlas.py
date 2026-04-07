@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -28,6 +29,15 @@ from .integration import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _detail_cells_strict_mode() -> bool:
+    return os.environ.get("PGRID_DETAIL_CELLS_STRICT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 # ═══════════════════════════════════════════════════════════════════
 # Result dataclass
@@ -74,6 +84,7 @@ class PlanetAtlasResult:
     atlas_width: int
     atlas_height: int
     detail_cells: Dict[str, Any]
+    seam_strips: Dict[str, Any]
 
 
 
@@ -349,6 +360,8 @@ def generate_planet_atlas(
         tile_size=tile_size,
         gutter=gutter,
         uniform_half_span=uniform_hs,
+        pent_edge_interior_pull=(0.12 if int(frequency) <= 2 else 0.0),
+        hex_pent_edge_interior_pull=(0.06 if int(frequency) <= 2 else 0.0),
     )
 
     # Encode atlas to PNG bytes
@@ -372,12 +385,45 @@ def generate_planet_atlas(
 
     # ── 9. Compute sub-tile detail cell 3D centres ──────────────────
     from .rendering.detail_centers import build_slug_keyed_detail_centers
+    from .rendering.detail_cell_contract import normalize_detail_cells_tiles_with_report
+    from .rendering.seam_strips import build_seam_strip_payload_from_globe_payload
 
+    detail_cells_report: dict[str, int] = {}
     try:
-        detail_cells = build_slug_keyed_detail_centers(grid, detail_rings=detail_rings)
+        detail_cells, normalization_report = normalize_detail_cells_tiles_with_report(
+            build_slug_keyed_detail_centers(grid, detail_rings=detail_rings),
+            strict=_detail_cells_strict_mode(),
+        )
+        detail_cells_report = normalization_report.to_dict()
+        gen_result.metadata["detail_cells_normalization"] = detail_cells_report
+        if (
+            detail_cells_report.get("cells_dropped", 0) > 0
+            or detail_cells_report.get("repaired_index_tiles", 0) > 0
+        ):
+            LOGGER.warning("Detail-cell normalization adjustments: %s", detail_cells_report)
     except Exception:
         LOGGER.warning("Failed to compute detail cell centres", exc_info=True)
         detail_cells = {}
+
+    try:
+        seam_strips = build_seam_strip_payload_from_globe_payload(
+            payload,
+            frequency=frequency,
+            detail_rings=detail_rings,
+        )
+    except Exception:
+        LOGGER.warning("Failed to build seam-strip payload", exc_info=True)
+        seam_strips = {
+            "metadata": {
+                "frequency": int(frequency),
+                "detail_rings": int(detail_rings),
+                "seam_count": 0,
+                "geometry_count": 0,
+                "schema": "seam-strips.v1",
+            },
+            "seams": [],
+        }
+    gen_result.metadata["seam_strips"] = dict(seam_strips.get("metadata") or {})
 
     t_elapsed = time.monotonic() - t_start
     LOGGER.info("Atlas generation complete in %.2fs", t_elapsed)
@@ -393,6 +439,7 @@ def generate_planet_atlas(
         atlas_width=atlas.size[0],
         atlas_height=atlas.size[1],
         detail_cells=detail_cells,
+        seam_strips=seam_strips,
     )
 
 

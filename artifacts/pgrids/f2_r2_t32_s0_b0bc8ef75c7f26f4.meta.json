@@ -8,12 +8,12 @@
     "noise_amount": 0.05
   },
   "artifact": {
-    "topology_key": "ff1acac5adb63f1f",
+    "topology_key": "b0bc8ef75c7f26f4",
     "topology_mode": "detail-cell-indexed-seam-aligned",
     "face_count": 42,
     "index_key_count": 762,
     "seam_mask_coverage": 0.5369635508524397,
-    "seam_partner_coverage": 0.5131540270429159,
+    "seam_partner_coverage": 0.5113168724279835,
     "atlas_width": 252,
     "atlas_height": 216
   },
@@ -39,6 +39,6 @@
       "repaired_index_tiles": 0,
       "repaired_index_cells": 0
     },
-    "generation_time_s": 0.013
+    "generation_time_s": 0.014
   }
 }
