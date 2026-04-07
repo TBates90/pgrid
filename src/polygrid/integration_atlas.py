@@ -360,8 +360,9 @@ def generate_planet_atlas(
         tile_size=tile_size,
         gutter=gutter,
         uniform_half_span=uniform_hs,
-        pent_edge_interior_pull=(0.12 if int(frequency) <= 2 else 0.0),
-        hex_pent_edge_interior_pull=(0.06 if int(frequency) <= 2 else 0.0),
+        pentagon_allow_reflection=True,
+        pent_edge_interior_pull=0.0,
+        hex_pent_edge_interior_pull=0.0,
     )
 
     # Encode atlas to PNG bytes

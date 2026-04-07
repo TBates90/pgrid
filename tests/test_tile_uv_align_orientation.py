@@ -21,6 +21,7 @@ from polygrid.rendering.tile_uv_align import (
     _is_hex_adjacent_to_pentagon,
     _PENTAGON_GRID_SCALE_MIN,
     _pentagon_smoothing_alpha_for_frequency,
+    _should_use_pent_reflection,
     _stabilize_pentagon_scale_for_frequency,
     _normalize_ordered_pentagon_winding,
     _normalize_pentagon_winding_for_warp,
@@ -85,6 +86,11 @@ def test_select_corner_match_indices_can_force_rotation_only() -> None:
     assert len(set(indices)) == n
     assert rot_err < float("inf")
     assert ref_err == float("inf")
+
+
+def test_should_use_pent_reflection_requires_decisive_improvement() -> None:
+    assert _should_use_pent_reflection(1.0, 0.9) is False
+    assert _should_use_pent_reflection(1.0, 0.8) is True
 
 
 def test_piecewise_warp_map_rejects_degenerate_pentagon_sectors() -> None:
@@ -153,7 +159,7 @@ def test_stabilize_pentagon_scale_keeps_freq_three_value() -> None:
 
 
 def test_pentagon_smoothing_alpha_reduced_for_freq_two() -> None:
-    assert abs(_pentagon_smoothing_alpha_for_frequency(2) - 0.6) < 1e-12
+    assert abs(_pentagon_smoothing_alpha_for_frequency(2) - 0.0) < 1e-12
 
 
 def test_pentagon_smoothing_alpha_full_for_freq_three() -> None:

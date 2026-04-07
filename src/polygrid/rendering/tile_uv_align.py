@@ -241,6 +241,26 @@ def _select_corner_match_indices(
     return indices, mode, best_rot_err, best_ref_err, best_rot, best_ref
 
 
+def _should_use_pent_reflection(
+    best_rot_err: float,
+    best_ref_err: float,
+    *,
+    min_relative_improvement: float = 0.15,
+) -> bool:
+    """Return True only when pent reflection is decisively better.
+
+    This prevents near-tie reflection picks that can visibly mispair
+    pent-hex seam corners in low-frequency layouts.
+    """
+    if not (math.isfinite(best_rot_err) and math.isfinite(best_ref_err)):
+        return False
+    if best_ref_err >= best_rot_err:
+        return False
+    denom = max(best_rot_err, 1e-12)
+    improvement = (best_rot_err - best_ref_err) / denom
+    return improvement >= float(min_relative_improvement)
+
+
 def _signed_area(points: np.ndarray) -> float:
     """Return signed polygon area using the shoelace formula."""
     if points.ndim != 2 or points.shape[0] < 3:
@@ -372,12 +392,12 @@ def _normalize_pentagon_winding_for_warp(
     return result, True
 
 
-def compute_pg_to_macro_edge_map(
+def compute_pg_to_macro_corner_map(
     globe_grid: PolyGrid,
     face_id: str,
     detail_grid: PolyGrid,
 ) -> Dict[int, int]:
-    """Map PolyGrid (vertex_ids) **edge** indices to macro-edge indices.
+    """Map PolyGrid (vertex_ids) corner indices to macro-corner indices.
 
     ``compute_neighbor_edge_mapping`` returns edge indices in
     PolyGrid ``vertex_ids`` order — edge *k* connects ``vertex_ids[k]``
@@ -385,12 +405,9 @@ def compute_pg_to_macro_edge_map(
     numbered by the Tutte boundary walk, which can have **opposite
     winding** for hexagonal tiles (CW macro vs CCW PG).
 
-    This function first matches **corners** (macro corner → PG vertex)
-    by angular proximity, then determines whether the cyclic ordering
-    is preserved (rotation) or reversed (reflection).  For the
-    reflected case, each macro edge connects two PG vertices in the
-    *reverse* direction, so the edge mapping is shifted by one
-    relative to the corner mapping.
+    This function matches **corners** (macro corner → PG vertex) by
+    angular proximity, then inverts the map so callers can resolve a
+    PolyGrid corner index directly to its corresponding macro corner.
 
     Parameters
     ----------
@@ -404,9 +421,8 @@ def compute_pg_to_macro_edge_map(
     Returns
     -------
     dict
-        ``{pg_edge_index: macro_edge_index}`` — for every polygon
-        edge *k* (in ``vertex_ids`` numbering), the macro-edge id
-        that spans the **same pair of globe vertices**.
+        ``{pg_corner_index: macro_corner_index}`` — for every
+        ``vertex_ids`` index in the PolyGrid face ordering.
     """
     from .uv_texture import compute_tile_basis
 
@@ -460,6 +476,59 @@ def compute_pg_to_macro_edge_map(
 
     if LOGGER.isEnabledFor(logging.DEBUG):
         LOGGER.debug(
+            "face %s corner-map orientation=%s n=%d mapped_pg=%s offsets=%s sums=%s",
+            face_id,
+            "reflection" if is_reflected else "rotation",
+            n,
+            mapped_pg,
+            offsets,
+            sums,
+        )
+
+    if _env_flag("PGRID_ORIENTATION_AUDIT"):
+        LOGGER.info(
+            "orientation-audit face=%s stage=corner-map orientation=%s n=%d mapped_pg=%s offsets=%s sums=%s",
+            face_id,
+            "reflection" if is_reflected else "rotation",
+            n,
+            mapped_pg,
+            offsets,
+            sums,
+        )
+
+    # Invert corner map: pg_vertex → macro_corner
+    pg_to_macro_corner: Dict[int, int] = {
+        pg: macro for macro, pg in macro_corner_to_pg.items()
+    }
+
+    return pg_to_macro_corner
+
+
+def compute_pg_to_macro_edge_map(
+    globe_grid: PolyGrid,
+    face_id: str,
+    detail_grid: PolyGrid,
+) -> Dict[int, int]:
+    """Map PolyGrid (vertex_ids) **edge** indices to macro-edge indices."""
+    face = globe_grid.faces[face_id]
+    n = len(face.vertex_ids)
+    if n < 3:
+        raise ValueError(f"Face {face_id} has invalid side count: {n}")
+
+    pg_to_macro_corner = compute_pg_to_macro_corner_map(
+        globe_grid,
+        face_id,
+        detail_grid,
+    )
+
+    macro_to_pg = {macro: pg for pg, macro in pg_to_macro_corner.items()}
+    mapped_pg = [macro_to_pg[k] for k in range(n)]
+    offsets = [(mapped_pg[k] - k) % n for k in range(n)]
+    sums = [(mapped_pg[k] + k) % n for k in range(n)]
+    is_reflected = len(set(sums)) == 1 and len(set(offsets)) > 1
+
+    if LOGGER.isEnabledFor(logging.DEBUG):
+        LOGGER.debug(
             "face %s edge-map orientation=%s n=%d mapped_pg=%s offsets=%s sums=%s",
             face_id,
             "reflection" if is_reflected else "rotation",
@@ -479,11 +548,6 @@ def compute_pg_to_macro_edge_map(
             offsets,
             sums,
         )
-
-    # Invert corner map: pg_vertex → macro_corner
-    pg_to_macro_corner: Dict[int, int] = {
-        pg: macro for macro, pg in macro_corner_to_pg.items()
-    }
 
     if is_reflected:
         # Reflected winding: macro edge M goes from macro_corner M to
@@ -589,6 +653,11 @@ def match_grid_corners_to_uv(
         gt_angles,
         allow_reflection=allow_reflection,
     )
+
+    if n == 5 and allow_reflection and mode == "reflection":
+        if not _should_use_pent_reflection(best_rot_err, best_ref_err):
+            indices = [(k - best_rot) % n for k in range(n)]
+            mode = "rotation"
 
     if len(set(indices)) != n:
         raise ValueError(f"Corner reorder for face {face_id} is non-bijective: {indices}")
@@ -784,8 +853,10 @@ def _pentagon_smoothing_alpha_for_frequency(frequency: int) -> float:
     is applied. Use a partial blend there to keep corner alignment while
     reducing edge bulge.
     """
+    # Keep freq<=2 seam anchors exact: any corner smoothing here shifts
+    # pent boundary sampling away from neighboring hex boundaries.
     if int(frequency) <= 2:
-        return 0.6
+        return 0.0
     return 1.0
 
 
@@ -2426,12 +2497,33 @@ def build_polygon_cut_atlas(
         dg.compute_macro_edges(n_sides=ns, corner_ids=corner_ids)
         gc_raw = get_macro_edge_corners(dg, ns)
         uc_raw = get_tile_uv_vertices(globe_grid, fid)
-        gc_matched = match_grid_corners_to_uv(
-            gc_raw,
-            globe_grid,
-            fid,
-            allow_reflection_override=(True if (is_pent and pentagon_allow_reflection) else None),
-        )
+
+        # Pentagon path: prefer topology-driven corner correspondence using
+        # shared edge identity (PG edge -> macro edge) rather than pure angle
+        # minimization. This is more stable for pent-hex seam endpoints.
+        gc_matched: List[Tuple[float, float]]
+        if is_pent:
+            try:
+                pg_to_macro_corner = compute_pg_to_macro_corner_map(globe_grid, fid, dg)
+                pg_gt_offset = compute_uv_to_polygrid_offset(globe_grid, fid)
+                gc_matched = [
+                    gc_raw[pg_to_macro_corner[(k + pg_gt_offset) % ns]]
+                    for k in range(ns)
+                ]
+            except Exception:
+                gc_matched = match_grid_corners_to_uv(
+                    gc_raw,
+                    globe_grid,
+                    fid,
+                    allow_reflection_override=(True if pentagon_allow_reflection else None),
+                )
+        else:
+            gc_matched = match_grid_corners_to_uv(
+                gc_raw,
+                globe_grid,
+                fid,
+                allow_reflection_override=None,
+            )
         _tile_corners[fid] = (gc_matched, uc_raw, ns)
 
     # ── Compute dynamic pentagon scale factors ───────────────────
@@ -2572,22 +2664,12 @@ def build_polygon_cut_atlas(
             comp, fid, uniform_half_span=uniform_half_span,
         )
 
-        # Pentagon-only winding normalization in warp pixel space.
+        # Pentagon winding is normalized in ordered warp space inside
+        # _compute_piecewise_warp_map. Applying an additional pre-warp
+        # corner reorder here can disturb corner-to-corner pairing at
+        # pent-hex seam endpoints.
         if is_pentagon:
             pent_tiles_total += 1
-            grid_corners, _ = _normalize_pentagon_winding_for_warp(
-                grid_corners,
-                uv_corners,
-                xlim=xlim,
-                ylim=ylim,
-                img_w=tile_img.size[0],
-                img_h=tile_img.size[1],
-                tile_size=tile_size,
-                gutter=g,
-                face_id=fid,
-            )
-            if _:
-                pent_winding_fixes += 1
 
         # Warp the image (piecewise-linear for exact boundary alignment)
         tile_slot_size = tile_size + 2 * g

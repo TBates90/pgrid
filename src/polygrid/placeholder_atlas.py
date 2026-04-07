@@ -58,7 +58,7 @@ def _detail_cells_strict_mode() -> bool:
     }
 
 # Increment to invalidate all cached artifacts across all machines.
-ARTIFACT_VERSION: int = 18
+ARTIFACT_VERSION: int = 25
 
 # Per-process in-memory cache: topology_key → PlaceholderAtlasArtifact
 _ARTIFACT_CACHE: Dict[str, "PlaceholderAtlasArtifact"] = {}
@@ -586,16 +586,9 @@ def _build_detail_index_map_seam_aligned(
         # Placeholder path: keep pentagon UV transform neutral so orientation
         # matches strict corner pairing from current atlas alignment logic.
         pent_uv_rotation=0.0,
-        pent_edge_interior_pull=(
-            0.12
-            if int((getattr(globe_grid, "metadata", {}) or {}).get("frequency", 0) or 0) <= 2
-            else 0.0
-        ),
-        hex_pent_edge_interior_pull=(
-            0.06
-            if int((getattr(globe_grid, "metadata", {}) or {}).get("frequency", 0) or 0) <= 2
-            else 0.0
-        ),
+        pentagon_allow_reflection=True,
+        pent_edge_interior_pull=0.0,
+        hex_pent_edge_interior_pull=0.0,
     )
 
     atlas_rgb = np.array(atlas_img.convert("RGB"), dtype=np.uint8)

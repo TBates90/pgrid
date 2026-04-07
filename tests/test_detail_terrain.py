@@ -98,6 +98,35 @@ def test_compute_pg_to_macro_edge_map_is_bijection_for_corner_grids():
     assert all(0 <= v < n for v in vals)
 
 
+@needs_models
+def test_compute_pg_to_macro_corner_map_is_bijection_for_corner_grids():
+    from polygrid.tile_uv_align import compute_pg_to_macro_corner_map
+
+    grid, _store = _make_globe_with_elevation(3)
+    spec = TileDetailSpec(detail_rings=2)
+    coll = DetailGridCollection.build(grid, spec)
+
+    face_id = None
+    detail_grid = None
+    for fid in coll.face_ids:
+        dg, _ = coll.get(fid)
+        if dg.metadata.get("corner_vertex_ids"):
+            face_id = fid
+            detail_grid = dg
+            break
+    if face_id is None or detail_grid is None:
+        pytest.skip("No corner-vertex detail grid available")
+
+    n = len(grid.faces[face_id].vertex_ids)
+    detail_grid.compute_macro_edges(n_sides=n, corner_ids=detail_grid.metadata.get("corner_vertex_ids"))
+    mapping = compute_pg_to_macro_corner_map(grid, face_id, detail_grid)
+
+    assert set(mapping.keys()) == set(range(n))
+    vals = [mapping[k] for k in range(n)]
+    assert len(set(vals)) == n
+    assert all(0 <= v < n for v in vals)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # compute_boundary_elevations
 # ═══════════════════════════════════════════════════════════════════

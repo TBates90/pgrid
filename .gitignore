@@ -19,6 +19,7 @@ htmlcov/
 
 # Generated outputs
 exports/
+artifacts/
 
 # Editor/OS
 .DS_Store
