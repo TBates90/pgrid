@@ -263,6 +263,7 @@ def generate_planet_atlas(
     debug_seam_heatmap: bool = False,
         debug_pentagon_tint: bool = False,
         debug_uv_gradient: bool = False,
+        debug_warp_sectors: bool = False,
     ramp_fn: Optional[Callable[[float], Tuple[float, float, float]]] = None,
 ) -> PlanetAtlasResult:
     """Generate a complete planet with a texture atlas for 3D rendering.
@@ -392,7 +393,9 @@ def generate_planet_atlas(
         debug_seam_heatmap=debug_seam_heatmap,
         debug_pentagon_tint=debug_pentagon_tint,
         debug_uv_gradient=debug_uv_gradient,
+        debug_warp_sectors=debug_warp_sectors,
         uniform_half_span=uniform_hs,
+        equalise_sectors=True,
         pentagon_allow_reflection=True,
         pent_edge_interior_pull=0.0,
         hex_pent_edge_interior_pull=0.0,
@@ -434,7 +437,10 @@ def generate_planet_atlas(
     # ── 9. Compute sub-tile detail cell 3D centres ──────────────────
     from .rendering.detail_centers import build_slug_keyed_detail_centers
     from .rendering.detail_cell_contract import normalize_detail_cells_tiles_with_report
-    from .rendering.seam_strips import build_seam_strip_payload_from_globe_payload
+    from .rendering.seam_strips import (
+        build_seam_strip_payload_from_globe_payload,
+        enrich_seam_strips_with_alignment,
+    )
 
     detail_cells_report: dict[str, int] = {}
     try:
@@ -472,6 +478,7 @@ def generate_planet_atlas(
             "seams": [],
         }
     gen_result.metadata["seam_strips"] = dict(seam_strips.get("metadata") or {})
+    enrich_seam_strips_with_alignment(seam_strips, seam_metrics)
     gen_result.metadata["seam_metrics"] = {
         "schema": str(seam_metrics.get("schema", "seam-metrics.v1")),
         "summary": dict(seam_metrics.get("summary") or {}),

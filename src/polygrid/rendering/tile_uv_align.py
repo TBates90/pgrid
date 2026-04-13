@@ -1633,6 +1633,7 @@ def draw_debug_labels(
     show_subface_labels: bool = True,
     draw_pentagon_tint: bool = False,
     draw_uv_gradient: bool = False,
+    draw_warp_sectors: bool = False,
 ) -> "Image.Image":
     """Draw comprehensive debug annotations on a warped slot image.
 
@@ -1737,6 +1738,77 @@ def draw_debug_labels(
                     verts_px.append(verts_px[0])  # close polygon
                     ov_draw.line(verts_px, fill=(255, 255, 255, 90), width=1)
         out = _PILImage.alpha_composite(out, overlay)
+
+    # ── Layer 1.1: Warp sector decomposition ────────────────────
+    # Draw the triangle-fan sectors used by the piecewise-affine warp.
+    # Each sector is a triangle (centroid → corner_k → corner_{k+1}).
+    # Lines are color-coded by sector index; destination (UV) corners
+    # shown as filled squares, allowing visual comparison of source vs
+    # destination geometry to diagnose warp misalignment.
+    if draw_warp_sectors and grid_corners is not None:
+        sector_colors = [
+            (255, 80, 80, 180),    # red
+            (80, 255, 80, 180),    # green
+            (80, 80, 255, 180),    # blue
+            (255, 255, 80, 180),   # yellow
+            (255, 80, 255, 180),   # magenta
+            (80, 255, 255, 180),   # cyan
+            (255, 160, 80, 180),   # orange
+            (160, 80, 255, 180),   # purple
+        ]
+        sector_layer = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+        sec_draw = ImageDraw.Draw(sector_layer)
+
+        # UV corners → destination pixel positions (same mapping as warp)
+        dst_pts = [_uv_to_px(u, v) for u, v in uv_corners]
+        dst_cx = sum(p[0] for p in dst_pts) / len(dst_pts)
+        dst_cy = sum(p[1] for p in dst_pts) / len(dst_pts)
+
+        # Draw sector lines and edge segments
+        for k in range(n):
+            j = (k + 1) % n
+            color = sector_colors[k % len(sector_colors)]
+            # Centroid → corner k
+            sec_draw.line(
+                [(dst_cx, dst_cy), dst_pts[k]],
+                fill=color, width=2,
+            )
+            # Edge segment corner_k → corner_{k+1} (dashed effect via
+            # drawing with lower alpha)
+            edge_color = (*color[:3], 120)
+            sec_draw.line(
+                [dst_pts[k], dst_pts[j]],
+                fill=edge_color, width=1,
+            )
+            # Sector index label near the midpoint of the sector
+            mid_edge_x = (dst_pts[k][0] + dst_pts[j][0]) / 2
+            mid_edge_y = (dst_pts[k][1] + dst_pts[j][1]) / 2
+            label_x = dst_cx + (mid_edge_x - dst_cx) * 0.55
+            label_y = dst_cy + (mid_edge_y - dst_cy) * 0.55
+            sec_font = _load_debug_font(max(8, tile_size // 28))
+            sec_draw.text(
+                (label_x - 4, label_y - 4), f"s{k}",
+                fill=color, font=sec_font,
+            )
+
+        # Destination (UV) corner markers: filled squares
+        sq_r = max(3, tile_size // 100)
+        for k in range(n):
+            px_x, px_y = dst_pts[k]
+            color = sector_colors[k % len(sector_colors)]
+            sec_draw.rectangle(
+                [px_x - sq_r, px_y - sq_r, px_x + sq_r, px_y + sq_r],
+                fill=color,
+            )
+
+        # Centroid marker
+        sec_draw.ellipse(
+            [dst_cx - 4, dst_cy - 4, dst_cx + 4, dst_cy + 4],
+            fill=(255, 255, 255, 200),
+            outline=(0, 0, 0, 200),
+        )
+
+        out = _PILImage.alpha_composite(out, sector_layer)
 
     # ── Layer 2: Tile ID watermark ──────────────────────────────
     watermark = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
@@ -2122,6 +2194,134 @@ def _augment_ordered_fan_with_edge_controls(
         dst_aug[2 * i + 1] = dst_mid
 
     return src_aug, dst_aug
+
+
+def _compute_boundary_warp_divergence(
+    warp_a: Dict[str, Any],
+    edge_idx_a: int,
+    warp_b: Dict[str, Any],
+    edge_idx_b: int,
+    *,
+    sample_count: int = 11,
+) -> Dict[str, Any]:
+    """Compare how two tiles' piecewise warps behave along a shared edge.
+
+    For the shared edge, both tiles have UV-corner endpoints that should
+    be identical (from GoldbergTile).  This function samples *sample_count*
+    evenly-spaced points along the edge in **UV space**, converts them to
+    slot-pixel positions for each tile, and then maps them backward through
+    each tile's piecewise warp to get source-image pixel coordinates.
+
+    The resulting source-pixel positions from both tiles are compared. A
+    perfect alignment would mean both warps sample the same source-image
+    neighbourhood for every point along the shared edge.
+
+    Returns a dict with:
+      - ``uv_endpoint_error``: max distance between UV endpoints (should be ~0)
+      - ``src_max_divergence_px``: max source-pixel divergence across samples
+      - ``src_mean_divergence_px``: mean source-pixel divergence
+      - ``src_divergences``: per-sample divergence values
+      - ``sector_a`` / ``sector_b``: sector indices used for each sample
+    """
+    gc_a = np.array(warp_a["grid_corners"], dtype=np.float64)
+    uc_a = np.array(warp_a["uv_corners"], dtype=np.float64)
+    ns_a = int(warp_a["n_sides"])
+    g_a = int(warp_a["gutter"])
+    ts = int(warp_a["tile_size"])
+
+    gc_b = np.array(warp_b["grid_corners"], dtype=np.float64)
+    uc_b = np.array(warp_b["uv_corners"], dtype=np.float64)
+    ns_b = int(warp_b["n_sides"])
+    g_b = int(warp_b["gutter"])
+
+    # Edge endpoints in UV space for tile A
+    uv_a0 = uc_a[edge_idx_a % ns_a]
+    uv_a1 = uc_a[(edge_idx_a + 1) % ns_a]
+
+    # Edge endpoints in UV space for tile B (reversed — shared edges run
+    # in opposite directions on neighbouring tiles)
+    uv_b0 = uc_b[(edge_idx_b + 1) % ns_b]
+    uv_b1 = uc_b[edge_idx_b % ns_b]
+
+    # Measure UV endpoint agreement
+    ep_err_0 = float(np.linalg.norm(uv_a0 - uv_b0))
+    ep_err_1 = float(np.linalg.norm(uv_a1 - uv_b1))
+    uv_endpoint_error = max(ep_err_0, ep_err_1)
+
+    # Build sector affines for both tiles (inverse: dst→src, in pixel space)
+    def _build_inv_sectors(gc: np.ndarray, uc: np.ndarray, ns: int, g: int):
+        src_px = np.empty_like(gc)
+        xlim = warp_a["xlim"] if gc is gc_a else warp_b["xlim"]
+        ylim = warp_a["ylim"] if gc is gc_a else warp_b["ylim"]
+        x_min, x_max = xlim
+        y_min, y_max = ylim
+        x_span = x_max - x_min
+        y_span = y_max - y_min
+        img_w = img_h = ts + 2 * g  # approx; actual from tile image
+        for i in range(ns):
+            gx, gy = gc[i]
+            src_px[i, 0] = (gx - x_min) / x_span * img_w
+            src_px[i, 1] = (1.0 - (gy - y_min) / y_span) * img_h
+        src_c = src_px.mean(axis=0)
+
+        dst_px = np.empty_like(uc)
+        for i in range(ns):
+            u, v = uc[i]
+            dst_px[i, 0] = g + u * ts
+            dst_px[i, 1] = g + (1.0 - v) * ts
+        dst_c = dst_px.mean(axis=0)
+
+        inv = _build_sector_affines(dst_px, dst_c, src_px, src_c)
+        return inv, dst_px, dst_c
+
+    inv_a, dst_px_a, dst_c_a = _build_inv_sectors(gc_a, uc_a, ns_a, g_a)
+    inv_b, dst_px_b, dst_c_b = _build_inv_sectors(gc_b, uc_b, ns_b, g_b)
+
+    # Sample points along the shared edge in UV space
+    divergences = []
+    sectors_a = []
+    sectors_b = []
+    n = max(3, int(sample_count))
+    for i in range(n):
+        t = i / (n - 1)
+        uv_pt = uv_a0 * (1.0 - t) + uv_a1 * t
+
+        # Convert UV point to slot-pixel for tile A
+        dst_pt_a = np.array([
+            g_a + uv_pt[0] * ts,
+            g_a + (1.0 - uv_pt[1]) * ts,
+        ])
+        # Assign to sector and invert
+        sid_a = int(_assign_sectors(
+            dst_pt_a.reshape(1, 2), dst_c_a, dst_px_a,
+        )[0])
+        A_inv_a, t_inv_a = inv_a[sid_a]
+        src_a = A_inv_a @ dst_pt_a + t_inv_a
+
+        # Convert UV point to slot-pixel for tile B
+        dst_pt_b = np.array([
+            g_b + uv_pt[0] * ts,
+            g_b + (1.0 - uv_pt[1]) * ts,
+        ])
+        sid_b = int(_assign_sectors(
+            dst_pt_b.reshape(1, 2), dst_c_b, dst_px_b,
+        )[0])
+        A_inv_b, t_inv_b = inv_b[sid_b]
+        src_b = A_inv_b @ dst_pt_b + t_inv_b
+
+        div = float(np.linalg.norm(src_a - src_b))
+        divergences.append(div)
+        sectors_a.append(sid_a)
+        sectors_b.append(sid_b)
+
+    return {
+        "uv_endpoint_error": round(uv_endpoint_error, 6),
+        "src_max_divergence_px": round(max(divergences), 4) if divergences else 0.0,
+        "src_mean_divergence_px": round(sum(divergences) / len(divergences), 4) if divergences else 0.0,
+        "src_divergences": [round(d, 4) for d in divergences],
+        "sector_a": sectors_a,
+        "sector_b": sectors_b,
+    }
 
 
 def _sample_edge_profile_rgb(
@@ -2664,9 +2864,10 @@ def build_polygon_cut_atlas(
     debug_uv_cut: bool = False,
         debug_pentagon_tint: bool = False,
         debug_uv_gradient: bool = False,
+        debug_warp_sectors: bool = False,
     output_dir: Optional[Path] = None,
     pentagon_rotation_steps: int = 0,
-    equalise_sectors: bool = False,
+    equalise_sectors: bool = True,
     warp_sample_order: int = 1,
     warp_dilate_cval: bool = True,
     pentagon_scale_override: Optional[float] = None,
@@ -2745,7 +2946,7 @@ def build_polygon_cut_atlas(
     equalise_sectors : bool
         If True, apply ``_equalise_sector_ratios`` to irregular hex
         tiles (those adjacent to pentagons) so the piecewise-warp
-        sectors become conformal.  Default False (conservative).
+        sectors become conformal.  Default True.
     pentagon_scale_override : float or None
         When not None, replace the auto-computed pentagon grid-corner
         scale with this fixed value.  The scale controls how far the
@@ -2790,6 +2991,9 @@ def build_polygon_cut_atlas(
     pent_tiles_total = 0
     pent_winding_fixes = 0
     edge_profiles_by_tile: Dict[str, Dict[int, np.ndarray]] = {}
+    # Store final warp corners per tile (after pentagon adjustments) for
+    # boundary vertex alignment diagnostics.
+    _warp_geometry_by_tile: Dict[str, Dict[str, Any]] = {}
     neigh_to_edge_pg_by_tile: Dict[str, Dict[str, int]] = {}
     gt_to_pg_corner_by_tile: Dict[str, Dict[int, int]] = {}
     pg_to_gt_corner_by_tile: Dict[str, Dict[int, int]] = {}
@@ -3045,6 +3249,18 @@ def build_polygon_cut_atlas(
             edge_interior_pull=edge_pull,
         )
 
+        # Store final warp geometry for boundary diagnostics.
+        _warp_geometry_by_tile[fid] = {
+            "grid_corners": list(grid_corners),
+            "uv_corners": list(uv_corners),
+            "n_sides": n_sides,
+            "gutter": g,
+            "tile_size": tile_size,
+            "xlim": xlim,
+            "ylim": ylim,
+            "src_centroid": src_centroid,
+        }
+
         cval_after_warp = -1
         if _env_flag("PGRID_ATLAS_CVAL_AUDIT"):
             cval_after_warp = _count_rgb_fill_pixels(warped, fill=128)
@@ -3175,6 +3391,7 @@ def build_polygon_cut_atlas(
                 show_subface_labels=(not debug_seam_pair_labels),
                             draw_pentagon_tint=debug_pentagon_tint,
                             draw_uv_gradient=debug_uv_gradient,
+                            draw_warp_sectors=debug_warp_sectors,
             )
 
         # ── Debug UV-cut overlay ─────────────────────────────────
@@ -3354,6 +3571,24 @@ def build_polygon_cut_atlas(
             endpoint_vertex_set_match = bool(endpoint_orientation_reversed or endpoint_orientation_same)
             endpoint_vertex_set_mismatch_count = 0 if endpoint_vertex_set_match else 2
 
+            # Boundary warp divergence: compare how each tile's piecewise
+            # warp maps points along the shared UV edge back to source pixels.
+            warp_divergence: Dict[str, Any] = {}
+            warp_a = _warp_geometry_by_tile.get(a)
+            warp_b = _warp_geometry_by_tile.get(b)
+            if warp_a is not None and warp_b is not None:
+                try:
+                    warp_divergence = _compute_boundary_warp_divergence(
+                        warp_a, int(eidx_a),
+                        warp_b, int(eidx_b),
+                        sample_count=11,
+                    )
+                except Exception:
+                    LOGGER.debug(
+                        "boundary-warp-divergence failed for seam %s|%s",
+                        a, b, exc_info=True,
+                    )
+
             seams.append(
                 {
                     "seam_id": f"seam:{a}|{b}",
@@ -3369,6 +3604,7 @@ def build_polygon_cut_atlas(
                     "endpoint_orientation_same": bool(endpoint_orientation_same),
                     "endpoint_vertex_set_mismatch_count": int(endpoint_vertex_set_mismatch_count),
                     **mismatch,
+                    **{f"warp_{k}": v for k, v in warp_divergence.items()},
                 }
             )
 
@@ -3399,6 +3635,11 @@ def build_polygon_cut_atlas(
         "max_midpoint_mismatch": float(max(midpoint_vals)) if midpoint_vals else 0.0,
         "mean_midpoint_mismatch": float(sum(midpoint_vals) / len(midpoint_vals)) if midpoint_vals else 0.0,
     }
+    # Warp divergence summary across all seams and pent-hex subset.
+    all_warp_div = [float(s.get("warp_src_max_divergence_px", 0.0)) for s in seams]
+    if all_warp_div:
+        summary["warp_max_divergence_px"] = round(max(all_warp_div), 4)
+        summary["warp_mean_divergence_px"] = round(sum(all_warp_div) / len(all_warp_div), 4)
     if pent_hex_seams:
         ph_endpoint_vals = [
             max(float(s.get("endpoint_0_mismatch", 0.0)), float(s.get("endpoint_1_mismatch", 0.0)))
@@ -3420,6 +3661,12 @@ def build_polygon_cut_atlas(
                 and not bool(s.get("endpoint_orientation_reversed"))
             )
         )
+        ph_warp_div = [float(s.get("warp_src_max_divergence_px", 0.0)) for s in pent_hex_seams]
+        if ph_warp_div:
+            summary["pent_hex_warp_max_divergence_px"] = round(max(ph_warp_div), 4)
+            summary["pent_hex_warp_mean_divergence_px"] = round(
+                sum(ph_warp_div) / len(ph_warp_div), 4,
+            )
 
     seam_metrics_payload: Dict[str, Any] = {
         "schema": "seam-metrics.v1",

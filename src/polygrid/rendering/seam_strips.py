@@ -408,6 +408,54 @@ def _is_adjacent_index_pair(count: int, left: int, right: int) -> bool:
     return diff == 1 or diff == (count - 1)
 
 
+def enrich_seam_strips_with_alignment(
+    seam_strip_payload: dict[str, Any],
+    seam_metrics: Mapping[str, Any] | None,
+) -> None:
+    """Merge per-edge alignment data from seam metrics into seam strip records.
+
+    Adds ``alignment_error``, ``tile_a_type``, and ``tile_b_type`` to each
+    seam strip record that has a matching ``seam_id`` in *seam_metrics*.
+    Mutates *seam_strip_payload* in place.
+    """
+    if not isinstance(seam_metrics, Mapping):
+        return
+    raw_seams = seam_metrics.get("seams")
+    if not isinstance(raw_seams, Sequence) or isinstance(raw_seams, (str, bytes, bytearray)):
+        return
+    metrics_by_id: dict[str, Mapping[str, Any]] = {}
+    for entry in raw_seams:
+        if not isinstance(entry, Mapping):
+            continue
+        sid = _token(entry.get("seam_id"))
+        if sid:
+            metrics_by_id[sid] = entry
+
+    strips = seam_strip_payload.get("seams")
+    if not isinstance(strips, Sequence) or isinstance(strips, (str, bytes, bytearray)):
+        return
+    enriched_count = 0
+    for strip in strips:
+        if not isinstance(strip, dict):
+            continue
+        sid = _token(strip.get("seam_id"))
+        if not sid or sid not in metrics_by_id:
+            continue
+        m = metrics_by_id[sid]
+        ep0 = float(m.get("endpoint_0_mismatch", 0.0) or 0.0)
+        ep1 = float(m.get("endpoint_1_mismatch", 0.0) or 0.0)
+        warp_div = float(m.get("warp_src_max_divergence_px", 0.0) or 0.0)
+        strip["alignment_error"] = round(max(ep0, ep1, warp_div), 6)
+        strip["tile_a_type"] = str(m.get("tile_a_type", ""))
+        strip["tile_b_type"] = str(m.get("tile_b_type", ""))
+        strip["pent_hex_boundary"] = bool(m.get("pent_hex_boundary", False))
+        enriched_count += 1
+
+    meta = seam_strip_payload.get("metadata")
+    if isinstance(meta, dict):
+        meta["alignment_enriched_count"] = enriched_count
+
+
 def _average_normal(
     tile_a: str,
     tile_b: str,

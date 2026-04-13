@@ -290,8 +290,19 @@ def deform_grid_to_uv_shape(
         else:
             sector_inv.append(None)
 
+    # ── Identify boundary vertices to pin ─────────────────────────
+    # Vertices on macro-edges must keep their original positions so
+    # that stitched composites have consistent boundaries regardless
+    # of whether adjacent tiles were deformed differently.
+    boundary_vids: set = set()
+    for me in grid.macro_edges:
+        boundary_vids.update(me.vertex_ids)
+
     # ── Assign each vertex to a sector and compute displacement ────
     for vid, vtx in grid.vertices.items():
+        if vid in boundary_vids:
+            continue  # pin boundary vertices at original positions
+
         rel = np.array([vtx.x - gc_centroid[0], vtx.y - gc_centroid[1]],
                        dtype=np.float64)
         dist = np.linalg.norm(rel)
