@@ -16,6 +16,7 @@ from polygrid.rendering.tile_uv_align import (
     _augment_ordered_fan_with_edge_controls,
     _blend_corner_sets,
     _compute_piecewise_warp_map,
+    _compute_edge_profile_mismatch_metrics,
     _compute_pentagon_grid_scale,
     _equalise_sector_ratios,
     _is_hex_adjacent_to_pentagon,
@@ -28,6 +29,8 @@ from polygrid.rendering.tile_uv_align import (
     _select_corner_match_indices,
     _winding_sign,
     build_polygon_cut_atlas,
+    compute_gt_to_pg_corner_map,
+    compute_pg_to_gt_edge_map,
     get_macro_edge_corners,
     match_grid_corners_to_uv,
 )
@@ -91,6 +94,25 @@ def test_select_corner_match_indices_can_force_rotation_only() -> None:
 def test_should_use_pent_reflection_requires_decisive_improvement() -> None:
     assert _should_use_pent_reflection(1.0, 0.9) is False
     assert _should_use_pent_reflection(1.0, 0.8) is True
+
+
+def test_edge_profile_mismatch_metrics_reverse_pairing() -> None:
+    profile_a = np.asarray(
+        [
+            (10.0, 20.0, 30.0),
+            (40.0, 50.0, 60.0),
+            (70.0, 80.0, 90.0),
+        ],
+        dtype=np.float64,
+    )
+    profile_b = profile_a[::-1].copy()
+
+    metrics = _compute_edge_profile_mismatch_metrics(profile_a, profile_b)
+
+    assert metrics["endpoint_0_mismatch"] == 0.0
+    assert metrics["endpoint_1_mismatch"] == 0.0
+    assert metrics["midpoint_mismatch"] == 0.0
+    assert metrics["max_sampled_offset"] == 0.0
 
 
 def test_piecewise_warp_map_rejects_degenerate_pentagon_sectors() -> None:
@@ -407,3 +429,27 @@ def test_all_pentagons_orientation_signature_report_is_stable() -> None:
 
     # Compact deterministic signature artifact for regression checks.
     assert len(set(signatures)) == 12
+
+
+@pytest.mark.needs_models
+@pytest.mark.skipif(not _HAS_MODELS, reason="models library not installed")
+def test_compute_gt_to_pg_corner_map_is_bijective_for_all_faces() -> None:
+    globe = build_globe_grid(2)
+    for fid, face in globe.faces.items():
+        mapping = compute_gt_to_pg_corner_map(globe, fid)
+        n = len(face.vertex_ids)
+        assert set(mapping.keys()) == set(range(n))
+        assert set(mapping.values()) == set(range(n))
+
+
+@pytest.mark.needs_models
+@pytest.mark.skipif(not _HAS_MODELS, reason="models library not installed")
+def test_compute_pg_to_gt_edge_map_is_bijective_for_all_faces() -> None:
+    globe = build_globe_grid(2)
+    for fid, face in globe.faces.items():
+        pg_to_gt, gt_to_pg = compute_pg_to_gt_edge_map(globe, fid)
+        n = len(face.vertex_ids)
+        assert set(pg_to_gt.keys()) == set(range(n))
+        assert set(pg_to_gt.values()) == set(range(n))
+        assert set(gt_to_pg.keys()) == set(range(n))
+        assert set(gt_to_pg.values()) == set(range(n))

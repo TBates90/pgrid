@@ -72,6 +72,12 @@ class PlanetAtlasResult:
         Atlas image width in pixels.
     atlas_height : int
         Atlas image height in pixels.
+    texture_backend : str
+        Texture sampling backend identifier. Currently ``"atlas"``;
+        future value ``"array"`` uses per-tile array layers.
+    texture_array_layout : dict
+        Backend-agnostic tile-layer contract metadata. Includes a
+        deterministic ``tile_layers`` map even when backend is atlas.
     """
 
     generation: GenerationResult
@@ -85,6 +91,8 @@ class PlanetAtlasResult:
     atlas_height: int
     detail_cells: Dict[str, Any]
     seam_strips: Dict[str, Any]
+    texture_backend: str
+    texture_array_layout: Dict[str, Any]
 
 
 
@@ -249,6 +257,12 @@ def generate_planet_atlas(
     detail_rings: int = 2,
     tile_size: int = 128,
     gutter: int = 4,
+    debug_labels: bool = False,
+    debug_seam_pair_labels: bool = False,
+    debug_orientation_glyphs: bool = False,
+    debug_seam_heatmap: bool = False,
+        debug_pentagon_tint: bool = False,
+        debug_uv_gradient: bool = False,
     ramp_fn: Optional[Callable[[float], Tuple[float, float, float]]] = None,
 ) -> PlanetAtlasResult:
     """Generate a complete planet with a texture atlas for 3D rendering.
@@ -274,6 +288,18 @@ def generate_planet_atlas(
         Per-tile texture resolution in pixels (128 = fast, 256 = quality).
     gutter : int
         Atlas gutter pixels for bilinear bleed prevention.
+    debug_labels : bool
+        If true, overlay pgrid debug labels (tile IDs, local sub-face IDs,
+        and edge-neighbour arrows) on each atlas tile.
+    debug_seam_pair_labels : bool
+        If true, draw seam correspondence labels showing both sides' edge
+        indices for each shared boundary.
+    debug_orientation_glyphs : bool
+        If true, draw tile-level orientation diagnostics (winding and
+        mapping mode) in atlas labels.
+    debug_seam_heatmap : bool
+        If true, overlay a color heatmap on pent-hex seams using sampled
+        seam mismatch magnitude.
 
     Returns
     -------
@@ -355,14 +381,22 @@ def generate_planet_atlas(
         )
 
     # ── 6. Build polygon-cut atlas ──────────────────────────────────
+    seam_metrics: Dict[str, Any] = {}
     atlas, uv_layout = build_polygon_cut_atlas(
         tile_images, composites, detail_grids, grid, face_ids,
         tile_size=tile_size,
         gutter=gutter,
+        debug_labels=debug_labels,
+        debug_seam_pair_labels=debug_seam_pair_labels,
+        debug_orientation_glyphs=debug_orientation_glyphs,
+        debug_seam_heatmap=debug_seam_heatmap,
+        debug_pentagon_tint=debug_pentagon_tint,
+        debug_uv_gradient=debug_uv_gradient,
         uniform_half_span=uniform_hs,
         pentagon_allow_reflection=True,
         pent_edge_interior_pull=0.0,
         hex_pent_edge_interior_pull=0.0,
+        seam_metrics_out=seam_metrics,
     )
 
     # Encode atlas to PNG bytes
@@ -383,6 +417,19 @@ def generate_planet_atlas(
         uv_layout,
         subdivisions=3,
     )
+
+    tile_layers = {
+        fid: idx for idx, fid in enumerate(face_ids)
+    }
+    texture_array_layout = {
+        "schema": "texture-array-layout.v1",
+        "backend": "atlas",
+        "compatibility_mode": True,
+        "layer_count": int(len(face_ids)),
+        "layer_width": int(tile_size),
+        "layer_height": int(tile_size),
+        "tile_layers": dict(tile_layers),
+    }
 
     # ── 9. Compute sub-tile detail cell 3D centres ──────────────────
     from .rendering.detail_centers import build_slug_keyed_detail_centers
@@ -425,6 +472,13 @@ def generate_planet_atlas(
             "seams": [],
         }
     gen_result.metadata["seam_strips"] = dict(seam_strips.get("metadata") or {})
+    gen_result.metadata["seam_metrics"] = {
+        "schema": str(seam_metrics.get("schema", "seam-metrics.v1")),
+        "summary": dict(seam_metrics.get("summary") or {}),
+        "export_path": seam_metrics.get("export_path"),
+    }
+    gen_result.metadata["texture_backend"] = "atlas"
+    gen_result.metadata["texture_array_layout"] = dict(texture_array_layout)
 
     t_elapsed = time.monotonic() - t_start
     LOGGER.info("Atlas generation complete in %.2fs", t_elapsed)
@@ -441,6 +495,8 @@ def generate_planet_atlas(
         atlas_height=atlas.size[1],
         detail_cells=detail_cells,
         seam_strips=seam_strips,
+        texture_backend="atlas",
+        texture_array_layout=texture_array_layout,
     )
 
 

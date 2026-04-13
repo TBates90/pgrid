@@ -113,6 +113,48 @@ def test_generate_placeholder_atlas_emits_seam_strips() -> None:
     assert len(seams) > 0
 
 
+@needs_models
+def test_generate_placeholder_atlas_emits_seam_metrics_metadata() -> None:
+    from polygrid.placeholder_atlas import generate_placeholder_atlas
+
+    spec = _make_spec(frequency=2, detail_rings=2, tile_size=32, gutter=2)
+    result = generate_placeholder_atlas(spec)
+    generation_metadata = dict(getattr(result.generation, "metadata", {}) or {})
+
+    seam_metrics = generation_metadata.get("seam_metrics")
+    assert isinstance(seam_metrics, dict)
+    assert seam_metrics.get("schema") == "seam-metrics.v1"
+    summary = seam_metrics.get("summary")
+    assert isinstance(summary, dict)
+    assert "endpoint_vertex_set_mismatch_count" in summary
+    assert "endpoint_orientation_mismatch_count" in summary
+    assert "pent_hex_endpoint_vertex_set_mismatch_count" in summary
+    assert "pent_hex_endpoint_orientation_mismatch_count" in summary
+
+
+@needs_models
+def test_generate_placeholder_atlas_emits_texture_backend_contract() -> None:
+    from polygrid.placeholder_atlas import generate_placeholder_atlas
+
+    spec = _make_spec(frequency=2, detail_rings=2, tile_size=32, gutter=2)
+    result = generate_placeholder_atlas(spec)
+
+    assert result.texture_backend == "atlas"
+    texture_layout = dict(result.texture_array_layout or {})
+    assert texture_layout.get("schema") == "texture-array-layout.v1"
+    assert texture_layout.get("backend") == "atlas"
+    assert texture_layout.get("layer_width") == 32
+    assert texture_layout.get("layer_height") == 32
+
+    tile_layers = texture_layout.get("tile_layers")
+    assert isinstance(tile_layers, dict)
+    assert len(tile_layers) == int(texture_layout.get("layer_count", 0))
+
+    generation_metadata = dict(getattr(result.generation, "metadata", {}) or {})
+    assert generation_metadata.get("texture_backend") == "atlas"
+    assert isinstance(generation_metadata.get("texture_array_layout"), dict)
+
+
 # ── _topology_key ────────────────────────────────────────────────────────────
 
 

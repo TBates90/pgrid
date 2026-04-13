@@ -529,6 +529,38 @@ class TestBatchedMesh:
         norms = np.linalg.norm(vdata[:, :3], axis=1)
         np.testing.assert_allclose(norms, radius, atol=1e-5)
 
+    def test_batched_mesh_include_tile_layer_adds_stride(self, uv_layout_f3):
+        """Including tile-layer attribute should append one float column."""
+        layer_map = {fid: idx for idx, fid in enumerate(sorted(uv_layout_f3.keys()))}
+        vdata, _ = build_batched_globe_mesh(
+            3,
+            uv_layout_f3,
+            subdivisions=1,
+            include_tile_layer=True,
+            tile_layer_map=layer_map,
+        )
+        assert vdata.shape[1] == 9
+        layer_values = vdata[:, -1]
+        assert np.all(layer_values >= 0)
+        assert np.all(np.floor(layer_values) == layer_values)
+
+    def test_batched_mesh_local_tile_uv_mode(self, uv_layout_f3):
+        """Local tile UV mode should keep UVs in [0,1] for array sampling."""
+        layer_map = {fid: idx for idx, fid in enumerate(sorted(uv_layout_f3.keys()))}
+        vdata, _ = build_batched_globe_mesh(
+            3,
+            uv_layout_f3,
+            subdivisions=1,
+            include_tile_layer=True,
+            tile_layer_map=layer_map,
+            local_tile_uvs=True,
+        )
+        assert vdata.shape[1] == 9
+        u = vdata[:, 6]
+        v = vdata[:, 7]
+        assert np.all(u >= 0.0) and np.all(u <= 1.0)
+        assert np.all(v >= 0.0) and np.all(v <= 1.0)
+
 
 # ═══════════════════════════════════════════════════════════════════
 # 13C — UV polygon inset & clamping tests

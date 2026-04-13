@@ -58,7 +58,7 @@ def _detail_cells_strict_mode() -> bool:
     }
 
 # Increment to invalidate all cached artifacts across all machines.
-ARTIFACT_VERSION: int = 25
+ARTIFACT_VERSION: int = 36
 
 # Per-process in-memory cache: topology_key → PlaceholderAtlasArtifact
 _ARTIFACT_CACHE: Dict[str, "PlaceholderAtlasArtifact"] = {}
@@ -114,6 +114,8 @@ class PlaceholderAtlasArtifact:
         16-character hex key that identifies this artifact's topology.
     topology_mode : str
         Artifact generation mode (e.g. detail-cell-indexed-seam-aligned).
+    seam_metrics_summary : dict
+        Aggregated seam metrics summary from atlas alignment diagnostics.
     """
 
     tile_index_map: np.ndarray
@@ -132,6 +134,7 @@ class PlaceholderAtlasArtifact:
     atlas_height: int
     topology_key: str
     topology_mode: str
+    seam_metrics_summary: Dict[str, Any]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -494,7 +497,7 @@ def _build_detail_index_map_seam_aligned(
     detail_rings: int,
     tile_size: int,
     gutter: int,
-) -> Tuple[np.ndarray, Tuple[str, ...], Dict[str, Tuple[float, float, float, float]], int, int]:
+) -> Tuple[np.ndarray, Tuple[str, ...], Dict[str, Tuple[float, float, float, float]], int, int, Dict[str, Any]]:
     """Build seam-aligned detail index map using polygon-cut atlas pipeline.
 
     This path reuses CompositeGrid assembly and polygon-cut warp packing
@@ -572,6 +575,7 @@ def _build_detail_index_map_seam_aligned(
             bg_colour=(1.0, 0.0, 1.0),
         )
 
+    seam_metrics: Dict[str, Any] = {}
     atlas_img, uv_layout = build_polygon_cut_atlas(
         tile_images,
         composites,
@@ -589,12 +593,13 @@ def _build_detail_index_map_seam_aligned(
         pentagon_allow_reflection=True,
         pent_edge_interior_pull=0.0,
         hex_pent_edge_interior_pull=0.0,
+        seam_metrics_out=seam_metrics,
     )
 
     atlas_rgb = np.array(atlas_img.convert("RGB"), dtype=np.uint8)
     index_map = _decode_index_map_from_rgb(atlas_rgb, color_to_index)
 
-    return index_map, tuple(index_keys), uv_layout, atlas_img.size[0], atlas_img.size[1]
+    return index_map, tuple(index_keys), uv_layout, atlas_img.size[0], atlas_img.size[1], dict(seam_metrics.get("summary") or {})
 
 
 def _build_macro_seam_mask(
@@ -649,7 +654,7 @@ def _build_macro_seam_mask(
     if np.max(mask) <= 0.0:
         return np.zeros((atlas_h, atlas_w), dtype=np.uint8)
 
-    sigma = max(0.5, band * 0.5)
+    sigma = max(0.5, band * 0.15)
     softened = gaussian_filter(mask, sigma=sigma)
     if float(np.max(softened)) > 1e-6:
         softened /= float(np.max(softened))
@@ -731,6 +736,7 @@ def _build_artifact(
 
     uv_layout, atlas_w, atlas_h = _compute_uv_layout(face_ids, tile_size, gutter)
 
+    seam_metrics_summary: Dict[str, Any] = {}
     try:
         (
             tile_index_map,
@@ -738,6 +744,7 @@ def _build_artifact(
             uv_layout,
             atlas_w,
             atlas_h,
+            seam_metrics_summary,
         ) = _build_detail_index_map_seam_aligned(
             grid,
             face_ids,
@@ -788,7 +795,7 @@ def _build_artifact(
     )
 
     try:
-        seam_band_px = max(2, int(math.ceil(tile_size / 64.0)))
+        seam_band_px = max(4, int(math.ceil(tile_size / 32.0)))
         seam_mask = _build_macro_seam_mask(
             grid,
             face_ids,
@@ -800,7 +807,7 @@ def _build_artifact(
         seam_partner_map, seam_alpha = _build_seam_partner_and_alpha(
             tile_index_map,
             seam_mask,
-            radius=2,
+            radius=max(3, seam_band_px // 2),
         )
     except Exception:
         LOGGER.debug("Failed to build seam mask; disabling seam blend", exc_info=True)
@@ -826,6 +833,7 @@ def _build_artifact(
         atlas_height=atlas_h,
         topology_key=key,
         topology_mode=topology_mode,
+        seam_metrics_summary=seam_metrics_summary,
     )
     LOGGER.info(
         "Artifact built in %.2fs — %d tiles, %d index keys, atlas %dx%d (%s)",
@@ -875,6 +883,7 @@ def save_artifact(artifact: PlaceholderAtlasArtifact, path: Path) -> None:
         "atlas_height": artifact.atlas_height,
         "topology_key": artifact.topology_key,
         "topology_mode": artifact.topology_mode,
+        "seam_metrics_summary": dict(artifact.seam_metrics_summary),
     }
     meta_path.write_text(json.dumps(meta))
     LOGGER.debug("Saved placeholder artifact to %s", npz_path)
@@ -940,6 +949,7 @@ def load_artifact(path: Path) -> Optional[PlaceholderAtlasArtifact]:
             atlas_height=int(meta["atlas_height"]),
             topology_key=str(meta["topology_key"]),
             topology_mode=str(meta.get("topology_mode", "legacy")),
+            seam_metrics_summary=dict(meta.get("seam_metrics_summary") or {}),
         )
     except Exception:
         LOGGER.debug(
@@ -1055,7 +1065,7 @@ def recolor_atlas(
         src = atlas_arr.astype(np.float32)
         partner_rgb = lut[artifact.seam_partner_map].astype(np.float32)
         alpha = np.clip(artifact.seam_alpha.astype(np.float32) / 255.0, 0.0, 1.0)
-        alpha = np.clip(alpha * 0.7, 0.0, 0.7)
+        alpha = np.clip(alpha * 0.85, 0.0, 0.85)
         valid_partner = (artifact.seam_partner_map != artifact.tile_index_map).astype(np.float32)
         a = (alpha * valid_partner)[..., None]
         atlas_arr = np.clip(src * (1.0 - a) + partner_rgb * a, 0.0, 255.0).astype(np.uint8)
@@ -1284,6 +1294,18 @@ def generate_placeholder_atlas(spec: "PlaceholderAtlasSpec") -> "PlanetAtlasResu
         detail_cells_report = {}
 
     seam_strips = _get_or_build_seam_strips(spec.frequency, spec.detail_rings)
+    tile_layers = {
+        fid: idx for idx, fid in enumerate(artifact.face_ids)
+    }
+    texture_array_layout = {
+        "schema": "texture-array-layout.v1",
+        "backend": "atlas",
+        "compatibility_mode": True,
+        "layer_count": int(len(artifact.face_ids)),
+        "layer_width": int(spec.tile_size),
+        "layer_height": int(spec.tile_size),
+        "tile_layers": dict(tile_layers),
+    }
 
     metadata: Dict[str, Any] = {
         "mode": "placeholder",
@@ -1297,6 +1319,12 @@ def generate_placeholder_atlas(spec: "PlaceholderAtlasSpec") -> "PlanetAtlasResu
         "atlas_width": artifact.atlas_width,
         "atlas_height": artifact.atlas_height,
         "detail_cells_normalization": detail_cells_report,
+        "seam_metrics": {
+            "schema": "seam-metrics.v1",
+            "summary": dict(artifact.seam_metrics_summary),
+        },
+        "texture_backend": "atlas",
+        "texture_array_layout": dict(texture_array_layout),
         "generation_time_s": round(time.monotonic() - t0, 3),
     }
 
@@ -1314,4 +1342,6 @@ def generate_placeholder_atlas(spec: "PlaceholderAtlasSpec") -> "PlanetAtlasResu
         atlas_height=artifact.atlas_height,
         detail_cells=detail_cells,
         seam_strips=seam_strips,
+        texture_backend="atlas",
+        texture_array_layout=texture_array_layout,
     )

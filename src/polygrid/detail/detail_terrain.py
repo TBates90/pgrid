@@ -337,6 +337,88 @@ def _assign_boundary_faces_to_edges(
     return result
 
 
+def _ordered_boundary_strip_faces(
+    detail_grid: PolyGrid,
+    edge_index: int,
+    face_edge_map: Dict[str, int],
+) -> List[str]:
+    """Return outermost boundary faces for one polygon edge in stable order.
+
+    The order is along the edge direction from macro-edge corner_start to
+    corner_end so opposite tiles can be paired deterministically.
+    """
+    outermost = _boundary_face_ids(detail_grid)
+    candidates = [
+        fid for fid in outermost
+        if face_edge_map.get(fid) == edge_index
+    ]
+    if not candidates:
+        return []
+
+    macro_edges = detail_grid.macro_edges
+    if isinstance(macro_edges, list):
+        macro_edge = (
+            macro_edges[edge_index]
+            if 0 <= edge_index < len(macro_edges)
+            else None
+        )
+    else:
+        macro_edge = macro_edges.get(edge_index)
+    if macro_edge is None:
+        return sorted(candidates)
+
+    va = detail_grid.vertices[macro_edge.corner_start]
+    vb = detail_grid.vertices[macro_edge.corner_end]
+    ex = vb.x - va.x
+    ey = vb.y - va.y
+    norm = math.hypot(ex, ey)
+    if norm <= 1e-12:
+        return sorted(candidates)
+
+    ux = ex / norm
+    uy = ey / norm
+
+    scored: List[Tuple[float, str]] = []
+    for fid in candidates:
+        face = detail_grid.faces[fid]
+        c = face_center(detail_grid.vertices, face)
+        if c is None:
+            continue
+        cx, cy = c
+        # Scalar projection along the edge axis gives stable strip ordering.
+        s = (cx - va.x) * ux + (cy - va.y) * uy
+        scored.append((s, fid))
+
+    scored.sort(key=lambda item: item[0])
+    return [fid for _, fid in scored]
+
+
+def _sync_pair_boundary_strips(
+    store_a: TileDataStore,
+    strip_a: List[str],
+    store_b: TileDataStore,
+    strip_b: List[str],
+    *,
+    elevation_field: str,
+) -> None:
+    """Force exact seam equality for one neighbour pair by strip averaging."""
+    if not strip_a or not strip_b:
+        return
+
+    # Pair in opposite traversal directions so shared corners align.
+    b_ordered = list(reversed(strip_b))
+    n = min(len(strip_a), len(b_ordered))
+    for i in range(n):
+        fa = strip_a[i]
+        fb = b_ordered[i]
+        avg = (
+            store_a.get(fa, elevation_field)
+            + store_b.get(fb, elevation_field)
+        ) / 2.0
+        store_a.set(fa, elevation_field, avg)
+        store_b.set(fb, elevation_field, avg)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 10B.2 — Classify detail faces
 # ═══════════════════════════════════════════════════════════════════
@@ -659,6 +741,7 @@ def generate_all_detail_terrain(
     *,
     seed: int = 42,
     elevation_field: str = "elevation",
+    sync_boundary_strips: bool = True,
 ) -> None:
     """Generate boundary-aware terrain for every tile in a collection.
 
@@ -731,3 +814,73 @@ def generate_all_detail_terrain(
             neighbor_edge_map=edge_mappings.get(face_id),
         )
         collection._stores[face_id] = store
+
+    if not sync_boundary_strips:
+        return
+
+    # Build per-tile face->edge maps used to extract deterministic edge strips.
+    tile_face_edge_maps: Dict[str, Dict[str, int]] = {}
+    for face_id, detail_grid in collection.grids.items():
+        corner_ids = detail_grid.metadata.get("corner_vertex_ids")
+        n_sides = len(corner_ids) if corner_ids else len(globe_grid.faces[face_id].vertex_ids)
+        if corner_ids and not detail_grid.macro_edges:
+            detail_grid.compute_macro_edges(n_sides, corner_ids=corner_ids)
+
+        boundary_band = {
+            fid for fid, cls in classify_detail_faces(
+                detail_grid,
+                boundary_depth=max(1, spec.boundary_smoothing),
+            ).items()
+            if cls != "interior"
+        }
+        edge_angles = _compute_tutte_edge_angles(
+            detail_grid,
+            n_sides,
+            corner_vertex_ids=corner_ids,
+        )
+        tile_face_edge_maps[face_id] = _assign_boundary_faces_to_edges(
+            detail_grid,
+            boundary_band,
+            edge_angles,
+            n_sides,
+        )
+
+    # Deterministically process each globe adjacency once.
+    processed_pairs: Set[Tuple[str, str]] = set()
+    for face_id, nmap in edge_mappings.items():
+        for nid, edge_a in nmap.items():
+            key = tuple(sorted((face_id, nid)))
+            if key in processed_pairs:
+                continue
+            processed_pairs.add(key)
+
+            if nid not in edge_mappings:
+                continue
+            edge_b = edge_mappings[nid].get(face_id)
+            if edge_b is None:
+                continue
+
+            store_a = collection._stores.get(face_id)
+            store_b = collection._stores.get(nid)
+            grid_a = collection.grids.get(face_id)
+            grid_b = collection.grids.get(nid)
+            if store_a is None or store_b is None or grid_a is None or grid_b is None:
+                continue
+
+            strip_a = _ordered_boundary_strip_faces(
+                grid_a,
+                edge_a,
+                tile_face_edge_maps.get(face_id, {}),
+            )
+            strip_b = _ordered_boundary_strip_faces(
+                grid_b,
+                edge_b,
+                tile_face_edge_maps.get(nid, {}),
+            )
+            _sync_pair_boundary_strips(
+                store_a,
+                strip_a,
+                store_b,
+                strip_b,
+                elevation_field=elevation_field,
+            )

@@ -1024,6 +1024,9 @@ def build_batched_globe_mesh(
     edge_blend: float = 0.0,
     normal_mapped: bool = False,
     water_tiles: Optional[Dict[int, bool]] = None,
+    include_tile_layer: bool = False,
+    tile_layer_map: Optional[Dict[str, int]] = None,
+    local_tile_uvs: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build a single merged mesh for the entire globe.
 
@@ -1063,6 +1066,17 @@ def build_batched_globe_mesh(
         When provided and any tile is flagged as water, the vertex
         stride gains one extra float (the water flag): 9 (basic),
         15 (normal-mapped).
+    include_tile_layer : bool
+        When True, appends one float per vertex storing the tile layer
+        index for texture-array sampling. The value is constant for all
+        vertices generated from a tile.
+    tile_layer_map : dict, optional
+        ``{face_id: layer_index}`` mapping. Used only when
+        *include_tile_layer=True*. Defaults to ``tile.index`` when a
+        face id is missing.
+    local_tile_uvs : bool
+        When True, uses each tile's local UV coordinates (0-1 range)
+        instead of atlas-mapped UVs. Intended for texture-array sampling.
 
     Returns
     -------
@@ -1070,6 +1084,7 @@ def build_batched_globe_mesh(
         Concatenated arrays for a single draw call.
         Vertex stride is 8/9 (default) or 14/15 (when *normal_mapped=True*),
         depending on whether *water_tiles* contains any True values.
+        When *include_tile_layer=True*, stride increases by 1.
     """
     if not _HAS_MODELS:
         raise ImportError("models library required")
@@ -1114,14 +1129,20 @@ def build_batched_globe_mesh(
                 s_own * color[2] + edge_blend * avg[2],
             )
 
-        # Compute atlas-mapped UVs
-        mapped_uvs = _compute_tile_uvs(list(tile.uv_vertices), slot)
+        # Compute UVs in either atlas space or local tile space.
+        if local_tile_uvs:
+            mapped_uvs = [
+                (max(0.0, min(1.0, float(u))), max(0.0, min(1.0, float(v))))
+                for u, v in list(tile.uv_vertices)
+            ]
+        else:
+            mapped_uvs = _compute_tile_uvs(list(tile.uv_vertices), slot)
         center_u = sum(uv[0] for uv in mapped_uvs) / len(mapped_uvs)
         center_v = sum(uv[1] for uv in mapped_uvs) / len(mapped_uvs)
 
         # Compute optional UV inset polygon for clamping
         clamp_poly: Optional[List[Tuple[float, float]]] = None
-        if uv_inset_px > 0 and atlas_size is not None:
+        if (not local_tile_uvs) and uv_inset_px > 0 and atlas_size is not None:
             clamp_poly = compute_uv_polygon_inset(
                 mapped_uvs, inset_px=uv_inset_px, atlas_size=atlas_size,
             )
@@ -1146,6 +1167,14 @@ def build_batched_globe_mesh(
             water_flag=wf,
         )
 
+        if include_tile_layer:
+            if tile_layer_map is not None:
+                layer_idx = float(tile_layer_map.get(fid, tile.index))
+            else:
+                layer_idx = float(tile.index)
+            layer_col = np.full((len(vdata), 1), layer_idx, dtype=np.float32)
+            vdata = np.concatenate((vdata, layer_col), axis=1)
+
         # Offset indices
         idata_offset = idata + vertex_offset
         vertex_offset += len(vdata)
@@ -1154,7 +1183,7 @@ def build_batched_globe_mesh(
         all_index_chunks.append(idata_offset)
 
     base_stride = 14 if normal_mapped else 8
-    stride = base_stride + (1 if has_any_water else 0)
+    stride = base_stride + (1 if has_any_water else 0) + (1 if include_tile_layer else 0)
     if not all_vertex_chunks:
         return np.zeros((0, stride), dtype=np.float32), np.zeros((0, 3), dtype=np.uint32)
 
@@ -1934,6 +1963,62 @@ void main() {
 """
 
 
+_V2_ARRAY_VERTEX_SHADER = """\
+#version 330 core
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 color;
+layout(location = 2) in vec2 uv;
+layout(location = 3) in float tile_layer;
+
+uniform mat4 u_mvp;
+uniform mat4 u_model;
+
+out vec3 v_color;
+out vec3 v_normal;
+out vec2 v_uv;
+flat out int v_layer;
+
+void main() {
+    vec3 world_pos = (u_model * vec4(position, 1.0)).xyz;
+    v_color  = color;
+    v_normal = normalize(world_pos);
+    v_uv     = uv;
+    v_layer  = int(tile_layer + 0.5);
+    gl_Position = u_mvp * vec4(world_pos, 1.0);
+}
+"""
+
+
+_V2_ARRAY_FRAGMENT_SHADER = """\
+#version 330 core
+in vec3 v_color;
+in vec3 v_normal;
+in vec2 v_uv;
+flat in int v_layer;
+
+uniform sampler2DArray u_atlas_array;
+uniform int            u_use_texture;
+uniform vec3           u_light_dir;
+
+out vec4 frag_color;
+
+void main() {
+    vec3 base;
+    if (u_use_texture == 1) {
+        base = texture(u_atlas_array, vec3(v_uv, float(v_layer))).rgb;
+    } else {
+        base = v_color;
+    }
+
+    vec3 n = normalize(v_normal);
+    float ndotl = dot(n, u_light_dir);
+    float light = clamp(ndotl * 0.6 + 0.4, 0.2, 1.0);
+
+    frag_color = vec4(base * light, 1.0);
+}
+"""
+
+
 # ───────────────────────────────────────────────────────────────────
 # 13E+13H — PBR-lite shaders (15-float vertex: pos+col+uv+T+B+water)
 # ───────────────────────────────────────────────────────────────────
@@ -2203,6 +2288,7 @@ def render_globe_v2(
     title: str = "Polygrid Globe v2",
     flood_fill: bool = False,
     flood_fill_iterations: int = 8,
+    texture_backend: str = "atlas",
 ) -> None:
     """Launch an interactive pyglet window with the improved globe renderer.
 
@@ -2233,6 +2319,10 @@ def render_globe_v2(
         needed with the 13A background-colour fix.
     flood_fill_iterations : int
         Number of dilation passes for flood-fill.
+    texture_backend : str
+        ``"atlas"`` (default) or ``"array"``. Array mode derives
+        per-tile layers from atlas slots and samples through
+        ``sampler2DArray``.
     """
     if not _HAS_MODELS:
         raise ImportError("models library required for globe rendering")
@@ -2273,6 +2363,8 @@ def render_globe_v2(
     atlas_img_check.close()
 
     print(f"  Building subdivided globe mesh (subdivisions={subdivisions})...")
+    use_array_backend = str(texture_backend).strip().lower() == "array"
+    tile_layer_map = {fid: int(fid[1:]) for fid in uv_layout if fid.startswith("t")}
     vertex_data, index_data = build_batched_globe_mesh(
         frequency, uv_layout,
         tile_colour_map=tile_colour_map,
@@ -2280,6 +2372,9 @@ def render_globe_v2(
         subdivisions=subdivisions,
         uv_inset_px=uv_inset_px,
         atlas_size=atlas_size,
+        include_tile_layer=use_array_backend,
+        tile_layer_map=tile_layer_map if use_array_backend else None,
+        local_tile_uvs=use_array_backend,
     )
     n_verts = len(vertex_data)
     n_tris = len(index_data)
@@ -2325,8 +2420,12 @@ def render_globe_v2(
             raise RuntimeError(f"Shader error: {info_log.value.decode()}")
         return shader
 
-    vs = _compile_shader(_V2_VERTEX_SHADER, gl.GL_VERTEX_SHADER)
-    fs = _compile_shader(_V2_FRAGMENT_SHADER, gl.GL_FRAGMENT_SHADER)
+    if use_array_backend:
+        vs = _compile_shader(_V2_ARRAY_VERTEX_SHADER, gl.GL_VERTEX_SHADER)
+        fs = _compile_shader(_V2_ARRAY_FRAGMENT_SHADER, gl.GL_FRAGMENT_SHADER)
+    else:
+        vs = _compile_shader(_V2_VERTEX_SHADER, gl.GL_VERTEX_SHADER)
+        fs = _compile_shader(_V2_FRAGMENT_SHADER, gl.GL_FRAGMENT_SHADER)
     program = gl.glCreateProgram()
     gl.glAttachShader(program, vs)
     gl.glAttachShader(program, fs)
@@ -2342,7 +2441,10 @@ def render_globe_v2(
 
     mvp_loc = gl.glGetUniformLocation(program, b"u_mvp")
     model_loc = gl.glGetUniformLocation(program, b"u_model")
-    atlas_loc = gl.glGetUniformLocation(program, b"u_atlas")
+    atlas_loc = gl.glGetUniformLocation(
+        program,
+        b"u_atlas_array" if use_array_backend else b"u_atlas",
+    )
     use_tex_loc = gl.glGetUniformLocation(program, b"u_use_texture")
     light_loc = gl.glGetUniformLocation(program, b"u_light_dir")
 
@@ -2357,7 +2459,8 @@ def render_globe_v2(
     vbo_data = vertex_data.astype(np.float32).tobytes()
     gl.glBufferData(gl.GL_ARRAY_BUFFER, len(vbo_data), vbo_data, gl.GL_STATIC_DRAW)
 
-    stride = 8 * 4  # 8 floats × 4 bytes
+    stride_floats = 9 if use_array_backend else 8
+    stride = stride_floats * 4
     # position: location 0, 3 floats, offset 0
     gl.glEnableVertexAttribArray(0)
     gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(0))
@@ -2367,6 +2470,10 @@ def render_globe_v2(
     # uv: location 2, 2 floats, offset 24
     gl.glEnableVertexAttribArray(2)
     gl.glVertexAttribPointer(2, 2, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(24))
+    if use_array_backend:
+        # tile layer: location 3, 1 float, offset 32
+        gl.glEnableVertexAttribArray(3)
+        gl.glVertexAttribPointer(3, 1, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(32))
 
     ibo = gl.GLuint()
     gl.glGenBuffers(1, ctypes.byref(ibo))
@@ -2377,26 +2484,92 @@ def render_globe_v2(
 
     gl.glBindVertexArray(0)
 
-    # ── Load atlas texture with mipmaps ─────────────────────────────
-    atlas_img = Image.open(str(atlas_path)).convert("RGBA").transpose(
-        Image.FLIP_TOP_BOTTOM,
-    )
-    tex_w, tex_h = atlas_img.size
-    atlas_bytes = atlas_img.tobytes()
-
+    # ── Load texture backend ─────────────────────────────────────────
     tex_id = gl.GLuint()
     gl.glGenTextures(1, ctypes.byref(tex_id))
-    gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR)
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-    gl.glTexImage2D(
-        gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, tex_w, tex_h, 0,
-        gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, atlas_bytes,
-    )
-    gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
-    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+    if use_array_backend:
+        atlas_src = Image.open(str(atlas_path)).convert("RGBA")
+        atlas_w, atlas_h = atlas_src.size
+        # Determine layer dimensions from first slot.
+        first_slot = next(iter(uv_layout.values())) if uv_layout else (0.0, 0.0, 1.0, 1.0)
+        u_min, v_min, u_max, v_max = first_slot
+        layer_w = max(1, int(round((u_max - u_min) * atlas_w)))
+        layer_h = max(1, int(round((v_max - v_min) * atlas_h)))
+
+        max_layer = max((int(v) for v in tile_layer_map.values()), default=-1)
+        layer_count = max_layer + 1
+        if layer_count <= 0:
+            layer_count = len(uv_layout)
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, tex_id)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexImage3D(
+            gl.GL_TEXTURE_2D_ARRAY,
+            0,
+            gl.GL_RGBA,
+            layer_w,
+            layer_h,
+            layer_count,
+            0,
+            gl.GL_RGBA,
+            gl.GL_UNSIGNED_BYTE,
+            None,
+        )
+
+        for fid, slot in uv_layout.items():
+            if fid not in tile_layer_map:
+                continue
+            layer_idx = int(tile_layer_map[fid])
+            u_min, v_min, u_max, v_max = slot
+            x0 = int(round(u_min * atlas_w))
+            x1 = int(round(u_max * atlas_w))
+            # uv_layout is v-up; PIL crop is y-down.
+            y_top = int(round((1.0 - v_max) * atlas_h))
+            y_bottom = int(round((1.0 - v_min) * atlas_h))
+            x1 = max(x0 + 1, x1)
+            y_bottom = max(y_top + 1, y_bottom)
+            tile_rgba = atlas_src.crop((x0, y_top, x1, y_bottom)).resize((layer_w, layer_h), Image.BILINEAR)
+            tile_rgba = tile_rgba.transpose(Image.FLIP_TOP_BOTTOM)
+            tile_bytes = tile_rgba.tobytes()
+            gl.glTexSubImage3D(
+                gl.GL_TEXTURE_2D_ARRAY,
+                0,
+                0,
+                0,
+                layer_idx,
+                layer_w,
+                layer_h,
+                1,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                tile_bytes,
+            )
+
+        gl.glGenerateMipmap(gl.GL_TEXTURE_2D_ARRAY)
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, 0)
+        atlas_src.close()
+    else:
+        atlas_img = Image.open(str(atlas_path)).convert("RGBA").transpose(
+            Image.FLIP_TOP_BOTTOM,
+        )
+        tex_w, tex_h = atlas_img.size
+        atlas_bytes = atlas_img.tobytes()
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, tex_w, tex_h, 0,
+            gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, atlas_bytes,
+        )
+        gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
     # ── Camera state ────────────────────────────────────────────────
     yaw = [0.0]
@@ -2476,7 +2649,10 @@ def render_globe_v2(
 
         # Bind atlas
         gl.glActiveTexture(gl.GL_TEXTURE0)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+        gl.glBindTexture(
+            gl.GL_TEXTURE_2D_ARRAY if use_array_backend else gl.GL_TEXTURE_2D,
+            tex_id,
+        )
         gl.glUniform1i(atlas_loc, 0)
         gl.glUniform1i(use_tex_loc, 1)
 
@@ -2485,7 +2661,10 @@ def render_globe_v2(
         gl.glDrawElements(gl.GL_TRIANGLES, n_indices, gl.GL_UNSIGNED_INT, None)
         gl.glBindVertexArray(0)
 
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glBindTexture(
+            gl.GL_TEXTURE_2D_ARRAY if use_array_backend else gl.GL_TEXTURE_2D,
+            0,
+        )
         gl.glUseProgram(0)
 
     @window.event

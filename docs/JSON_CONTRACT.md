@@ -109,6 +109,34 @@ Each entry maps a tile ID to its normalised UV rectangle within the atlas (0–1
 
 Phase 13E adds a separate normal map atlas with the same layout as the colour atlas. Normal vectors are encoded as RGB: `(nx*0.5+0.5, ny*0.5+0.5, nz*0.5+0.5)`.
 
+### Texture backend transition contract
+
+Atlas exports now also carry backend metadata to support migration to per-tile
+texture arrays while keeping current consumers stable.
+
+Contract fields (in generation metadata and optional sidecar JSON):
+
+```json
+{
+  "schema": "texture-array-layout.v1",
+  "backend": "atlas",
+  "compatibility_mode": true,
+  "layer_count": 42,
+  "layer_width": 512,
+  "layer_height": 512,
+  "tile_layers": {
+    "t0": 0,
+    "t1": 1
+  }
+}
+```
+
+Notes:
+- `backend` is currently `"atlas"`.
+- `tile_layers` is deterministic and stable for the export ordering.
+- During migration, consumers should read this contract first and branch by
+  backend (`atlas` now, `array` later) instead of assuming atlas-only layout.
+
 ---
 
 ## 4. Vertex Formats (GPU)
@@ -119,8 +147,12 @@ The Phase 12-13 renderer uses several vertex formats depending on enabled featur
 |------|--------|--------|
 | Basic | 8 floats | `pos(3) + col(3) + uv(2)` |
 | Basic + water | 9 floats | `pos(3) + col(3) + uv(2) + water(1)` |
+| Basic + tile layer | 9 floats | `pos(3) + col(3) + uv(2) + layer(1)` |
+| Basic + water + tile layer | 10 floats | `pos(3) + col(3) + uv(2) + water(1) + layer(1)` |
 | Normal-mapped | 14 floats | `pos(3) + col(3) + uv(2) + T(3) + B(3)` |
 | Normal-mapped + water | 15 floats | `pos(3) + col(3) + uv(2) + T(3) + B(3) + water(1)` |
+| Normal-mapped + tile layer | 15 floats | `pos(3) + col(3) + uv(2) + T(3) + B(3) + layer(1)` |
+| Normal-mapped + water + tile layer | 16 floats | `pos(3) + col(3) + uv(2) + T(3) + B(3) + water(1) + layer(1)` |
 | Atmosphere shell | 7 floats | `pos(3) + rgba(4)` |
 | Background quad | 4 floats | `clip_xy(2) + uv(2)` |
 

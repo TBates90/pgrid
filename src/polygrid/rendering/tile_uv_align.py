@@ -35,6 +35,7 @@ Key functions
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -120,6 +121,90 @@ def compute_uv_to_polygrid_offset(
 
     # Fallback — shouldn't happen
     return 0
+
+
+def compute_gt_to_pg_corner_map(
+    globe_grid: PolyGrid,
+    face_id: str,
+) -> Dict[int, int]:
+    """Return GoldbergTile-corner index -> PolyGrid-corner index mapping.
+
+    The map is built from direct 3D vertex correspondence and is used to
+    avoid relying on a single rotational offset in low-frequency seam work.
+    """
+    from .uv_texture import get_goldberg_tiles, _match_tile_to_face
+
+    face = globe_grid.faces[face_id]
+    n = len(face.vertex_ids)
+    freq = globe_grid.metadata.get("frequency", 3)
+    rad = globe_grid.metadata.get("radius", 1.0)
+    tiles = get_goldberg_tiles(freq, rad)
+    tile = _match_tile_to_face(tiles, face_id)
+
+    pg_verts = [
+        np.array([globe_grid.vertices[vid].x, globe_grid.vertices[vid].y, globe_grid.vertices[vid].z], dtype=np.float64)
+        for vid in face.vertex_ids
+    ]
+    gt_verts = [np.array(v, dtype=np.float64) for v in tile.vertices]
+
+    gt_to_pg: Dict[int, int] = {}
+    for gi, gv in enumerate(gt_verts):
+        best_idx = -1
+        best_dist = float("inf")
+        for pi, pv in enumerate(pg_verts):
+            d = float(np.linalg.norm(gv - pv))
+            if d < best_dist:
+                best_dist = d
+                best_idx = pi
+        if best_idx < 0 or best_dist > 1e-4:
+            raise ValueError(
+                f"Cannot map GT corner to PG corner for face {face_id}: gi={gi} dist={best_dist:.3e}"
+            )
+        gt_to_pg[gi] = int(best_idx)
+
+    if len(gt_to_pg) != n or len(set(gt_to_pg.values())) != n:
+        raise ValueError(f"GT->PG corner map is non-bijective for face {face_id}: {gt_to_pg}")
+
+    return gt_to_pg
+
+
+def compute_pg_to_gt_edge_map(
+    globe_grid: PolyGrid,
+    face_id: str,
+) -> Tuple[Dict[int, int], Dict[int, int]]:
+    """Return (pg_edge->gt_edge, gt_edge->pg_edge) maps for one face.
+
+    Mapping is resolved by endpoint-set identity, which is robust to
+    reflection and avoids relying on a rotational offset.
+    """
+    face = globe_grid.faces[face_id]
+    n = len(face.vertex_ids)
+    if n < 3:
+        raise ValueError(f"Face {face_id} has invalid side count: {n}")
+
+    gt_to_pg_corner = compute_gt_to_pg_corner_map(globe_grid, face_id)
+
+    pg_edge_sets: Dict[frozenset[int], int] = {
+        frozenset({i, (i + 1) % n}): i for i in range(n)
+    }
+
+    gt_to_pg_edge: Dict[int, int] = {}
+    for gi in range(n):
+        gj = (gi + 1) % n
+        pi = int(gt_to_pg_corner[gi])
+        pj = int(gt_to_pg_corner[gj])
+        key = frozenset({pi, pj})
+        if key not in pg_edge_sets:
+            raise ValueError(
+                f"Cannot map GT edge to PG edge for face {face_id}: gt_edge={gi} pg_pair=({pi},{pj})"
+            )
+        gt_to_pg_edge[gi] = int(pg_edge_sets[key])
+
+    if len(gt_to_pg_edge) != n or len(set(gt_to_pg_edge.values())) != n:
+        raise ValueError(f"GT->PG edge map is non-bijective for face {face_id}: {gt_to_pg_edge}")
+
+    pg_to_gt_edge = {pg: gt for gt, pg in gt_to_pg_edge.items()}
+    return pg_to_gt_edge, gt_to_pg_edge
 
 
 def align_uv_corners_to_polygrid(
@@ -887,6 +972,22 @@ def _is_hex_adjacent_to_pentagon(globe_grid: PolyGrid, face_id: str) -> bool:
     return False
 
 
+def _vertex_xyz_key(globe_grid: PolyGrid, vertex_id: str) -> Tuple[int, int, int]:
+    """Return a stable quantized 3D key for a globe vertex.
+
+    Some topology paths duplicate vertex IDs across neighbouring faces while
+    keeping positions coincident; comparing quantized coordinates avoids false
+    seam endpoint mismatches in diagnostics.
+    """
+    v = globe_grid.vertices[str(vertex_id)]
+    scale = 1_000_000_000
+    return (
+        int(round(float(v.x) * scale)),
+        int(round(float(v.y) * scale)),
+        int(round(float(v.z) * scale)),
+    )
+
+
 def _scale_corners_from_centroid(
     corners: List[Tuple[float, float]],
     scale: float,
@@ -1527,6 +1628,11 @@ def draw_debug_labels(
     detail_rings: Optional[int] = None,
     xlim: Optional[Tuple[float, float]] = None,
     ylim: Optional[Tuple[float, float]] = None,
+    edge_pair_labels: Optional[Dict[int, str]] = None,
+    orientation_glyph: Optional[str] = None,
+    show_subface_labels: bool = True,
+    draw_pentagon_tint: bool = False,
+    draw_uv_gradient: bool = False,
 ) -> "Image.Image":
     """Draw comprehensive debug annotations on a warped slot image.
 
@@ -1540,9 +1646,10 @@ def draw_debug_labels(
        sub-face centroid, sized to fit the cell.  Drawn for
        ``detail_rings ≤ 4`` (at ``detail_rings = 5`` the 9 px font
        is too small to read).
-    4. **Edge arrows** — directional arrows along each UV polygon
+     4. **Tile orientation glyph** — compact winding/mapping diagnostics.
+     5. **Edge arrows** — directional arrows along each UV polygon
        edge showing winding order, with neighbour tile ID in black.
-    5. **Corner vertex markers** — numbered green dots at each
+     6. **Corner vertex markers** — numbered green dots at each
        polygon corner, labels offset inward to avoid globe clipping.
 
     Parameters
@@ -1566,6 +1673,14 @@ def draw_debug_labels(
     xlim, ylim : (min, max), optional
         View limits — only needed for grid-line overlay (transform
         from grid-space to image-space).
+    edge_pair_labels : dict, optional
+        ``{edge_index: label}`` custom seam-pair labels shown on edges.
+        When omitted, defaults to ``e<idx>-><neighbor_id>`` labels.
+    orientation_glyph : str, optional
+        Tile-level orientation diagnostics string.
+    show_subface_labels : bool
+        If False, suppress dense per-sub-face labels to keep seam diagnostics
+        legible.
 
     Returns
     -------
@@ -1591,7 +1706,8 @@ def draw_debug_labels(
     n_subfaces = len(detail_grid.faces) if detail_grid else 0
     rings = detail_rings or (detail_grid.metadata.get("detail_rings") if detail_grid else None)
     can_draw_subfaces = (
-        detail_grid is not None
+        bool(show_subface_labels)
+        and detail_grid is not None
         and grid_corners is not None
         and rings is not None
         and rings <= 4
@@ -1630,11 +1746,74 @@ def draw_debug_labels(
     wm_font = _load_debug_font(wm_font_size)
     bbox = wm_draw.textbbox((0, 0), wm_label, font=wm_font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    wm_alpha = 45 if isinstance(edge_pair_labels, dict) and edge_pair_labels else 70
     wm_draw.text(
         (cx - tw / 2, cy - th / 2), wm_label,
-        fill=(255, 255, 255, 70), font=wm_font,
+        fill=(255, 255, 255, wm_alpha), font=wm_font,
     )
     out = _PILImage.alpha_composite(out, watermark)
+
+    # ── Layer 1.5: Pentagon fill tint ───────────────────────────
+    # Semi-transparent cyan fill inside the UV polygon for pentagon tiles,
+    # giving instant visual identification on the globe without reading text.
+    if draw_pentagon_tint and is_pentagon:
+        tint_layer = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+        tint_draw = ImageDraw.Draw(tint_layer)
+        poly_px = [_uv_to_px(u, v) for u, v in uv_corners]
+        tint_draw.polygon(poly_px, fill=(0, 200, 220, 55))
+        out = _PILImage.alpha_composite(out, tint_layer)
+
+    # ── Layer 1.7: UV gradient stripe ───────────────────────────
+    # Horizontal gradient dark-blue (U=0) → bright-gold (U=1) masked to the
+    # UV polygon.  Adjacent tiles that share a seam correctly will show
+    # their gradients flowing in compatible directions; a flipped pentagon
+    # shows its gradient reversed relative to all its hex neighbours.
+    if draw_uv_gradient:
+        grad_row = _PILImage.new("RGB", (slot_size, 1), (0, 0, 0))
+        grad_pixels = grad_row.load()
+        for px_x in range(slot_size):
+            t = max(0.0, min(1.0, (px_x - gutter) / max(tile_size, 1)))
+            grad_pixels[px_x, 0] = (
+                int(20 + 235 * t),   # R: 20 → 255
+                int(20 + 160 * t),   # G: 20 → 180
+                int(160 - 130 * t),  # B: 160 → 30
+            )
+        grad_full = grad_row.resize((slot_size, slot_size), _PILImage.NEAREST)
+        grad_rgba = grad_full.convert("RGBA")
+        mask_img = _PILImage.new("L", (slot_size, slot_size), 0)
+        ImageDraw.Draw(mask_img).polygon(
+            [_uv_to_px(u, v) for u, v in uv_corners], fill=50,
+        )
+        grad_rgba.putalpha(mask_img)
+        out = _PILImage.alpha_composite(out, grad_rgba)
+
+    # ── Layer 2.5: Orientation glyph ───────────────────────────
+    if orientation_glyph:
+        glyph_layer = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
+        glyph_draw = ImageDraw.Draw(glyph_layer)
+        glyph_font = _load_debug_font(max(10, tile_size // 24))
+        bb_g = glyph_draw.textbbox((0, 0), orientation_glyph, font=glyph_font)
+        gw, gh = bb_g[2] - bb_g[0], bb_g[3] - bb_g[1]
+        pad = 4
+        box_w_g = gw + pad * 2
+        box_h_g = gh + pad * 2
+        # Anchor glyph at centroid so it always lands inside the UV polygon,
+        # even for degenerate sliver pentagons where the slot corners are
+        # outside the mapped polygon on the sphere.
+        gx = int(round(cx - box_w_g / 2))
+        gy = int(round(cy - box_h_g / 2))
+        margin_g = gutter + 2
+        gx = max(margin_g, min(gx, slot_size - margin_g - box_w_g))
+        gy = max(margin_g, min(gy, slot_size - margin_g - box_h_g))
+        box = [gx, gy, gx + box_w_g, gy + box_h_g]
+        glyph_draw.rectangle(box, fill=(0, 0, 0, 180))
+        glyph_draw.text(
+            (box[0] + pad, box[1] + pad),
+            orientation_glyph,
+            fill=(220, 255, 220, 230),
+            font=glyph_font,
+        )
+        out = _PILImage.alpha_composite(out, glyph_layer)
 
     # ── Layer 3: Sub-face labels ────────────────────────────────
     if can_draw_subfaces and _g2px is not None:
@@ -1670,7 +1849,7 @@ def draw_debug_labels(
     # ── Layer 4: Edge arrows + neighbour labels ─────────────────
     edge_layer = _PILImage.new("RGBA", (slot_size, slot_size), (0, 0, 0, 0))
     edge_draw = ImageDraw.Draw(edge_layer)
-    edge_font = _load_debug_font(max(11, tile_size // 18))
+    edge_font = _load_debug_font(max(9, tile_size // 22))
 
     for k in range(n):
         j = (k + 1) % n
@@ -1712,37 +1891,75 @@ def draw_debug_labels(
             (base_x - px_perp * head_w, base_y - py_perp * head_w),
         ], fill=(0, 220, 220, 220))
 
-        # Neighbour label near edge midpoint, pushed slightly inward
+        # Neighbour label near edge midpoint, pushed inward toward centroid.
+        # For near-degenerate tiles (very thin pentagons) d_in can be tiny,
+        # so we push all the way to 85% of the way to the centroid, capped at
+        # 34 px.  The resulting position is then hard-clamped so the label
+        # box cannot land outside the safe inner region of the atlas slot.
         mx = (px0x + px1x) / 2
         my = (px0y + px1y) / 2
         dx_in, dy_in = cx - mx, cy - my
         d_in = math.hypot(dx_in, dy_in) or 1.0
-        inset = min(16, d_in * 0.18)
+        inset = min(34, d_in * 0.85)
         mx += dx_in / d_in * inset
         my += dy_in / d_in * inset
+        # For degenerate tiles (thin pentagons) the edge midpoint can be so
+        # close to the slot boundary that even the inset push isn't enough.
+        # Clamp the label centre to stay within 30% of tile_size from the
+        # polygon centroid so it always lands in the safe inner region.
+        max_drift = tile_size * 0.30
+        mx = cx + max(-max_drift, min(mx - cx, max_drift))
+        my = cy + max(-max_drift, min(my - cy, max_drift))
 
         nid = edge_neighbours.get(k, "?")
-        lbl_e = f"e{k}\u2192{nid}"
+        if isinstance(edge_pair_labels, dict):
+            lbl_e = edge_pair_labels.get(k)
+            # In seam-pair mode, only requested seam labels should be shown.
+            if not lbl_e:
+                continue
+        else:
+            lbl_e = f"e{k}->{nid}"
 
-        # Rotation along edge
-        angle_deg = -math.degrees(math.atan2(edge_dy, edge_dx))
-        if angle_deg > 90:
-            angle_deg -= 180
-        elif angle_deg < -90:
-            angle_deg += 180
-
+        # Labels are kept horizontal (0° rotation) so they remain readable
+        # regardless of how the tile is oriented when UV-mapped onto the sphere.
         bb_e = edge_draw.textbbox((0, 0), lbl_e, font=edge_font)
         ew, eh = bb_e[2] - bb_e[0], bb_e[3] - bb_e[1]
-        pad_t = 4
-        tmp = _PILImage.new("RGBA", (ew + pad_t * 2, eh + pad_t * 2), (0, 0, 0, 0))
-        tmp_draw = ImageDraw.Draw(tmp)
-        tmp_draw.text((pad_t, pad_t), lbl_e, fill=(0, 0, 0, 220), font=edge_font)
-        rotated = tmp.rotate(angle_deg, resample=_PILImage.BICUBIC, expand=True)
-        rw, rh = rotated.size
-        paste_x = int(round(mx - rw / 2))
-        paste_y = int(round(my - rh / 2))
-        edge_layer.paste(rotated, (paste_x, paste_y), rotated)
-        edge_draw = ImageDraw.Draw(edge_layer)
+        pad_t = 3
+        box_w = ew + pad_t * 2
+        box_h = eh + pad_t * 2
+        label_fill = (20, 40, 120, 215)    # blue for unknown/? neighbour
+        text_fill = (200, 220, 255, 245)
+        token = str(lbl_e).lower()
+        # Coloring is type-aware: pentagon-side labels use teal (so on the
+        # globe you can see at a glance which side of each seam is the pent
+        # vs the hex without any text), hex-side uses green.
+        if token.endswith(" r"):
+            if is_pentagon:
+                label_fill = (0, 110, 110, 220)   # teal  — pent side, correct
+                text_fill = (180, 255, 255, 245)
+            else:
+                label_fill = (0, 80, 0, 215)       # green — hex side, correct
+                text_fill = (225, 255, 225, 245)
+        elif token.endswith(" s"):
+            label_fill = (100, 70, 0, 215)         # amber — same dir (suspect)
+            text_fill = (255, 245, 200, 245)
+        elif token.endswith(" m"):
+            label_fill = (130, 0, 0, 220)          # red — vertex mismatch
+            text_fill = (255, 210, 210, 245)
+
+        paste_x = int(round(mx - box_w / 2))
+        paste_y = int(round(my - box_h / 2))
+        # Hard-clamp: keep the label box inside the safe inner region of
+        # the slot so it cannot be cropped at the atlas tile boundary.
+        margin = gutter + 2
+        paste_x = max(margin, min(paste_x, slot_size - margin - box_w))
+        paste_y = max(margin, min(paste_y, slot_size - margin - box_h))
+        edge_draw.rounded_rectangle(
+            [paste_x, paste_y, paste_x + box_w, paste_y + box_h],
+            radius=4, fill=label_fill,
+        )
+        edge_draw.text((paste_x + pad_t, paste_y + pad_t), lbl_e,
+                       fill=text_fill, font=edge_font)
 
     out = _PILImage.alpha_composite(out, edge_layer)
 
@@ -1907,6 +2124,72 @@ def _augment_ordered_fan_with_edge_controls(
     return src_aug, dst_aug
 
 
+def _sample_edge_profile_rgb(
+    rgb: np.ndarray,
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    *,
+    sample_count: int = 9,
+    inset_toward: Optional[Tuple[float, float]] = None,
+    inset_px: float = 1.0,
+) -> np.ndarray:
+    """Sample an RGB profile along an edge in image pixel coordinates."""
+    h, w = rgb.shape[:2]
+    n = max(3, int(sample_count))
+    out = np.empty((n, 3), dtype=np.float64)
+
+    dx_off = 0.0
+    dy_off = 0.0
+    if inset_toward is not None and float(inset_px) > 1e-12:
+        mx = 0.5 * (p0[0] + p1[0])
+        my = 0.5 * (p0[1] + p1[1])
+        vx = float(inset_toward[0]) - mx
+        vy = float(inset_toward[1]) - my
+        mag = math.hypot(vx, vy)
+        if mag > 1e-12:
+            dx_off = vx / mag * float(inset_px)
+            dy_off = vy / mag * float(inset_px)
+
+    for i in range(n):
+        t = i / (n - 1)
+        x = p0[0] * (1.0 - t) + p1[0] * t + dx_off
+        y = p0[1] * (1.0 - t) + p1[1] * t + dy_off
+        xi = int(round(max(0.0, min(float(w - 1), float(x)))))
+        yi = int(round(max(0.0, min(float(h - 1), float(y)))))
+        out[i] = rgb[yi, xi]
+    return out
+
+
+def _compute_edge_profile_mismatch_metrics(
+    profile_a: np.ndarray,
+    profile_b: np.ndarray,
+) -> Dict[str, float]:
+    """Compute endpoint/midpoint/max RGB mismatch between paired edge profiles.
+
+    ``profile_b`` is compared in reverse order so seam progression aligns
+    from tile-A endpoint 0 -> endpoint 1 against tile-B endpoint 1 -> endpoint 0.
+    """
+    if profile_a.shape != profile_b.shape or profile_a.ndim != 2 or profile_a.shape[1] != 3:
+        return {
+            "endpoint_0_mismatch": 0.0,
+            "endpoint_1_mismatch": 0.0,
+            "midpoint_mismatch": 0.0,
+            "max_sampled_offset": 0.0,
+            "mean_sampled_offset": 0.0,
+        }
+
+    b_rev = profile_b[::-1]
+    diffs = np.linalg.norm(profile_a - b_rev, axis=1)
+    mid = int(len(diffs) // 2)
+    return {
+        "endpoint_0_mismatch": float(diffs[0]),
+        "endpoint_1_mismatch": float(diffs[-1]),
+        "midpoint_mismatch": float(diffs[mid]),
+        "max_sampled_offset": float(np.max(diffs)),
+        "mean_sampled_offset": float(np.mean(diffs)),
+    }
+
+
 def _compute_piecewise_warp_map(
     grid_corners: List[Tuple[float, float]],
     uv_corners: List[Tuple[float, float]],
@@ -1987,13 +2270,27 @@ def _compute_piecewise_warp_map(
     # Sort both arrays by *destination-pixel* angle from their
     # centroid.  Both arrays are now in pixel space (Y-down), so the
     # sort puts them in the same angular order with matching winding.
-    dst_angles = np.arctan2(
-        dst_px[:, 1] - dst_px_centroid[1],
-        dst_px[:, 0] - dst_px_centroid[0],
-    )
-    order = np.argsort(dst_angles)
-    src_px_ordered = src_px[order]
-    dst_px_ordered = dst_px[order]
+    if n == 5:
+        # Preserve explicit pentagon corner pairing order from atlas
+        # pre-pass mapping. Resorting by angle can reindex near-symmetric
+        # corners and destabilize pent-hex seam endpoints.
+        src_px_ordered = src_px.copy()
+        dst_px_ordered = dst_px.copy()
+
+        # _assign_sectors assumes CCW fan corner progression. Keep pairing
+        # intact by reversing both arrays together when destination winding
+        # is CW, preserving anchor index 0.
+        if _winding_sign(dst_px_ordered) < 0:
+            src_px_ordered = _reverse_preserving_anchor(src_px_ordered, anchor=0)
+            dst_px_ordered = _reverse_preserving_anchor(dst_px_ordered, anchor=0)
+    else:
+        dst_angles = np.arctan2(
+            dst_px[:, 1] - dst_px_centroid[1],
+            dst_px[:, 0] - dst_px_centroid[0],
+        )
+        order = np.argsort(dst_angles)
+        src_px_ordered = src_px[order]
+        dst_px_ordered = dst_px[order]
 
     # Pentagon-only safety: if corner winding differs after ordering,
     # flip source winding while preserving an anchor corner.
@@ -2361,7 +2658,12 @@ def build_polygon_cut_atlas(
     mask_outside: bool = False,
     mask_colour: Tuple[int, int, int] = (0, 0, 0),
     debug_labels: bool = False,
+    debug_seam_pair_labels: bool = False,
+    debug_orientation_glyphs: bool = False,
+    debug_seam_heatmap: bool = False,
     debug_uv_cut: bool = False,
+        debug_pentagon_tint: bool = False,
+        debug_uv_gradient: bool = False,
     output_dir: Optional[Path] = None,
     pentagon_rotation_steps: int = 0,
     equalise_sectors: bool = False,
@@ -2377,6 +2679,7 @@ def build_polygon_cut_atlas(
     hex_pent_edge_interior_pull: float = 0.0,
     pentagon_allow_reflection: bool = False,
     uniform_half_span: Optional[float] = None,
+    seam_metrics_out: Optional[Dict[str, Any]] = None,
 ) -> Tuple["Image.Image", Dict[str, Tuple[float, float, float, float]]]:
     """Build a texture atlas from stitched tile images, UV-aligned.
 
@@ -2424,6 +2727,15 @@ def build_polygon_cut_atlas(
         If True, draw tile ID and per-edge neighbour labels on each
         tile in the atlas.  Adjacent tiles sharing an edge should
         display the **same** edge index at the shared boundary.
+    debug_seam_pair_labels : bool
+        If True, edge labels show paired edge correspondence for both
+        tiles on a seam (for example, ``e1<->e4 rev``).
+    debug_orientation_glyphs : bool
+        If True, render a compact per-tile orientation diagnostics
+        glyph (UV/grid winding and mapping mode).
+    debug_seam_heatmap : bool
+        If True, draw a seam heatmap overlay on pent-hex boundaries,
+        where color encodes sampled seam mismatch magnitude.
     output_dir : Path, optional
         If given, saves individual masked tiles for debugging.
     pentagon_rotation_steps : int
@@ -2459,6 +2771,7 @@ def build_polygon_cut_atlas(
         uv_layout : ``{face_id: (u_min, v_min, u_max, v_max)}``
     """
     from PIL import Image
+    from ..detail.detail_terrain import compute_neighbor_edge_mapping
     from .uv_texture import get_tile_uv_vertices
 
     # ── Resolve per-type gutters ─────────────────────────────────
@@ -2476,6 +2789,12 @@ def build_polygon_cut_atlas(
     uv_layout: Dict[str, Tuple[float, float, float, float]] = {}
     pent_tiles_total = 0
     pent_winding_fixes = 0
+    edge_profiles_by_tile: Dict[str, Dict[int, np.ndarray]] = {}
+    neigh_to_edge_pg_by_tile: Dict[str, Dict[str, int]] = {}
+    gt_to_pg_corner_by_tile: Dict[str, Dict[int, int]] = {}
+    pg_to_gt_corner_by_tile: Dict[str, Dict[int, int]] = {}
+    pg_to_gt_edge_by_tile: Dict[str, Dict[int, int]] = {}
+    gt_to_pg_edge_by_tile: Dict[str, Dict[int, int]] = {}
 
     # ── Pre-pass: collect matched grid/UV corners for every tile ─
     # Pentagon scale depends on hex-neighbour geometry, so we gather
@@ -2502,14 +2821,38 @@ def build_polygon_cut_atlas(
         # shared edge identity (PG edge -> macro edge) rather than pure angle
         # minimization. This is more stable for pent-hex seam endpoints.
         gc_matched: List[Tuple[float, float]]
+        gt_to_pg_corner: Dict[int, int]
+        pg_to_gt_corner: Dict[int, int]
+        try:
+            gt_to_pg_corner = compute_gt_to_pg_corner_map(globe_grid, fid)
+            pg_to_gt_corner = {pg: gt for gt, pg in gt_to_pg_corner.items()}
+        except Exception:
+            gt_to_pg_corner = {}
+            pg_to_gt_corner = {}
+
+        gt_to_pg_corner_by_tile[fid] = gt_to_pg_corner
+        pg_to_gt_corner_by_tile[fid] = pg_to_gt_corner
+        try:
+            pg_to_gt_edge, gt_to_pg_edge = compute_pg_to_gt_edge_map(globe_grid, fid)
+        except Exception:
+            pg_to_gt_edge, gt_to_pg_edge = {}, {}
+        pg_to_gt_edge_by_tile[fid] = pg_to_gt_edge
+        gt_to_pg_edge_by_tile[fid] = gt_to_pg_edge
+
         if is_pent:
             try:
                 pg_to_macro_corner = compute_pg_to_macro_corner_map(globe_grid, fid, dg)
-                pg_gt_offset = compute_uv_to_polygrid_offset(globe_grid, fid)
-                gc_matched = [
-                    gc_raw[pg_to_macro_corner[(k + pg_gt_offset) % ns]]
-                    for k in range(ns)
-                ]
+                if gt_to_pg_corner and len(gt_to_pg_corner) == ns:
+                    gc_matched = [
+                        gc_raw[pg_to_macro_corner[gt_to_pg_corner[k]]]
+                        for k in range(ns)
+                    ]
+                else:
+                    pg_gt_offset = compute_uv_to_polygrid_offset(globe_grid, fid)
+                    gc_matched = [
+                        gc_raw[pg_to_macro_corner[(k + pg_gt_offset) % ns]]
+                        for k in range(ns)
+                    ]
             except Exception:
                 gc_matched = match_grid_corners_to_uv(
                     gc_raw,
@@ -2525,6 +2868,17 @@ def build_polygon_cut_atlas(
                 allow_reflection_override=None,
             )
         _tile_corners[fid] = (gc_matched, uc_raw, ns)
+
+        # Build neighbour->edge map in GoldbergTile edge order for seam pairing.
+        try:
+            neigh_to_edge_pg = compute_neighbor_edge_mapping(globe_grid, fid)
+            pg_to_gt_edge = pg_to_gt_edge_by_tile.get(fid, {})
+            neigh_to_edge_pg_by_tile[fid] = {
+                str(nid): int(int(pg_eidx) % ns)
+                for nid, pg_eidx in neigh_to_edge_pg.items()
+            }
+        except Exception:
+            neigh_to_edge_pg_by_tile[fid] = {}
 
     # ── Compute dynamic pentagon scale factors ───────────────────
     _pent_scales: Dict[str, float] = {}
@@ -2727,11 +3081,84 @@ def build_polygon_cut_atlas(
             # GoldbergTile order (matching uv_corners) so the labels
             # appear at the correct UV edge.
             neigh_to_edge_pg = compute_neighbor_edge_mapping(globe_grid, fid)
+            pg_to_gt_edge = pg_to_gt_edge_by_tile.get(fid, {})
+            gt_to_pg_edge = gt_to_pg_edge_by_tile.get(fid, {})
             pg_gt_offset = compute_uv_to_polygrid_offset(globe_grid, fid)
             edge_to_neigh_gt = {}
+            edge_pair_labels: Dict[int, str] = {}
             for nid, pg_eidx in neigh_to_edge_pg.items():
-                gt_eidx = (pg_eidx - pg_gt_offset) % n_sides
+                if pg_to_gt_edge and len(pg_to_gt_edge) == n_sides:
+                    gt_eidx = int(pg_to_gt_edge[int(pg_eidx) % n_sides])
+                else:
+                    gt_eidx = (pg_eidx - pg_gt_offset) % n_sides
                 edge_to_neigh_gt[gt_eidx] = nid
+
+                if debug_seam_pair_labels:
+                    neigh_pg_eidx = neigh_to_edge_pg_by_tile.get(str(nid), {}).get(str(fid))
+                    neigh_gt_eidx: Optional[int] = None
+                    orient_token = "?"
+                    if neigh_pg_eidx is not None and str(nid) in globe_grid.faces:
+                        neigh_n = len(globe_grid.faces[str(nid)].vertex_ids)
+                        neigh_pg_to_gt = pg_to_gt_edge_by_tile.get(str(nid), {})
+                        if neigh_pg_to_gt and len(neigh_pg_to_gt) == neigh_n:
+                            neigh_gt_eidx = int(neigh_pg_to_gt[int(neigh_pg_eidx) % neigh_n])
+                        else:
+                            neigh_off = compute_uv_to_polygrid_offset(globe_grid, str(nid))
+                            neigh_gt_eidx = (int(neigh_pg_eidx) - neigh_off) % neigh_n
+
+                        try:
+                            face_a = globe_grid.faces[fid]
+                            face_b = globe_grid.faces[str(nid)]
+                            pg_edge_a = int(gt_to_pg_edge.get(gt_eidx, (gt_eidx + pg_gt_offset) % n_sides))
+                            a0 = _vertex_xyz_key(globe_grid, face_a.vertex_ids[pg_edge_a % n_sides])
+                            a1 = _vertex_xyz_key(globe_grid, face_a.vertex_ids[(pg_edge_a + 1) % n_sides])
+
+                            pg_edge_b = int(neigh_pg_eidx) % neigh_n
+                            b0 = _vertex_xyz_key(globe_grid, face_b.vertex_ids[pg_edge_b])
+                            b1 = _vertex_xyz_key(globe_grid, face_b.vertex_ids[(pg_edge_b + 1) % neigh_n])
+
+                            if a0 == b1 and a1 == b0:
+                                orient_token = "rev"
+                            elif a0 == b0 and a1 == b1:
+                                orient_token = "same"
+                            else:
+                                orient_token = "mismatch"
+                        except Exception:
+                            orient_token = "?"
+
+                    is_pent_hex = False
+                    try:
+                        is_pent_hex = {
+                            str(globe_grid.faces[fid].face_type),
+                            str(globe_grid.faces[str(nid)].face_type),
+                        } == {"pent", "hex"}
+                    except Exception:
+                        is_pent_hex = False
+
+                    # Keep the overlay focused on pent-hex seams to reduce noise.
+                    if not is_pent_hex:
+                        continue
+
+                    if neigh_gt_eidx is not None:
+                        orient_short = {
+                            "rev": "r",
+                            "same": "s",
+                            "mismatch": "m",
+                        }.get(str(orient_token), "?")
+                        edge_pair_labels[int(gt_eidx)] = (
+                            f"e{int(gt_eidx)}/e{int(neigh_gt_eidx)} {orient_short}"
+                        )
+                    else:
+                        edge_pair_labels[int(gt_eidx)] = f"e{int(gt_eidx)}/?"
+
+            orientation_glyph: Optional[str] = None
+            if debug_orientation_glyphs:
+                uv_w = _winding_sign(np.asarray(uv_corners, dtype=np.float64))
+                grid_w = _winding_sign(np.asarray(grid_corners, dtype=np.float64))
+                uv_token = "ccw" if uv_w > 0 else ("cw" if uv_w < 0 else "flat")
+                grid_token = "ccw" if grid_w > 0 else ("cw" if grid_w < 0 else "flat")
+                mapping_token = "topo" if (pg_to_gt_edge and gt_to_pg_edge) else "offset"
+                orientation_glyph = f"ori uv:{uv_token} grid:{grid_token} map:{mapping_token}"
             face_type = globe_grid.faces[fid].face_type
             d_rings = dg.metadata.get("detail_rings")
             warped = draw_debug_labels(
@@ -2743,6 +3170,11 @@ def build_polygon_cut_atlas(
                 detail_rings=d_rings,
                 xlim=xlim,
                 ylim=ylim,
+                edge_pair_labels=edge_pair_labels if debug_seam_pair_labels else None,
+                orientation_glyph=orientation_glyph,
+                show_subface_labels=(not debug_seam_pair_labels),
+                            draw_pentagon_tint=debug_pentagon_tint,
+                            draw_uv_gradient=debug_uv_gradient,
             )
 
         # ── Debug UV-cut overlay ─────────────────────────────────
@@ -2806,6 +3238,31 @@ def build_polygon_cut_atlas(
         if output_dir is not None:
             warped.save(str(output_dir / f"{fid}_warped.png"))
 
+        # Capture edge RGB profiles for seam mismatch metrics.
+        try:
+            rgb_arr = np.asarray(warped.convert("RGB"), dtype=np.float64)
+            profiles: Dict[int, np.ndarray] = {}
+            cx_uv = sum(float(u) for u, _ in uv_corners) / len(uv_corners)
+            cy_uv = sum(float(v) for _, v in uv_corners) / len(uv_corners)
+            centroid_px = (g + cx_uv * tile_size, g + (1.0 - cy_uv) * tile_size)
+            for eidx in range(n_sides):
+                j = (eidx + 1) % n_sides
+                u0, v0 = uv_corners[eidx]
+                u1, v1 = uv_corners[j]
+                p0 = (g + u0 * tile_size, g + (1.0 - v0) * tile_size)
+                p1 = (g + u1 * tile_size, g + (1.0 - v1) * tile_size)
+                profiles[eidx] = _sample_edge_profile_rgb(
+                    rgb_arr,
+                    p0,
+                    p1,
+                    sample_count=9,
+                    inset_toward=centroid_px,
+                    inset_px=1.0,
+                )
+            edge_profiles_by_tile[fid] = profiles
+        except Exception:
+            edge_profiles_by_tile[fid] = {}
+
         # UV coordinates (inner tile region in atlas)
         inner_x = slot_x + max_gutter
         inner_y = slot_y + max_gutter
@@ -2821,5 +3278,261 @@ def build_polygon_cut_atlas(
             pent_tiles_total,
             pent_winding_fixes,
         )
+
+    # ── Shared-edge seam metrics (all seams; pent-hex subset highlighted) ──
+    seams: List[Dict[str, Any]] = []
+    seen_pairs: set[Tuple[str, str]] = set()
+    for fid in face_ids:
+        face = globe_grid.faces.get(fid)
+        if face is None:
+            continue
+        for nid in getattr(face, "neighbor_ids", ()):
+            if nid not in globe_grid.faces:
+                continue
+            a, b = sorted((str(fid), str(nid)))
+            key = (a, b)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+
+            edge_map_a_pg = neigh_to_edge_pg_by_tile.get(a, {})
+            edge_map_b_pg = neigh_to_edge_pg_by_tile.get(b, {})
+            pg_eidx_a = edge_map_a_pg.get(b)
+            pg_eidx_b = edge_map_b_pg.get(a)
+            if pg_eidx_a is None or pg_eidx_b is None:
+                continue
+
+            na = len(globe_grid.faces[a].vertex_ids)
+            nb = len(globe_grid.faces[b].vertex_ids)
+            pg_to_gt_a = pg_to_gt_edge_by_tile.get(a, {})
+            pg_to_gt_b = pg_to_gt_edge_by_tile.get(b, {})
+            if pg_to_gt_a and len(pg_to_gt_a) == na:
+                eidx_a = int(pg_to_gt_a[int(pg_eidx_a) % na])
+            else:
+                off_a = int(compute_uv_to_polygrid_offset(globe_grid, a) or 0)
+                eidx_a = int((int(pg_eidx_a) - off_a) % na)
+
+            if pg_to_gt_b and len(pg_to_gt_b) == nb:
+                eidx_b = int(pg_to_gt_b[int(pg_eidx_b) % nb])
+            else:
+                off_b = int(compute_uv_to_polygrid_offset(globe_grid, b) or 0)
+                eidx_b = int((int(pg_eidx_b) - off_b) % nb)
+
+            prof_a = edge_profiles_by_tile.get(a, {}).get(int(eidx_a))
+            prof_b = edge_profiles_by_tile.get(b, {}).get(int(eidx_b))
+            if prof_a is None or prof_b is None:
+                continue
+
+            mismatch = _compute_edge_profile_mismatch_metrics(prof_a, prof_b)
+            fa = globe_grid.faces[a]
+            fb = globe_grid.faces[b]
+            pent_hex = {fa.face_type, fb.face_type} == {"pent", "hex"}
+
+            # Topology-grounded endpoint consistency metrics.
+            na = len(fa.vertex_ids)
+            nb = len(fb.vertex_ids)
+            # Topology endpoint identity must be checked in the same index space
+            # as neighbour-edge mapping (PolyGrid edge order).
+            va0 = globe_grid.vertices[str(fa.vertex_ids[int(pg_eidx_a) % na])]
+            va1 = globe_grid.vertices[str(fa.vertex_ids[(int(pg_eidx_a) + 1) % na])]
+            vb0 = globe_grid.vertices[str(fb.vertex_ids[int(pg_eidx_b) % nb])]
+            vb1 = globe_grid.vertices[str(fb.vertex_ids[(int(pg_eidx_b) + 1) % nb])]
+
+            # Match endpoint identity with the same tolerance family used by
+            # compute_neighbor_edge_mapping (squared-distance < 1e-10).
+            a0_xyz = np.array((float(va0.x), float(va0.y), float(va0.z)), dtype=np.float64)
+            a1_xyz = np.array((float(va1.x), float(va1.y), float(va1.z)), dtype=np.float64)
+            b0_xyz = np.array((float(vb0.x), float(vb0.y), float(vb0.z)), dtype=np.float64)
+            b1_xyz = np.array((float(vb1.x), float(vb1.y), float(vb1.z)), dtype=np.float64)
+
+            def _close3(p: np.ndarray, q: np.ndarray) -> bool:
+                d = p - q
+                return float(np.dot(d, d)) < 1e-10
+
+            endpoint_orientation_reversed = bool(_close3(a0_xyz, b1_xyz) and _close3(a1_xyz, b0_xyz))
+            endpoint_orientation_same = bool(_close3(a0_xyz, b0_xyz) and _close3(a1_xyz, b1_xyz))
+            endpoint_vertex_set_match = bool(endpoint_orientation_reversed or endpoint_orientation_same)
+            endpoint_vertex_set_mismatch_count = 0 if endpoint_vertex_set_match else 2
+
+            seams.append(
+                {
+                    "seam_id": f"seam:{a}|{b}",
+                    "tile_a": a,
+                    "tile_b": b,
+                    "tile_a_type": fa.face_type,
+                    "tile_b_type": fb.face_type,
+                    "tile_a_edge_index": int(eidx_a),
+                    "tile_b_edge_index": int(eidx_b),
+                    "pent_hex_boundary": bool(pent_hex),
+                    "endpoint_vertex_set_match": bool(endpoint_vertex_set_match),
+                    "endpoint_orientation_reversed": bool(endpoint_orientation_reversed),
+                    "endpoint_orientation_same": bool(endpoint_orientation_same),
+                    "endpoint_vertex_set_mismatch_count": int(endpoint_vertex_set_mismatch_count),
+                    **mismatch,
+                }
+            )
+
+    seams.sort(key=lambda item: str(item.get("seam_id", "")))
+    endpoint_vals = [
+        max(float(s.get("endpoint_0_mismatch", 0.0)), float(s.get("endpoint_1_mismatch", 0.0)))
+        for s in seams
+    ]
+    midpoint_vals = [float(s.get("midpoint_mismatch", 0.0)) for s in seams]
+    pent_hex_seams = [s for s in seams if bool(s.get("pent_hex_boundary"))]
+    endpoint_set_mismatch_count = sum(
+        1 for s in seams if not bool(s.get("endpoint_vertex_set_match"))
+    )
+    endpoint_orientation_mismatch_count = sum(
+        1
+        for s in seams
+        if bool(s.get("endpoint_vertex_set_match"))
+        and not bool(s.get("endpoint_orientation_reversed"))
+    )
+
+    summary: Dict[str, Any] = {
+        "seam_count": int(len(seams)),
+        "pent_hex_seam_count": int(len(pent_hex_seams)),
+        "endpoint_vertex_set_mismatch_count": int(endpoint_set_mismatch_count),
+        "endpoint_orientation_mismatch_count": int(endpoint_orientation_mismatch_count),
+        "max_endpoint_mismatch": float(max(endpoint_vals)) if endpoint_vals else 0.0,
+        "mean_endpoint_mismatch": float(sum(endpoint_vals) / len(endpoint_vals)) if endpoint_vals else 0.0,
+        "max_midpoint_mismatch": float(max(midpoint_vals)) if midpoint_vals else 0.0,
+        "mean_midpoint_mismatch": float(sum(midpoint_vals) / len(midpoint_vals)) if midpoint_vals else 0.0,
+    }
+    if pent_hex_seams:
+        ph_endpoint_vals = [
+            max(float(s.get("endpoint_0_mismatch", 0.0)), float(s.get("endpoint_1_mismatch", 0.0)))
+            for s in pent_hex_seams
+        ]
+        ph_mid_vals = [float(s.get("midpoint_mismatch", 0.0)) for s in pent_hex_seams]
+        summary["pent_hex_max_endpoint_mismatch"] = float(max(ph_endpoint_vals))
+        summary["pent_hex_mean_endpoint_mismatch"] = float(sum(ph_endpoint_vals) / len(ph_endpoint_vals))
+        summary["pent_hex_max_midpoint_mismatch"] = float(max(ph_mid_vals))
+        summary["pent_hex_mean_midpoint_mismatch"] = float(sum(ph_mid_vals) / len(ph_mid_vals))
+        summary["pent_hex_endpoint_vertex_set_mismatch_count"] = int(
+            sum(1 for s in pent_hex_seams if not bool(s.get("endpoint_vertex_set_match")))
+        )
+        summary["pent_hex_endpoint_orientation_mismatch_count"] = int(
+            sum(
+                1
+                for s in pent_hex_seams
+                if bool(s.get("endpoint_vertex_set_match"))
+                and not bool(s.get("endpoint_orientation_reversed"))
+            )
+        )
+
+    seam_metrics_payload: Dict[str, Any] = {
+        "schema": "seam-metrics.v1",
+        "summary": summary,
+        "seams": seams,
+    }
+
+    if debug_seam_heatmap and seams:
+        from PIL import ImageDraw
+
+        draw = ImageDraw.Draw(atlas, "RGBA")
+
+        def _heat_color(score: float) -> Tuple[int, int, int, int]:
+            s = max(0.0, min(1.0, float(score)))
+            if s <= 0.5:
+                t = s / 0.5
+                r = int(round(40 + (255 - 40) * t))
+                g = int(round(220 + (220 - 220) * t))
+                b = int(round(40 + (40 - 40) * t))
+            else:
+                t = (s - 0.5) / 0.5
+                r = 255
+                g = int(round(220 + (40 - 220) * t))
+                b = 40
+            return (r, g, b, 220)
+
+        scale_den = 64.0
+        for seam in seams:
+            if not bool(seam.get("pent_hex_boundary")):
+                continue
+
+            tile_a = str(seam.get("tile_a", ""))
+            if tile_a not in uv_layout or tile_a not in globe_grid.faces:
+                continue
+
+            edge_a = seam.get("tile_a_edge_index")
+            try:
+                edge_idx = int(edge_a)
+            except (TypeError, ValueError):
+                continue
+
+            n_sides = len(globe_grid.faces[tile_a].vertex_ids)
+            if n_sides <= 0:
+                continue
+            edge_idx %= n_sides
+
+            uv_slot = uv_layout[tile_a]
+            u_min, v_min, u_max, v_max = uv_slot
+            inner_x = float(u_min) * atlas_w
+            inner_y = (1.0 - float(v_max)) * atlas_h
+            inner_w = (float(u_max) - float(u_min)) * atlas_w
+            inner_h = (float(v_max) - float(v_min)) * atlas_h
+
+            uv_corners = get_tile_uv_vertices(globe_grid, tile_a)
+            if len(uv_corners) != n_sides:
+                continue
+
+            j = (edge_idx + 1) % n_sides
+            u0, v0 = uv_corners[edge_idx]
+            u1, v1 = uv_corners[j]
+
+            p0 = (inner_x + u0 * inner_w, inner_y + (1.0 - v0) * inner_h)
+            p1 = (inner_x + u1 * inner_w, inner_y + (1.0 - v1) * inner_h)
+
+            cx_uv = sum(float(u) for u, _ in uv_corners) / len(uv_corners)
+            cy_uv = sum(float(v) for _, v in uv_corners) / len(uv_corners)
+            centroid = (inner_x + cx_uv * inner_w, inner_y + (1.0 - cy_uv) * inner_h)
+
+            mx = 0.5 * (p0[0] + p1[0])
+            my = 0.5 * (p0[1] + p1[1])
+            dx = centroid[0] - mx
+            dy = centroid[1] - my
+            d = math.hypot(dx, dy) or 1.0
+            inset = min(8.0, d * 0.08)
+            off_x = dx / d * inset
+            off_y = dy / d * inset
+
+            q0 = (p0[0] + off_x, p0[1] + off_y)
+            q1 = (p1[0] + off_x, p1[1] + off_y)
+
+            mismatch = float(seam.get("max_sampled_offset", 0.0) or 0.0)
+            score = max(0.0, min(1.0, mismatch / scale_den))
+            color = _heat_color(score)
+            width = 4 if score < 0.5 else 6
+            draw.line([q0, q1], fill=color, width=width)
+
+    if seam_metrics_out is not None:
+        seam_metrics_out.clear()
+        seam_metrics_out.update(seam_metrics_payload)
+
+    if _env_flag("PGRID_SEAM_METRICS_AUDIT"):
+        LOGGER.info("seam-metrics summary=%s", summary)
+
+    export_target = os.environ.get("PGRID_SEAM_METRICS_EXPORT_PATH", "").strip()
+    export_path: Optional[Path] = None
+    if export_target:
+        raw = Path(export_target)
+        if raw.suffix.lower() == ".json":
+            export_path = raw
+        else:
+            freq = int(getattr(globe_grid, "metadata", {}).get("frequency", 0) or 0)
+            rings = int(next(iter(detail_grids.values())).metadata.get("detail_rings", 0) or 0) if detail_grids else 0
+            export_path = raw / f"seams_metrics_f{freq}_r{rings}.json"
+    elif output_dir is not None:
+        export_path = output_dir / "seams_metrics.json"
+
+    if export_path is not None:
+        try:
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            export_path.write_text(json.dumps(seam_metrics_payload, indent=2))
+            if seam_metrics_out is not None:
+                seam_metrics_out["export_path"] = str(export_path)
+        except Exception:
+            LOGGER.debug("Failed to export seam metrics JSON", exc_info=True)
 
     return atlas, uv_layout

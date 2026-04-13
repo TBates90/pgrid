@@ -27,6 +27,11 @@ from polygrid.detail_terrain import (
     generate_all_detail_terrain,
     compute_neighbor_edge_mapping,
 )
+from polygrid.detail.detail_terrain import (
+    _compute_tutte_edge_angles,
+    _assign_boundary_faces_to_edges,
+    _boundary_face_ids,
+)
 
 try:
     from polygrid.globe import build_globe_grid, _HAS_MODELS
@@ -66,6 +71,70 @@ def _compute_edge_mapping(globe_grid, face_id, detail_grid):
         )
         return {nid: pg2macro.get(idx, idx) for nid, idx in pg_map.items()}
     return pg_map
+
+
+def _ordered_edge_strip_faces(detail_grid, edge_idx, spec):
+    """Return outermost strip faces for one edge using production mapping logic."""
+    outer = _boundary_face_ids(detail_grid)
+    corner_ids = detail_grid.metadata.get("corner_vertex_ids")
+    n_sides = len(corner_ids) if corner_ids else 5 if any(
+        f.face_type == "pent" for f in detail_grid.faces.values()
+    ) else 6
+    if corner_ids and not detail_grid.macro_edges:
+        detail_grid.compute_macro_edges(n_sides, corner_ids=corner_ids)
+
+    boundary_band = {
+        fid for fid, cls in classify_detail_faces(
+            detail_grid,
+            boundary_depth=max(1, spec.boundary_smoothing),
+        ).items()
+        if cls != "interior"
+    }
+    edge_angles = _compute_tutte_edge_angles(
+        detail_grid,
+        n_sides,
+        corner_vertex_ids=corner_ids,
+    )
+    face_edge_map = _assign_boundary_faces_to_edges(
+        detail_grid,
+        boundary_band,
+        edge_angles,
+        n_sides,
+    )
+
+    candidates = [fid for fid in outer if face_edge_map.get(fid) == edge_idx]
+    if not candidates:
+        return []
+
+    macro_edges = detail_grid.macro_edges
+    if isinstance(macro_edges, list):
+        macro_edge = macro_edges[edge_idx] if 0 <= edge_idx < len(macro_edges) else None
+    else:
+        macro_edge = macro_edges.get(edge_idx)
+    if macro_edge is None:
+        return sorted(candidates)
+
+    va = detail_grid.vertices[macro_edge.corner_start]
+    vb = detail_grid.vertices[macro_edge.corner_end]
+    ex = vb.x - va.x
+    ey = vb.y - va.y
+    norm = math.hypot(ex, ey)
+    if norm <= 1e-12:
+        return sorted(candidates)
+
+    ux = ex / norm
+    uy = ey / norm
+    scored = []
+    for fid in candidates:
+        face = detail_grid.faces[fid]
+        center = (
+            sum(detail_grid.vertices[vid].x for vid in face.vertex_ids) / len(face.vertex_ids),
+            sum(detail_grid.vertices[vid].y for vid in face.vertex_ids) / len(face.vertex_ids),
+        )
+        s = (center[0] - va.x) * ux + (center[1] - va.y) * uy
+        scored.append((s, fid))
+    scored.sort(key=lambda item: item[0])
+    return [fid for _, fid in scored]
 
 
 @needs_models
@@ -361,3 +430,42 @@ class TestGenerateAllDetailTerrain:
         # Boundary faces should be within a reasonable range of the target
         # (not exact due to noise, but not wildly different)
         assert max_diff < 1.0, f"Max boundary diff {max_diff} too large"
+
+    def test_boundary_strip_sync_produces_exact_pairwise_equality(self):
+        """Post-pass strip sync should make shared boundary strips exactly equal."""
+        from polygrid.core.algorithms import get_face_adjacency
+
+        grid, store = _make_globe_with_elevation(3)
+        spec = TileDetailSpec(detail_rings=4, boundary_smoothing=2)
+        coll = DetailGridCollection.build(grid, spec)
+        generate_all_detail_terrain(coll, grid, store, spec, seed=42)
+
+        adj = get_face_adjacency(grid)
+        pair = None
+        for fid, neighbours in adj.items():
+            if neighbours:
+                pair = (fid, neighbours[0])
+                break
+        if pair is None:
+            pytest.skip("No adjacent tile pair available")
+
+        fid, nid = pair
+        detail_grid_a, store_a = coll.get(fid)
+        detail_grid_b, store_b = coll.get(nid)
+        edge_map_a = _compute_edge_mapping(grid, fid, detail_grid_a)
+        edge_map_b = _compute_edge_mapping(grid, nid, detail_grid_b)
+        edge_a = edge_map_a.get(nid)
+        edge_b = edge_map_b.get(fid)
+        if edge_a is None or edge_b is None:
+            pytest.skip("Could not determine reciprocal neighbour edge mapping")
+
+        strip_a = _ordered_edge_strip_faces(detail_grid_a, edge_a, spec)
+        strip_b = _ordered_edge_strip_faces(detail_grid_b, edge_b, spec)
+        assert strip_a, "Expected non-empty boundary strip for first tile"
+        assert strip_b, "Expected non-empty boundary strip for second tile"
+
+        n = min(len(strip_a), len(strip_b))
+        for i in range(n):
+            va = store_a.get(strip_a[i], "elevation")
+            vb = store_b.get(strip_b[-(i + 1)], "elevation")
+            assert va == vb

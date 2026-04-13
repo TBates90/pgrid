@@ -418,7 +418,7 @@ def _compute_component_gradient_info(composite):
     Returns ``(comp_centroids, comp_max_dist)`` dicts keyed by
     component name.
     """
-    from polygrid.geometry import face_center as _face_center
+    from polygrid.core.geometry import face_center as _face_center
 
     mg = composite.merged
     comp_centroids: dict[str, tuple[float, float]] = {}
@@ -471,7 +471,7 @@ def _colour_debug_fn(
     composite, tile_hues, comp_centroids, comp_max_dist,
 ):
     """Return a colour callback for colour-debug rendering."""
-    from polygrid.geometry import face_center as _face_center
+    from polygrid.core.geometry import face_center as _face_center
 
     comp_hues = {
         name: tile_hues.get(name, 0.0)
@@ -498,7 +498,7 @@ def _colour_debug_fn(
 
 def _colour_debug_single_fn(grid, hue: float):
     """Return a colour callback for a standalone colour-debug tile."""
-    from polygrid.geometry import face_center as _face_center
+    from polygrid.core.geometry import face_center as _face_center
 
     xs, ys = [], []
     for fid, face in grid.faces.items():
@@ -535,7 +535,7 @@ def _terrain_colour_fn(grid, store, biome, noise_seed, hillshade=None):
     (suitable for neighbour grids where hillshade is less important).
     """
     from polygrid.detail_render import detail_elevation_to_colour
-    from polygrid.geometry import face_center as _face_center
+    from polygrid.core.geometry import face_center as _face_center
 
     def _colour(fid, _grid, face):
         elev = store.get(fid, "elevation")
@@ -844,6 +844,11 @@ def main():
              "no anti-aliasing, eliminates sub-pixel rasterisation seams. "
              "'matplotlib' uses patch-based rasterisation with anti-aliasing.",
     )
+    parser.add_argument(
+        "--emit-array-contract", action="store_true",
+        help="Write texture_array_layout.json and include tile-layer "
+             "contract metadata for texture-array migration.",
+    )
 
     args = parser.parse_args()
 
@@ -894,7 +899,7 @@ def _build_atlas(
 ):
     """Build polygon-cut atlas and write atlas.png + uv_layout.json.
 
-    Returns ``(atlas, uv_layout)``.
+    Returns ``(atlas, uv_layout, texture_contract)``.
     """
     import json
     from polygrid.tile_uv_align import build_polygon_cut_atlas
@@ -934,13 +939,28 @@ def _build_atlas(
     uv_path.write_text(json.dumps(uv_layout, indent=2))
     print(f"  → UV layout: {uv_path}")
 
-    return atlas, uv_layout
+    texture_contract = {
+        "schema": "texture-array-layout.v1",
+        "backend": "atlas",
+        "compatibility_mode": True,
+        "layer_count": int(len(face_ids)),
+        "layer_width": int(args.tile_size),
+        "layer_height": int(args.tile_size),
+        "tile_layers": {fid: idx for idx, fid in enumerate(face_ids)},
+    }
+    if args.emit_array_contract:
+        contract_path = output_dir / "texture_array_layout.json"
+        contract_path.write_text(json.dumps(texture_contract, indent=2))
+        print(f"  → Texture contract: {contract_path}")
+
+    return atlas, uv_layout, texture_contract
 
 
 def _export_payload_and_metadata(
     grid, store, output_dir, *,
     frequency, seed, preset, detail_rings, tile_size,
     colour_overrides=None,
+    texture_contract=None,
 ):
     """Export globe_payload.json and metadata.json.
 
@@ -970,7 +990,10 @@ def _export_payload_and_metadata(
         "preset": preset,
         "detail_rings": detail_rings,
         "tile_size": tile_size,
+        "texture_backend": "atlas",
     }
+    if texture_contract is not None:
+        metadata["texture_array_layout"] = dict(texture_contract)
     metadata_path = output_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2))
     print(f"  → Metadata: {metadata_path}")
@@ -1133,7 +1156,7 @@ def _main_colour_debug(args, output_dir):
     print(f"  → {len(face_ids)} tiles rendered in {elapsed:.2f}s")
 
     # Phase 2: build polygon-cut atlas
-    _build_atlas(
+    _atlas, _uv_layout, texture_contract = _build_atlas(
         tile_images, composites, detail_grids, grid, face_ids,
         args, output_dir, uniform_half_span=uniform_hs,
     )
@@ -1152,6 +1175,7 @@ def _main_colour_debug(args, output_dir):
         frequency=args.frequency, seed=0, preset="colour_debug",
         detail_rings=args.detail_rings, tile_size=args.tile_size,
         colour_overrides=colour_overrides,
+        texture_contract=texture_contract,
     )
 
     print(f"Output: {output_dir}/")
@@ -1224,7 +1248,7 @@ def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
     print(f"  → {len(face_ids)} tiles rendered in {elapsed:.2f}s")
 
     # Phase 2: build polygon-cut atlas
-    _build_atlas(
+    _atlas, _uv_layout, texture_contract = _build_atlas(
         tile_images, composites, detail_grids, grid, face_ids,
         args, output_dir, uniform_half_span=uniform_hs,
     )
@@ -1234,6 +1258,7 @@ def _main_polygon_cut(args, output_dir, grid, store, coll, biome,
         grid, store, output_dir,
         frequency=args.frequency, seed=args.seed, preset=args.preset,
         detail_rings=args.detail_rings, tile_size=args.tile_size,
+        texture_contract=texture_contract,
     )
 
     print(f"Output: {output_dir}/")
